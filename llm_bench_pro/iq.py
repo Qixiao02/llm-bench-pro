@@ -39,7 +39,7 @@ def prompt_mcq(item):
 
 
 def prompt_math(item):
-    return (item["q"] + "\n\n请一步步推理，最后单独一行以 \"#### <最终数字答案>\" 的格式给出答案。"), 640
+    return (item["q"] + "\n\n请一步步推理，最后单独一行以 \"#### <最终数字答案>\" 的格式给出答案。"), 1280
 
 
 def prompt_math500(item):
@@ -165,7 +165,7 @@ def plog(msg):
 
 
 def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
-           framework=None, fw_version=None, subject_ids=None, limit_per_subject=None):
+           framework=None, fw_version=None, subject_ids=None, limit_per_subject=None, thinking=False):
     """跑完整智力测试, 返回结果文件路径。"""
     outdir = outdir or os.path.join(ROOT, "results")
     os.makedirs(outdir, exist_ok=True)
@@ -180,6 +180,7 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
               "url": url, "model": model, "conc": conc,
               "bank_id": bank["bank_id"], "bank_manifest": bank.get("manifest"),
               "framework": {"name": framework or "", "version": fw_version or ""},
+              "thinking": bool(thinking),
               "started_utc": datetime.now(timezone.utc).isoformat(),
               "subjects": [], "items": []}
     path = os.path.join(outdir, run_id + ".json")
@@ -206,7 +207,8 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
             prompt, mt = prompter(item)
             try:
                 resp, usage = chat(url, {"model": model, "messages": [{"role": "user", "content": prompt}],
-                                          "max_tokens": mt, "temperature": 0}, headers)
+                                          "max_tokens": mt, "temperature": 0,
+                                          "chat_template_kwargs": {"enable_thinking": bool(thinking)}}, headers)
                 ok = judge(resp, item)
             except Exception as e:
                 return {"sid": sub["id"], "idx": idx, "ok": False, "err": str(e)[:100]}

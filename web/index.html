@@ -180,6 +180,7 @@ tr.sumrow td{background:#101827;color:var(--warn);font-weight:600;border-top:1px
       <div style="flex:1 1 150px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">代理（拉取官方源失败时填，如 http://127.0.0.1:7890）</div>
         <input id="iqProxy" placeholder="留空=直连"></div>
       <div style="display:flex;gap:8px;align-items:center">
+        <label class="chk" title="推理模型: 开启后先思考再作答(数学/竞赛题提升明显, 更慢)"><input type="checkbox" id="iqThink">思考模式</label>
         <button id="iqBtnBank" onclick="bankUpdate()">拉取最新题集</button>
         <button id="iqBtnStart" style="background:var(--acc);color:#08121f;font-weight:600;border-color:var(--acc)" onclick="iqStart()">开始测试</button></div>
     </div>
@@ -203,7 +204,9 @@ tr.sumrow td{background:#101827;color:var(--warn);font-weight:600;border-top:1px
       <div style="flex:1 1 140px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">模型</div><input id="genModel" placeholder="Qwen3.8-27B"></div>
       <div style="flex:.7 1 90px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">并发</div><input id="genConc" type="number" value="4" min="1" max="8"></div>
       <div style="flex:1 1 120px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">标签</div><input id="genTag" placeholder="如 1.6.5"></div>
-      <button id="genBtnStart" style="background:var(--acc);color:#08121f;font-weight:600;border-color:var(--acc)" onclick="genStart()">开始生成</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <label class="chk" title="推理模型: 开启后先思考再生成, 质量可能更高但更慢"><input type="checkbox" id="genThink">思考模式</label>
+        <button id="genBtnStart" style="background:var(--acc);color:#08121f;font-weight:600;border-color:var(--acc)" onclick="genStart()">开始生成</button></div>
     </div>
     <div id="genInfo" class="muted" style="margin-top:8px;font-size:12px"></div>
     <div id="genTasks" style="margin-top:12px"></div>
@@ -735,7 +738,8 @@ async function iqStart(){
   if(!model){document.getElementById("iqBankInfo").innerHTML='<span style="color:var(--err)">请填写模型名</span>';return}
   const body={base:document.getElementById("iqBase").value,api_key:document.getElementById("iqKey").value,
     model,bank_id:document.getElementById("iqBank").value,conc:document.getElementById("iqConc").value,
-    tag:document.getElementById("iqTag").value,limit:document.getElementById("iqTier").value||null};
+    tag:document.getElementById("iqTag").value,limit:document.getElementById("iqTier").value||null,
+    thinking:document.getElementById("iqThink").checked};
   const r=await fetch("/api/iq-start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   const d=await r.json();
   if(!d.ok){document.getElementById("iqBankInfo").innerHTML=`<span style="color:var(--err)">${d.error}</span>`;return}
@@ -771,7 +775,7 @@ async function loadIqResults(focusNew){
 }
 function iqLabel(r){
   const fw=r.framework&&r.framework.name?` ${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:"";
-  return `${(r.model||"?").slice(0,26)}${fw} · ${((r.overall&&r.overall.acc)||"—")}% · ${r.bank_id.slice(3,13)} · ${r.started_utc.slice(5,16).replace("T"," ")}`;
+  return `${(r.model||"?").slice(0,26)}${fw} ${r.thinking?"🧠思考":"⚡直答"} · ${((r.overall&&r.overall.acc)||"—")}% · ${r.bank_id.slice(3,13)} · ${r.started_utc.slice(5,16).replace("T"," ")}`;
 }
 const IQ_COLORS=["#4da3ff","#37d4a0","#ffb454","#ff6b7a","#b48cff","#4dd8e6"];
 function renderIq(focusRunId){
@@ -862,7 +866,8 @@ async function genStart(){
   const tasks=selectedTasks();
   if(!tasks.length){document.getElementById("genInfo").innerHTML='<span style="color:var(--err)">请至少勾选一个题目</span>';return}
   const body={base:document.getElementById("genBase").value,api_key:document.getElementById("genKey").value,
-    model,conc:document.getElementById("genConc").value,tag:document.getElementById("genTag").value,tasks};
+    model,conc:document.getElementById("genConc").value,tag:document.getElementById("genTag").value,tasks,
+    thinking:document.getElementById("genThink").checked};
   const r=await fetch("/api/gen-start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   const d=await r.json();
   if(!d.ok){document.getElementById("genInfo").innerHTML=`<span style="color:var(--err)">${d.error}</span>`;return}
@@ -896,10 +901,11 @@ async function loadGenResults(focusNew){
   }catch(e){}
 }
 function genLabel(r){
+  const tk=r.thinking?"🧠思考":"⚡直答";
   const done=(r.items||[]).filter(x=>!x.error).length;
   const avg=((r.items||[]).reduce((s,x)=>s+(x.stars||0),0)/Math.max(1,(r.items||[]).filter(x=>x.stars).length));
   const fw=r.framework&&r.framework.name?` ${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:"";
-  return `${(r.model||"?").slice(0,22)}${fw} · 特征${done}题${(r.items||[]).some(x=>x.stars)?` · ★${avg.toFixed(1)}`:""} · ${r.started_utc.slice(5,16).replace("T"," ")}`;
+  return `${(r.model||"?").slice(0,22)}${fw} ${tk} · 特征${done}题${(r.items||[]).some(x=>x.stars)?` · ★${avg.toFixed(1)}`:""} · ${r.started_utc.slice(5,16).replace("T"," ")}`;
 }
 function renderGen(focusRunId){
   const el=document.getElementById("genResult");

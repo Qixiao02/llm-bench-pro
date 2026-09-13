@@ -130,8 +130,48 @@ def chat(url, payload, headers, timeout=600):
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **headers})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         d = json.loads(r.read())
-    msg = d["choices"][0]["message"]
-    return (msg.get("content") or "").strip(), d.get("usage") or {}
+    ch = d["choices"][0]
+    return (ch["message"].get("content") or "").strip(), d.get("usage") or {}, ch.get("finish_reason") or ""
+
+
+def _tail_overlap_dedup(prev, nxt, limit=240):
+    """续写内容与已有尾部重叠时去重。"""
+    for k in range(min(limit, len(prev)), 40, -1):
+        if nxt.startswith(prev[-k:]):
+            return nxt[k:]
+    return nxt
+
+
+def gen_complete(url, model, prompt, tier_max, headers, thinking=False):
+    """生成并自动续写直到闭合 </html> 或达到轮次上限。thinking=True 开启推理模式。"""
+    msgs = [{"role": "user", "content": prompt}]
+    total_in = total_out = 0
+    parts, cont = [], 0
+    while True:
+        resp, usage, finish = chat(url, {"model": model, "messages": msgs,
+                                         "max_tokens": tier_max, "temperature": 0.3,
+                                         "chat_template_kwargs": {"enable_thinking": bool(thinking)}}, headers)
+        total_in += usage.get("prompt_tokens", 0)
+        total_out += usage.get("completion_tokens", 0)
+        parts.append(resp)
+        if finish != "length":
+            break
+        cont += 1
+        if cont >= 3:
+            plog("    ⚠ 续写 %d 轮仍未闭合" % cont)
+            break
+        plog("    ↻ 截断, 自动续写第 %d 轮" % cont)
+        msgs = [{"role": "user", "content": prompt},
+                {"role": "assistant", "content": parts[-1][-3000:]},
+                {"role": "user", "content": "继续输出剩余的 HTML 直到 </html> 结束。从上次中断处直接继续，不要重复已输出的内容，不要解释。"}]
+        # 预拼接给下轮去重
+        parts.append(None)
+        parts = [p for p in parts if p is not None]
+    # 拼接(带重叠去重)
+    full = parts[0]
+    for p in parts[1:]:
+        full += _tail_overlap_dedup(full, p)
+    return full, total_in, total_out, cont
 
 
 def extract_html(resp):
@@ -164,7 +204,7 @@ def plog(msg):
 
 
 def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
-            framework=None, fw_version=None):
+            framework=None, fw_version=None, thinking=False):
     outdir = outdir or os.path.join(ROOT, "results")
     os.makedirs(outdir, exist_ok=True)
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
@@ -178,6 +218,7 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
     result = {"kind": "gen", "gen_version": GEN_VERSION, "run_id": run_id, "tag": tag,
               "url": url, "model": model, "conc": conc,
               "framework": {"name": framework or "", "version": fw_version or ""},
+              "thinking": bool(thinking),
               "started_utc": datetime.now(timezone.utc).isoformat(),
               "works_dir": "works/" + run_id, "items": []}
     path = os.path.join(outdir, run_id + ".json")
@@ -194,27 +235,28 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
     def worker(task):
         plog("▶ 开始: %s (%s)" % (task["name"], "/".join(task["tags"])))
         try:
-            tier_max = 9000 if "地狱" in task["tags"] else (6000 if "困难" in task["tags"] else 4000)
-            resp, usage = chat(url, {"model": model, "messages": [{"role": "user", "content": task["prompt"]}],
-                                      "max_tokens": tier_max, "temperature": 0.3}, headers)
+            tier_max = 16000 if "地狱" in task["tags"] else (12000 if "困难" in task["tags"] else 8000)
+            resp, in_tok, out_tok, cont_n = gen_complete(url, model, task["prompt"], tier_max, headers, thinking)
         except Exception as e:
             done_ct[0] += 1
             plog("  ✗ [%s] 失败: %s · 进度 %d/%d" % (task["name"], str(e)[:60], done_ct[0], len(tasks)))
             return {"id": task["id"], "name": task["name"], "error": str(e)[:120],
                     "pass": 0, "features": [], "stars": None}
         html = extract_html(resp)
-        feats = _BASE_FEATURES + task["features"]
+        complete = "</html>" in html.lower() and html.lower().count("<script") <= html.lower().count("</script>")
+        feats = _BASE_FEATURES + [r"</html>|完整闭合"] + task["features"]
         checks = check_features(html, feats)
+        checks.insert(2, complete)
         fname = task["id"] + ".html"
         with open(os.path.join(work_dir, fname), "w", encoding="utf-8") as f:
             f.write(html)
         item = {"id": task["id"], "name": task["name"], "tags": task["tags"],
                 "file": "works/%s/%s" % (run_id, fname), "chars": len(html),
                 "lines": html.count("\n") + 1,
-                "features": ["<!doctype/<html", "<script/<style"] + task["tags"],
+                "features": ["<!doctype/<html", "<script/<style", "完整闭合</html>"] + task["tags"],
+                "continuations": cont_n,
                 "checks": checks, "pass": sum(checks), "total": len(checks),
-                "stars": None, "in_tokens": usage.get("prompt_tokens", 0),
-                "out_tokens": usage.get("completion_tokens", 0)}
+                "stars": None, "in_tokens": in_tok, "out_tokens": out_tok}
         done_ct[0] += 1
         plog("  ✓ [%s] 特征 %d/%d · %d 行 · 进度 %d/%d" % (task["name"], item["pass"], item["total"], item["lines"], done_ct[0], len(tasks)))
         return item

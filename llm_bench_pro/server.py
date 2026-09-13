@@ -36,12 +36,12 @@ def gen_status_line(msg):
         _gen_state["log"] = _gen_state["log"][-400:]
 
 
-def run_gen_benchmark(url, model, api_key, task_ids, conc, tag, framework, fw_version):
+def run_gen_benchmark(url, model, api_key, task_ids, conc, tag, framework, fw_version, thinking=False):
     gen._GEN_PROGRESS = gen_status_line
     try:
         with _gen_lock:
             _gen_state["error"] = None
-        path = gen.run_gen(url, model, api_key, task_ids, conc, RESULTS, tag, framework, fw_version)
+        path = gen.run_gen(url, model, api_key, task_ids, conc, RESULTS, tag, framework, fw_version, thinking)
         with _gen_lock:
             _gen_state["run_id"] = os.path.basename(path).rsplit(".", 1)[0]
     except Exception as e:
@@ -64,14 +64,14 @@ def iq_status_line(msg):
         _iq_state["log"] = _iq_state["log"][-500:]
 
 
-def run_iq_benchmark(url, model, api_key, bank_id, conc, tag, framework, fw_version, subject_ids, limit):
+def run_iq_benchmark(url, model, api_key, bank_id, conc, tag, framework, fw_version, subject_ids, limit, thinking=False):
     iq._IQ_PROGRESS = iq_status_line
     try:
         with _iq_lock:
             _iq_state["error"] = None
         bank = bankman.load_bank(bank_id)
         path = iq.run_iq(url, model, api_key, bank, conc, RESULTS, tag,
-                         framework, fw_version, subject_ids, limit)
+                         framework, fw_version, subject_ids, limit, thinking)
         with _iq_lock:
             _iq_state["run_id"] = os.path.basename(path).rsplit(".", 1)[0]
     except Exception as e:
@@ -322,7 +322,7 @@ class Handler(SimpleHTTPRequestHandler):
                                     (body.get("tag") or "").strip(),
                                     (body.get("framework") or "").strip() or None,
                                     (body.get("fw_version") or "").strip() or None,
-                                    subject_ids, limit),
+                                    subject_ids, limit, bool(body.get("thinking"))),
                               daemon=True)
         th.start()
         return self._json({"ok": True, "url": url, "bank_id": bank_id, "conc": conc})
@@ -348,10 +348,12 @@ class Handler(SimpleHTTPRequestHandler):
                               args=(url, model, body.get("api_key", ""), task_ids, conc,
                                     (body.get("tag") or "").strip(),
                                     (body.get("framework") or "").strip() or None,
-                                    (body.get("fw_version") or "").strip() or None),
+                                    (body.get("fw_version") or "").strip() or None,
+                                    bool(body.get("thinking"))),
                               daemon=True)
         th.start()
-        return self._json({"ok": True, "url": url, "tasks": len(task_ids) if task_ids else len(gen.GEN_TASKS)})
+        return self._json({"ok": True, "url": url, "tasks": len(task_ids) if task_ids else len(gen.GEN_TASKS),
+                           "thinking": bool(body.get("thinking"))})
 
     def api_gen_rate(self, body):
         run_id, item_id = body.get("run_id") or "", body.get("item_id")
