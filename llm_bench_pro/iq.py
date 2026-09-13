@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+iq.py — 智力测试引擎: 官方题集跑题 + 确定性判分 + Wilson 置信区间
+对齐发布方口径: GSM8K(0-shot, #### 精确匹配) / MMLU(选项字母匹配) / IFEval(规则校验)
+"""
+import json
+import math
+import os
+import re
+import threading
+import time
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+
+IQ_VERSION = "1.0.0"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
+
+
+def chat(url, payload, headers, timeout=300):
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **headers})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        d = json.loads(r.read())
+    msg = d["choices"][0]["message"]
+    return (msg.get("content") or "").strip(), d.get("usage") or {}
+
+
+# ---------------------------------------------------------------- 提示模板
+
+def prompt_mcq(item):
+    lines = [item["q"], ""]
+    for letter, c in zip("ABCD", item["choices"]):
+        lines.append(f"{letter}. {c}")
+    lines.append("")
+    lines.append("只输出正确选项的字母（A、B、C 或 D），不要输出任何解释。")
+    return "\n".join(lines), 8
+
+
+def prompt_math(item):
+    return (item["q"] + "\n\n请一步步推理，最后单独一行以 \"#### <最终数字答案>\" 的格式给出答案。"), 640
+
+
+def prompt_math500(item):
+    tail = chr(10) + chr(10) + "请推理后给出最终答案，并把答案单独放在最后一行，格式：" + chr(92)*2 + "boxed{答案}"
+    return item["q"] + tail, 900
+
+
+def _norm_ans(s):
+    s = str(s).strip().replace("$", "").replace(",", "").replace(" ", "")
+    s = s.replace(chr(92)*2 + "dfrac", "").replace(chr(92)*2 + "frac", "")
+    s = s.replace(chr(92)*2 + "text", "").replace(chr(92)*2 + "left", "").replace(chr(92)*2 + "right", "")
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s
+
+
+def judge_math500(resp, item):
+    bs = chr(92)
+    m = re.search(bs*2 + "boxed" + bs*2 + "{([^{}]+)" + bs*2 + "}", resp)
+    cand = m.group(1) if m else None
+    if cand is None:
+        last = [l for l in resp.strip().splitlines() if l.strip()]
+        cand = last[-1] if last else ""
+    a, b = _norm_ans(cand), _norm_ans(item["answer"])
+    if a == b:
+        return True
+    try:
+        return abs(float(a) - float(b)) < 1e-9
+    except (ValueError, ZeroDivisionError):
+        return False
+
+def prompt_instruct(item):
+    return item["q"] + "\n\n严格按指令要求输出，不要额外解释或客套。", 320
+
+
+PROMPTS = {"mcq": prompt_mcq, "math": prompt_math, "math500": prompt_math500, "instruct": prompt_instruct}
+
+
+# ---------------------------------------------------------------- 判分
+
+def judge_mcq(resp, item):
+    m = re.search(r"\b([A-D])\b", resp[:40])
+    return bool(m) and m.group(1) == item["answer"]
+
+
+def _nums(s):
+    return re.findall(r"-?\d[\d,]*\.?\d*", s)
+
+
+def judge_math(resp, item):
+    gold = str(item["answer"]).replace(",", "").rstrip(".")
+    m = re.search(r"####\s*(-?[\d,]+\.?\d*)", resp)
+    cand = m.group(1).replace(",", "").rstrip(".") if m else None
+    if cand is None and _nums(resp):
+        cand = _nums(resp)[-1].replace(",", "").rstrip(".")
+    if cand is None:
+        return False
+    try:
+        return abs(float(cand) - float(gold)) < 1e-6
+    except ValueError:
+        return cand == gold
+
+
+def judge_instruct(resp, item):
+    text = resp.strip()
+    for ck in item.get("checks", []):
+        t, v = ck.get("t"), ck.get("v")
+        try:
+            if t == "max_chars" and len(text) > v:
+                return False
+            if t == "min_chars" and len(text) < v:
+                return False
+            if t == "max_words" and len(text.split()) > v:
+                return False
+            if t == "contains" and v not in text:
+                return False
+            if t == "not_contains" and v in text:
+                return False
+            if t == "starts_with" and not text.startswith(v):
+                return False
+            if t == "ends_with" and not text.endswith(v):
+                return False
+            if t == "line_count" and text.count("\n") + 1 != v:
+                return False
+            if t == "regex" and not re.search(v, text):
+                return False
+            if t == "json_keys":
+                raw = re.sub(r"^```[a-z]*\s*|\s*```$", "", text.strip()).strip()
+                obj = json.loads(raw)
+                if not all(k in obj for k in v):
+                    return False
+        except Exception:
+            return False
+    return True
+
+
+JUDGES = {"mcq": judge_mcq, "math": judge_math, "math500": judge_math500, "instruct": judge_instruct}
+
+
+# ---------------------------------------------------------------- 统计
+
+def wilson(correct, n, z=1.96):
+    """Wilson 95% 置信区间。"""
+    if n == 0:
+        return (0.0, 0.0)
+    p = correct / n
+    d = 1 + z * z / n
+    c = p + z * z / (2 * n)
+    m = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return (max(0.0, (c - m) / d), min(1.0, (c + m) / d))
+
+
+_IQ_PROGRESS = None
+
+
+def plog(msg):
+    print(msg, flush=True)
+    if _IQ_PROGRESS:
+        try:
+            _IQ_PROGRESS(str(msg))
+        except Exception:
+            pass
+
+
+def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
+           framework=None, fw_version=None, subject_ids=None, limit_per_subject=None):
+    """跑完整智力测试, 返回结果文件路径。"""
+    outdir = outdir or os.path.join(ROOT, "results")
+    os.makedirs(outdir, exist_ok=True)
+    headers = {"Authorization": "Bearer " + api_key} if api_key else {}
+    subjects = bank["subjects"]
+    if subject_ids:
+        subjects = [s for s in subjects if s["id"] in subject_ids]
+
+    run_id = "iq_%s_%s" % (datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"),
+                           re.sub(r"[^A-Za-z0-9.-]", "_", model))
+    result = {"kind": "iq", "iq_version": IQ_VERSION, "run_id": run_id, "tag": tag,
+              "url": url, "model": model, "conc": conc,
+              "bank_id": bank["bank_id"], "bank_manifest": bank.get("manifest"),
+              "framework": {"name": framework or "", "version": fw_version or ""},
+              "started_utc": datetime.now(timezone.utc).isoformat(),
+              "subjects": [], "items": []}
+    path = os.path.join(outdir, run_id + ".json")
+
+    def save():
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=1)
+
+    total_all = sum(min(len(s["items"]), limit_per_subject or 10**9) for s in subjects)
+    plog("== iq v%s | %s | bank=%s | %d 题 | conc=%d ==" % (IQ_VERSION, model, bank["bank_id"], total_all, conc))
+    done_count = [0]
+    lock = threading.Lock()
+
+    for sub in subjects:
+        items = sub["items"][:limit_per_subject] if limit_per_subject else sub["items"]
+        stype = sub["type"]
+        judge = JUDGES[stype]
+        prompter = PROMPTS[stype]
+        correct = 0
+        in_tok = out_tok = 0
+
+        def worker(idx_item):
+            idx, item = idx_item
+            prompt, mt = prompter(item)
+            try:
+                resp, usage = chat(url, {"model": model, "messages": [{"role": "user", "content": prompt}],
+                                          "max_tokens": mt, "temperature": 0}, headers)
+                ok = judge(resp, item)
+            except Exception as e:
+                return {"sid": sub["id"], "idx": idx, "ok": False, "err": str(e)[:100]}
+            with lock:
+                done_count[0] += 1
+                if done_count[0] % 20 == 0 or done_count[0] == total_all:
+                    plog("  进度 %d/%d" % (done_count[0], total_all))
+            return {"sid": sub["id"], "idx": idx, "ok": ok,
+                    "in": usage.get("prompt_tokens", 0), "out": usage.get("completion_tokens", 0)}
+
+        with ThreadPoolExecutor(max_workers=conc) as ex:
+            results = list(ex.map(worker, enumerate(items)))
+        result["items"].extend(results)
+        good = [r for r in results if r["ok"]]
+        errors = [r for r in results if r.get("err")]
+        correct = len(good)
+        in_tok = sum(r.get("in", 0) for r in results)
+        out_tok = sum(r.get("out", 0) for r in results)
+        n = len(results)
+        lo, hi = wilson(correct, n)
+        result["subjects"].append({"id": sub["id"], "name": sub["name"], "type": stype,
+                                   "n": n, "correct": correct, "acc": round(correct / n * 100, 1) if n else 0,
+                                   "ci_lo": round(lo * 100, 1), "ci_hi": round(hi * 100, 1),
+                                   "in_tokens": in_tok, "out_tokens": out_tok})
+        plog("  [%s] %d/%d = %.1f%% (CI %.1f-%.1f)%s" %
+             (sub["id"], correct, n, result["subjects"][-1]["acc"], lo * 100, hi * 100,
+              ("  错误%d" % len(errors)) if errors else ""))
+        save()
+
+    tot_c = sum(s["correct"] for s in result["subjects"])
+    tot_n = sum(s["n"] for s in result["subjects"])
+    lo, hi = wilson(tot_c, tot_n)
+    result["overall"] = {"correct": tot_c, "n": tot_n,
+                         "acc": round(tot_c / tot_n * 100, 1) if tot_n else 0,
+                         "ci_lo": round(lo * 100, 1), "ci_hi": round(hi * 100, 1),
+                         "in_tokens": sum(s["in_tokens"] for s in result["subjects"]),
+                         "out_tokens": sum(s["out_tokens"] for s in result["subjects"])}
+    result["finished_utc"] = datetime.now(timezone.utc).isoformat()
+    save()
+    plog("总体: %d/%d = %.1f%% (CI %.1f-%.1f) => %s" % (tot_c, tot_n, result["overall"]["acc"],
+                                                        lo * 100, hi * 100, path))
+    return path

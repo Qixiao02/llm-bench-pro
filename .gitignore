@@ -1,0 +1,13 @@
+# 运行产物(不入库)
+results/
+works/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 本地环境
+.env
+*.log
+
+# 测试期临时
+.playwright-mcp/

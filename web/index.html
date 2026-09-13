@@ -1,0 +1,1039 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Bench Pro — 推理性能基准台</title>
+<link rel="icon" href="data:,">
+<style>
+:root{
+  --bg:#0b0f17;--panel:#131a26;--panel2:#1a2332;--line:#243147;
+  --txt:#e6edf7;--muted:#8b9bb4;--acc:#4da3ff;--acc2:#37d4a0;--warn:#ffb454;--err:#ff6b7a;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--txt);font:14px/1.55 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;padding:0;margin:0;display:flex;min-height:100vh}
+#side{width:198px;flex:0 0 198px;background:var(--panel);border-right:1px solid var(--line);padding:18px 12px;position:sticky;top:0;height:100vh;box-sizing:border-box}
+#side .logo{font-weight:700;font-size:15px;padding:2px 12px 18px;letter-spacing:.5px}
+#side .logo span{color:var(--acc)}
+.nav{display:block;width:100%;text-align:left;background:none;border:none;color:var(--muted);padding:10px 12px;border-radius:8px;font-size:13.5px;margin-bottom:4px}
+.nav:hover{color:var(--txt)}
+.nav.active{background:var(--panel2);color:var(--txt)}
+.side-foot{position:absolute;bottom:14px;left:24px;font-size:11px}
+main{flex:1;min-width:0;padding:22px;box-sizing:border-box}
+.view{display:none}.view.on{display:block}
+.cmpcards{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:12px;margin:14px 0}
+.cmpcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.cmpcard .nm{color:var(--muted);font-size:11.5px;margin-bottom:6px}
+.cmpcard .vs{display:flex;align-items:baseline;gap:10px;font-size:17px;font-weight:700;font-variant-numeric:tabular-nums}
+.cmpcard .vs .b2{color:var(--acc2)}
+.dl{font-size:12px;font-weight:600;padding:2px 8px;border-radius:6px;margin-left:auto}
+.dl.up{background:#0e2b21;color:var(--acc2)} .dl.down{background:#33161b;color:var(--err)} .dl.na{background:var(--panel2);color:var(--muted)}
+h1{font-size:20px;font-weight:600;letter-spacing:.5px}
+h1 .v{color:var(--muted);font-weight:400;font-size:12px;margin-left:8px}
+header{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-bottom:18px}
+select,button,input{background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:7px 12px;font-size:13px;outline:none;cursor:pointer}
+input{cursor:text;width:100%}
+select:focus,input:focus{border-color:var(--acc)}
+button:hover{border-color:var(--acc)}
+button:disabled{opacity:.45;cursor:not-allowed}
+.muted{color:var(--muted);font-size:12px}
+.grid{display:grid;gap:14px}
+.kpis{grid-template-columns:repeat(auto-fit,minmax(170px,1fr));margin-bottom:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.kpi .lab{color:var(--muted);font-size:12px;margin-bottom:4px}
+.kpi .val{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums}
+.kpi .sub{color:var(--muted);font-size:11px;margin-top:2px}
+.kpi.a .val{color:var(--acc)} .kpi.b .val{color:var(--acc2)} .kpi.w .val{color:var(--warn)}
+.panels{grid-template-columns:1fr 1fr}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;position:relative}
+#tip{display:none;position:fixed;z-index:99;background:#0d1420ee;border:1px solid var(--acc);border-radius:8px;padding:7px 10px;font-size:11.5px;line-height:1.6;pointer-events:none;min-width:130px;max-width:280px;box-shadow:0 4px 14px #0009}
+.panel h3{font-size:14px;font-weight:600;margin-bottom:2px;cursor:pointer;user-select:none}
+.panel h3::before{content:"▾ ";color:var(--muted);font-size:11px}
+.panel.closed h3::before{content:"▸ "}
+.panel.closed .pbody{display:none}
+.legend span{cursor:pointer;padding:2px 4px;border-radius:4px}
+.legend span:hover{background:var(--panel2)}
+.legend span.off{opacity:.35;text-decoration:line-through}
+.panel .desc{color:var(--muted);font-size:11px;margin-bottom:10px}
+canvas{width:100%;height:auto;display:block;cursor:crosshair}
+tr.datarow{cursor:pointer}
+tr.detail td{background:#0d1420;color:var(--muted);font-size:11.5px}
+table{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+.tblwrap{max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:8px}
+.tblwrap table{margin:0}
+.tblwrap thead th{position:sticky;top:0;background:var(--panel);z-index:1}
+tbody tr:hover td{background:#16202f}
+th{color:var(--muted);text-align:right;font-weight:500;padding:6px 8px;border-bottom:1px solid var(--line)}
+td{text-align:right;padding:6px 8px;border-bottom:1px solid #1b2536}
+th:first-child,td:first-child{text-align:left}
+.up{color:var(--acc2)} .down{color:var(--err)} .same{color:var(--muted)}
+tr.sumrow td{background:#101827;color:var(--warn);font-weight:600;border-top:1px solid var(--line)}
+#meta{margin:10px 0 4px;display:flex;gap:14px;flex-wrap:wrap}
+.badge{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:3px 9px;font-size:11px;color:var(--muted)}
+#empty{color:var(--muted);text-align:center;padding:60px 0}
+.legend{display:flex;gap:12px;font-size:11px;color:var(--muted);margin-top:6px;flex-wrap:wrap;overflow:visible}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.chk{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none}
+.chk input{width:auto;cursor:pointer}
+.chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:14px;padding:3px 10px;font-size:11.5px;cursor:pointer;user-select:none;background:var(--panel2)}
+.chip input{width:auto;cursor:pointer;accent-color:var(--acc)}
+@media(max-width:1000px){.panels{grid-template-columns:1fr}#launcher .frm{grid-template-columns:1fr 1fr!important}}
+@media(max-width:760px){body{flex-direction:column}#side{width:100%;flex:none;height:auto;position:static;display:flex;align-items:center;gap:6px}.side-foot{display:none}#side .logo{padding:6px 10px}.nav{width:auto;padding:8px 10px}}
+</style>
+</head>
+<body>
+<aside id="side">
+  <div class="logo">LLM<span>Bench Pro</span></div>
+  <nav>
+    <button class="nav active" data-v="dash" onclick="showView('dash')">📊 性能测试</button>
+    <button class="nav" data-v="cmp" onclick="showView('cmp')">⚖️ 数据对比</button>
+    <button class="nav" data-v="iq" onclick="showView('iq')">🧠 智力测试</button>
+    <button class="nav" data-v="gen" onclick="showView('gen')">🎨 生成测试</button>
+  </nav>
+  <div class="side-foot muted">v1.9</div>
+</aside>
+<main>
+<section class="view on" id="viewDash">
+<header>
+  <h1>LLM Bench Pro<span class="v">推理性能基准台 v1.9</span></h1>
+  <select id="runA" onchange="render()"></select>
+  <select id="runB" onchange="render()"><option value="">— 对比（可选）—</option></select>
+  <button onclick="refresh()">刷新结果</button>
+  <span class="muted" id="status"></span>
+</header>
+<div class="card" id="launcher" style="margin-bottom:16px">
+  <h3 style="font-size:14px;font-weight:600;margin-bottom:10px">新建基准测试</h3>
+  <div class="frm" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">
+    <div style="flex:2 1 280px;min-width:230px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">API 端点（base 或完整 /v1/chat/completions 均可）</div>
+      <input id="fBase" placeholder="http://192.168.0.51:8011" value="http://192.168.0.51:8011"></div>
+    <div style="flex:1 1 150px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">API Key（引擎直连可留空）</div>
+      <input id="fKey" type="password" placeholder="sk-... / sxai_..."></div>
+    <div style="flex:1 1 150px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">模型（检测后可选，可手填）</div>
+      <input id="fModel" list="modelList" placeholder="Qwen3.8-27B"><datalist id="modelList"></datalist></div>
+    <div style="flex:1 1 150px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">测试模式</div>
+      <select id="fSuite"><option value="quick">快速 · ~4分钟 · 冒烟检查</option><option value="standard" selected>标准 · ~12分钟 · 基线推荐</option><option value="full">深度 · ~35分钟 · 含128K/64并发</option></select></div>
+    <div style="flex:1 1 170px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">并发阶梯（逗号分隔，留空=默认）</div>
+      <input id="fConc" placeholder="如 1,2,4,8,16"></div>
+    <div style="flex:1 1 170px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">长度阶梯（K，逗号分隔，留空=默认）</div>
+      <input id="fLens" placeholder="如 1,2,4,8,16,32"></div>
+    <div style="flex:1 1 120px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">阶梯×并发路数</div>
+      <input id="fMConc" type="number" min="1" max="32" placeholder="4"></div>
+    <div style="flex:1 1 140px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">框架名称（区分后端）</div>
+      <input id="fFw" placeholder="1Cat-vLLM / vLLM / SGLang"></div>
+    <div style="flex:1 1 140px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">框架版本</div>
+      <input id="fFwVer" placeholder="如 1.6.5-sm70main"></div>
+    <div style="flex:1 1 130px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">标签（可选）</div>
+      <input id="fTag" placeholder="如 1.6.5-W4A16"></div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <label class="chk" title="抓取 /metrics: KV占用、前缀缓存命中、运行/排队"><input type="checkbox" id="fMetrics" checked>框架指标</label>
+      <button id="btnProbe" onclick="probe()">检测模型</button>
+      <button id="btnStart" style="background:var(--acc);color:#08121f;font-weight:600;border-color:var(--acc)" onclick="start()">开始测试</button></div>
+  </div>
+  <div id="probeOut" class="muted" style="margin-top:8px;font-size:12px"></div>
+  <div id="runOut" style="display:none;margin-top:10px;background:#0d1420;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:11.5px/1.7 Consolas,monospace;max-height:170px;overflow:auto;white-space:pre-wrap"></div>
+</div>
+<div id="meta"></div>
+<div id="body">
+  <div id="empty">正在加载结果…（左侧表单可直接发起测试）</div>
+  <div class="grid kpis" id="kpis" style="display:none"></div>
+  <div class="grid panels" id="panels" style="display:none">
+    <div class="panel" style="grid-column:1/-1"><h3>提示词阶梯 × 并发矩阵</h3><div class="desc">各输入长度下并发流的 TTFT / ITL / 聚合吞吐 / 成功率；点击行展开单流明细；底部为范围/平均与单流分位数</div><div id="pcTbl"></div></div>
+    <div class="panel"><h3>Prefill 吞吐阶梯（单流）</h3><div class="desc">TTFT 与 prefill 速度随上下文长度变化 · 悬停数据点看数值</div><canvas id="cPrefill" height="240"></canvas><div class="legend" id="lPre"></div></div>
+    <div class="panel"><h3>并发吞吐阶梯</h3><div class="desc">聚合吞吐 / 单流吞吐 / TTFT p95 随并发变化</div><canvas id="cConc" height="240"></canvas><div class="legend" id="lConc"></div></div>
+    <div class="panel" style="grid-column:1/-1"><h3>单流解码质量</h3><div class="desc">中/英内容：解码速度、TPOT、ITL 分位数与抖动；burst 为 tokens/chunk（投机采样或多 token 聚合交付的信号）</div><div id="decodeTbl"></div></div>
+    <div class="panel" style="grid-column:1/-1;display:none" id="metricsPanel"><h3>框架指标时间线</h3><div class="desc">测试期间 vLLM KV 显存占用 / 前缀缓存命中率</div><canvas id="cMetrics" height="200"></canvas></div>
+  </div>
+</div>
+</section>
+<section class="view" id="viewCmp">
+  <header><h1>数据对比<span class="v">A / B 双运行全维度差异</span></h1></header>
+  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0 4px">
+    <span class="muted">运行 A</span><select id="cmpA" onchange="renderCmp()"></select>
+    <span class="muted" style="color:var(--acc)">vs</span>
+    <span class="muted">运行 B</span><select id="cmpB" onchange="renderCmp()"></select>
+  </div>
+  <div id="cmpBody"></div>
+</section>
+<section class="view" id="viewIq">
+  <header><h1>智力测试<span class="v">官方题集 · 发布级口径 · Wilson 置信区间</span></h1></header>
+  <div class="card" style="margin:14px 0 16px">
+    <h3 style="font-size:14px;font-weight:600;margin-bottom:10px">发起智力测试</h3>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">
+      <div style="flex:2 1 260px;min-width:220px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">API 端点</div>
+        <input id="iqBase" value="http://192.168.0.51:8011"></div>
+      <div style="flex:1 1 140px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">API Key</div>
+        <input id="iqKey" type="password"></div>
+      <div style="flex:1 1 150px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">模型</div>
+        <input id="iqModel" placeholder="Qwen3.8-27B"></div>
+      <div style="flex:1.4 1 200px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">题集版本（可切换历史版本）</div>
+        <select id="iqBank"></select></div>
+      <div style="flex:.8 1 100px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">并发</div>
+        <input id="iqConc" type="number" value="8" min="1" max="32"></div>
+      <div style="flex:1 1 150px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">测试档位</div>
+        <select id="iqTier" onchange="tierChange()">
+          <option value="5">快速 · 每科5题 · ~8分钟</option>
+          <option value="15" selected>标准 · 每科15题 · ~25分钟</option>
+          <option value="">全量 · 发布级 · ~60分钟+</option>
+        </select></div>
+      <div style="flex:1 1 130px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">标签（可选）</div>
+        <input id="iqTag" placeholder="如 1.6.5-W4A16"></div>
+      <div style="flex:1 1 150px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">代理（拉取官方源失败时填，如 http://127.0.0.1:7890）</div>
+        <input id="iqProxy" placeholder="留空=直连"></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button id="iqBtnBank" onclick="bankUpdate()">拉取最新题集</button>
+        <button id="iqBtnStart" style="background:var(--acc);color:#08121f;font-weight:600;border-color:var(--acc)" onclick="iqStart()">开始测试</button></div>
+    </div>
+    <div id="iqBankInfo" class="muted" style="margin-top:8px;font-size:12px"></div>
+    <div id="iqOut" style="display:none;margin-top:10px;background:#0d1420;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:11.5px/1.7 Consolas,monospace;max-height:170px;overflow:auto;white-space:pre-wrap"></div>
+  </div>
+  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:0 0 12px">
+    <span class="muted">对比运行</span>
+    <select id="iqCmpSel" multiple size="4" style="min-width:260px" onchange="renderIq()"></select>
+    <span class="muted" style="font-size:11px">按住 Ctrl 点选多个运行<br>同屏多对象对比</span>
+  </div>
+  <div id="iqResult"></div>
+</section>
+<section class="view" id="viewGen">
+  <header><h1>生成测试<span class="v">病毒题集实跑 · 浏览器真实渲染 · 人工打星</span></h1></header>
+  <div class="card" style="margin:14px 0 16px">
+    <h3 style="font-size:14px;font-weight:600;margin-bottom:10px">发起生成测试（23 题三档：普通动画 / 困难游戏 / 地狱引擎级——Flappy·俄罗斯方块·3D迷宫·流体·生态·Win95）</h3>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">
+      <div style="flex:2 1 240px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">API 端点</div><input id="genBase" value="http://192.168.0.51:8011"></div>
+      <div style="flex:1 1 130px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">API Key</div><input id="genKey" type="password"></div>
+      <div style="flex:1 1 140px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">模型</div><input id="genModel" placeholder="Qwen3.8-27B"></div>
+      <div style="flex:.7 1 90px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">并发</div><input id="genConc" type="number" value="4" min="1" max="8"></div>
+      <div style="flex:1 1 120px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">标签</div><input id="genTag" placeholder="如 1.6.5"></div>
+      <button id="genBtnStart" style="background:var(--acc);color:#08121f;font-weight:600;border-color:var(--acc)" onclick="genStart()">开始生成</button>
+    </div>
+    <div id="genInfo" class="muted" style="margin-top:8px;font-size:12px"></div>
+    <div id="genTasks" style="margin-top:12px"></div>
+    <div id="genTaskCount" class="muted" style="margin-top:6px;font-size:11.5px"></div>
+    <div id="genOut" style="display:none;margin-top:10px;background:#0d1420;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:11.5px/1.7 Consolas,monospace;max-height:150px;overflow:auto;white-space:pre-wrap"></div>
+  </div>
+  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:0 0 12px">
+    <span class="muted">对比运行</span>
+    <select id="genCmpSel" onchange="renderGen()"></select>
+    <span class="muted" style="font-size:11px">选中后每个作品可 A/B 并排预览</span>
+  </div>
+  <div id="genResult"></div>
+</section>
+</main>
+<div id="tip"></div>
+<script>
+const C={acc:"#4da3ff",acc2:"#37d4a0",warn:"#ffb454",err:"#ff6b7a",muted:"#8b9bb4",grid:"#22304a"};
+window.onerror=function(msg,src,line){document.getElementById("status").innerHTML='<span style="color:var(--err)">脚本错误: '+msg+' (行'+line+') — 请强制刷新 Ctrl+F5</span>';};
+let RUNS={},pollTimer=null;
+const VIS={pre:{a:1,b:1},conc:{a:1,b:1,t:1}};
+function bindLegend(elId,prefix){
+  document.querySelectorAll("#"+elId+" span[data-t]").forEach(s=>{
+    s.onclick=()=>{const [g,k]=s.dataset.t.split(".");VIS[g][k]^=1;renderAll();};
+  });
+}
+
+/* ---------------- 发起测试 ---------------- */
+const LS="llm-bench-pro-form";
+function saveForm(){const k={};["fBase","fModel","fTag","fSuite","fConc","fMConc","fLens","fFw","fFwVer"].forEach(id=>k[id]=document.getElementById(id).value);localStorage.setItem(LS,JSON.stringify(k))}
+function restoreForm(){try{const k=JSON.parse(localStorage.getItem(LS)||"{}");Object.entries(k).forEach(([id,v])=>{const el=document.getElementById(id);if(el&&v)el.value=v})}catch(e){}}
+["fBase","fModel","fTag","fConc","fMConc","fLens","fFw","fFwVer"].forEach(id=>document.addEventListener("input",e=>{if(e.target.id===id)saveForm()}));
+document.getElementById("fSuite").addEventListener("change",()=>{
+  const s=document.getElementById("fSuite").value;
+  document.getElementById("fConc").placeholder={quick:"默认 1,4,8",standard:"默认 1,2,4,8,16",full:"默认 1,2,4,8,16,32,48,64"}[s];
+  document.getElementById("fLens").placeholder={quick:"默认 1K,4K,8K",standard:"默认 1K–8K 共 8 档",full:"默认 1K–16K 共 8 档"}[s];
+  saveForm();
+});
+restoreForm();
+
+async function probe(){
+  const btn=document.getElementById("btnProbe"),out=document.getElementById("probeOut");
+  btn.disabled=true;out.textContent="探测中…";
+  try{
+    const r=await fetch("/api/probe",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({base:document.getElementById("fBase").value,api_key:document.getElementById("fKey").value})});
+    const d=await r.json();
+    if(!d.ok){out.innerHTML=`<span style="color:var(--err)">探测失败：${d.error}</span>`;return}
+    document.getElementById("modelList").innerHTML=d.models.map(m=>
+      `<option value="${m.id}">${m.max_model_len?"ctx "+Math.round(m.max_model_len/1024)+"K":""}</option>`).join("");
+    const mi=document.getElementById("fModel");
+    if(d.models.length&&!mi.value)mi.value=d.models[0].id;
+    if(!document.getElementById("fFw").value&&d.framework)document.getElementById("fFw").value=d.framework;
+    if(!document.getElementById("fFwVer").value&&d.fw_version)document.getElementById("fFwVer").value=d.fw_version;
+    out.innerHTML=`✓ 连通 ${d.latency_ms}ms · ${d.count} 个模型：`+
+      d.models.map(m=>`${m.id}${m.max_model_len?" ("+Math.round(m.max_model_len/1024)+"K)":""}`).join("、");
+    saveForm();
+  }catch(e){out.innerHTML=`<span style="color:var(--err)">请求失败：${e.message}</span>`}
+  finally{btn.disabled=false}
+}
+async function start(){
+  const model=document.getElementById("fModel").value.trim();
+  if(!model){document.getElementById("probeOut").innerHTML='<span style="color:var(--err)">请先填写或检测模型</span>';return}
+  const body={base:document.getElementById("fBase").value,api_key:document.getElementById("fKey").value,
+    model,suite:document.getElementById("fSuite").value,tag:document.getElementById("fTag").value,
+    metrics:document.getElementById("fMetrics").checked,
+    conc_ladder:document.getElementById("fConc").value,matrix_conc:document.getElementById("fMConc").value,
+    lens:document.getElementById("fLens").value,
+    framework:document.getElementById("fFw").value,fw_version:document.getElementById("fFwVer").value};
+  const r=await fetch("/api/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  const d=await r.json();
+  if(!d.ok){document.getElementById("probeOut").innerHTML=`<span style="color:var(--err)">${d.error}</span>`;return}
+  document.getElementById("btnStart").disabled=true;
+  const ro=document.getElementById("runOut");ro.style.display="block";ro.textContent="已启动…\n"+d.url+"\n";
+  pollTimer=setInterval(async()=>{
+    try{
+      const s=await(await fetch("/api/status")).json();
+      const lines=(s.log||[]).map(x=>x.msg);
+      ro.textContent=lines.slice(-14).join("\n")+(s.running?"\n…":"");
+      ro.scrollTop=ro.scrollHeight;
+      if(!s.running){
+        clearInterval(pollTimer);pollTimer=null;
+        document.getElementById("btnStart").disabled=false;
+        if(s.error)ro.textContent+="\n✗ "+s.error;
+        else ro.textContent+="\n✓ 完成，结果已入库";
+        refresh(true);
+      }
+    }catch(e){}
+  },2000);
+}
+
+/* ---------------- 结果加载与渲染 ---------------- */
+async function refresh(focusNew){
+  status("加载中…");
+  try{
+    const r=await fetch("/api/results");
+    const list=await r.json();
+    const prev=new Set(Object.keys(RUNS));
+    RUNS={};
+    for(const item of list){RUNS[item.run_id]=item}
+    const names=Object.keys(RUNS).sort().reverse();
+    const fresh=focusNew?names.find(n=>!prev.has(n)):null;
+    for(const sel of ["runA","runB"]){
+      const keep=sel==="runA"?(fresh||document.getElementById(sel).value||names[0]||""):document.getElementById(sel).value;
+      document.getElementById(sel).innerHTML=(sel==="runB"?'<option value="">— 对比（可选）—</option>':"")
+        +names.map(n=>`<option value="${n}" ${n===keep?"selected":""}>${label(RUNS[n])}</option>`).join("");
+    }
+    for(const sel of ["cmpA","cmpB"]){
+      const keep=document.getElementById(sel).value;
+      document.getElementById(sel).innerHTML=(sel==="cmpB"?'<option value="">— 选择运行 B —</option>':"")
+        +names.map(n=>`<option value="${n}" ${n===keep?"selected":""}>${label(RUNS[n])}</option>`).join("");
+    }
+    if(!document.getElementById("cmpA").value&&names[0])document.getElementById("cmpA").value=names[0];
+    if(!document.getElementById("cmpB").value&&names[1])document.getElementById("cmpB").value=names[1];
+    status(names.length+" 个结果");
+    render();
+    if(document.getElementById("viewCmp").classList.contains("on"))renderCmp();
+  }catch(e){status("无法连接 /api/results — 用 serve.py 启动："+e.message)}
+}
+function label(r){
+  const m={quick:"快速",standard:"标准",full:"深度",custom:"自定义"};
+  const fw=r.framework&&r.framework.name?`${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:null;
+  return [r.model||"?",fw,m[r.suite]||r.suite,r.tag||"",r.started_utc.slice(5,16).replace("T"," ")].filter(Boolean).join(" · ");
+}
+function status(s){document.getElementById("status").textContent=s}
+function phase(run,id){return (run.phases||[]).find(p=>p.id===id)}
+function fmt(v,d=1){return v==null?"—":Number(v).toFixed(d)}
+
+function render(){
+  const a=RUNS[document.getElementById("runA").value];
+  const b=RUNS[document.getElementById("runB").value];
+  const has=!!a;
+  document.getElementById("empty").style.display=has?"none":"block";
+  document.getElementById("kpis").style.display=has?"grid":"none";
+  document.getElementById("panels").style.display=has?"grid":"none";
+  if(!has)return;
+  const ov=a.overrides||{};
+  document.getElementById("meta").innerHTML=[
+    `模型 <b>${a.model}</b>`,`模式 <b>${({quick:"快速",standard:"标准",full:"深度",custom:"自定义"})[a.suite]||a.suite}</b>`,`端点 ${a.url.replace(/https?:\/\//,"").slice(0,46)}`,
+    ov.conc_ladder?`并发 ${ov.conc_ladder.join(",")}`:"",ov.matrix_conc?`阶梯×${ov.matrix_conc}路`:"",
+    ov.lens?`长度 ${ov.lens.map(k=>k+"K").join(",")}`:"",
+    (a.framework&&a.framework.name)?`框架 <b>${a.framework.name}${a.framework.version?" "+a.framework.version:""}</b>`:"",
+    a.tag?`标签 ${a.tag}`:"",`开始 ${a.started_utc.slice(0,19).replace("T"," ")} UTC`
+  ].filter(Boolean).map(s=>`<span class="badge">${s}</span>`).join("");
+  renderKPIs(a);
+  pcTable(a,b);
+  drawPrefill(a,b,"cPrefill","lPre");
+  concChart(a,b,"cConc","lConc");
+  decodeTable(a,b);
+  metricsChart(a);
+}
+function prefillSeries(r){
+  const p=phase(r,"prefill");if(!p)return null;
+  return {name:"x",color:C.acc,pts:p.points.map(x=>({tok:x.in_tokens,tps:x.prefill_tps_med,ttft:x.ttft_med_s,label:x.label}))};
+}
+function renderKPIs(a){
+  const dp=phase(a,"decode"),pp=phase(a,"prefill"),cp=phase(a,"concurrency"),pcp=phase(a,"prefill_conc");
+  const zh=dp&&dp.cases.find(c=>c.lang==="zh"),en=dp&&dp.cases.find(c=>c.lang==="en");
+  const peak=cp?Math.max(...cp.points.map(x=>x.agg_tps)):null;
+  const pLast=pp&&pp.points.length?pp.points[pp.points.length-1]:null;
+  const pcs=pcp&&pcp.summary;
+  const kpis=[
+    {lab:"中文单流解码",val:zh?fmt(zh.decode_tps_med):"—",sub:zh?`${zh.out_tokens} tokens · burst ${zh.spec_burst_med}`:"",cls:"a"},
+    {lab:"英文单流解码",val:en?fmt(en.decode_tps_med):"—",sub:en?`ITL p50 ${fmt(en.itl_p50_ms_med)} ms`:"",cls:"a"},
+    {lab:"峰值聚合吞吐",val:peak?fmt(peak):"—",sub:peak?`@并发${cp.points.find(x=>x.agg_tps===peak).conc}`:"",cls:"b"},
+    {lab:"阶梯并发×4 prefill",val:pcs?fmt(pcs.prefill_avg,0):"—",sub:pcs?`范围 ${fmt(pcs.prefill_min,0)}–${fmt(pcs.prefill_max,0)}`:"",cls:"b"},
+    {lab:"阶梯并发×4 输出",val:pcs?fmt(pcs.decode_avg):"—",sub:pcs?`单流 P50 ${fmt(pcs.per_stream_decode_p50)} / P95 ${fmt(pcs.per_stream_decode_p95)}`:"",cls:"w"},
+    {lab:pLast?`Prefill@${pLast.label}(单流)`:"Prefill",val:pLast?fmt(pLast.prefill_tps_med,0):"—",sub:pLast?`TTFT ${fmt(pLast.ttft_med_s,2)}s`:"",cls:"w"},
+    {lab:"TTFT p95 @最高并发",val:(cp&&cp.points.length)?fmt(cp.points[cp.points.length-1].ttft_p95_s,2)+"s":"—",sub:cp?`并发 ${cp.points[cp.points.length-1].conc}`:"",cls:"w"},
+    {lab:"成功率",val:(cp&&cp.points.length)?fmt(100*cp.points.reduce((s,x)=>s+x.ok,0)/cp.points.reduce((s,x)=>s+x.ok+x.fail,0))+"%":"—",sub:"并发阶梯全程",cls:"w"},
+  ];
+  document.getElementById("kpis").innerHTML=kpis.map(k=>
+    `<div class="card kpi ${k.cls}"><div class="lab">${k.lab}</div><div class="val">${k.val}</div><div class="sub">${k.sub||""}</div></div>`).join("");
+}
+function pcTable(a,b){
+  const pa=phase(a,"prefill_conc"),pb=b?phase(b,"prefill_conc"):null;
+  const el=document.getElementById("pcTbl");
+  if(!pa){el.innerHTML='<div class="muted" style="padding:8px 2px">该运行无此阶段（旧版本结果，重新跑一次即有）</div>';return}
+  const two=!!pb;
+  let html=`<div class="tblwrap"><table><thead><tr><th>长度${two?"（A / B）":""} ▸点击行展开单流明细</th><th>TTFT ms</th><th>ITL 均 ms</th><th>聚合 prefill t/s</th><th>聚合输出 t/s</th><th>成功</th></tr></thead><tbody>`;
+  pa.points.forEach(p=>{
+    const q=two?(pb&&pb.points.find(x=>x.in_tokens===p.in_tokens)):null;
+    const det=(x,who)=>x?`${who} 单流 prefill：${x.stream_prefill_tps.map(v=>fmt(v,0)).join(" / ")} t/s　·　单流输出：${x.stream_decode_tps.map(v=>fmt(v)).join(" / ")} t/s`:"";
+    html+=`<tr class="datarow" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'table-row':'none'"><td>${p.label} (${p.in_tokens.toLocaleString()})</td>
+      <td>${fmt(p.ttft_avg_ms,0)}${q?` / ${fmt(q.ttft_avg_ms,0)}`:""}</td>
+      <td>${fmt(p.itl_avg_ms)}${q?` / ${fmt(q.itl_avg_ms)}`:""}</td>
+      <td>${fmt(p.prefill_tps_agg,0)}${q?` / ${fmt(q.prefill_tps_agg,0)}`:""}</td>
+      <td>${fmt(p.decode_tps_agg)}${q?` / ${fmt(q.decode_tps_agg)}`:""}</td>
+      <td>${p.ok}/${p.ok+p.fail}${q?` / ${q.ok}/${q.ok+q.fail}`:""}</td></tr>
+      <tr class="detail" style="display:none"><td colspan="6">${det(p,"A")}${q?"<br>"+det(q,"B"):""}</td></tr>`;
+  });
+  html+="</tbody></table></div>";
+  const sumRow=(s,who)=>{
+    if(!s)return "";
+    return `<tr><td>${who}</td>
+      <td>prefill：${fmt(s.prefill_min,0)} – ${fmt(s.prefill_max,0)}，均 <b>${fmt(s.prefill_avg,0)}</b></td>
+      <td>输出：${fmt(s.decode_min,0)} – ${fmt(s.decode_max,0)}，均 <b>${fmt(s.decode_avg,0)}</b></td></tr>`;
+  };
+  const pctRow=(s,who)=>{
+    if(!s)return "";
+    return `<tr><td>${who} 单流分位数</td>
+      <td>P50 ${fmt(s.per_stream_prefill_p50,0)} · P90 ${fmt(s.per_stream_prefill_p90,0)} · P95 ${fmt(s.per_stream_prefill_p95,0)}</td>
+      <td>P50 ${fmt(s.per_stream_decode_p50)} · P90 ${fmt(s.per_stream_decode_p90)} · P95 ${fmt(s.per_stream_decode_p95)}</td></tr>`;
+  };
+  html+=`<table style="margin-top:10px"><thead><tr><th>汇总</th><th>prefill t/s</th><th>输出 t/s</th></tr></thead><tbody>`+
+    sumRow(pa.summary,"A 范围/平均")+(two?sumRow(pb.summary,"B 范围/平均"):"")+
+    pctRow(pa.summary,"A")+(two?pctRow(pb.summary,"B"):"")+
+    `</tbody></table>`;
+  el.innerHTML=html;
+}
+
+/* ---------------- 图表 ---------------- */
+const TIP=document.getElementById("tip");
+function bindTips(cv){
+  const show=e=>{
+    const r=cv.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
+    let best=null,bd=520;
+    (cv._hit||[]).forEach(p=>{const d=(p.x-mx)**2+(p.y-my)**2;if(d<bd){bd=d;best=p}});
+    if(best){
+      TIP.innerHTML=best.html;TIP.style.display="block";
+      const tw=TIP.offsetWidth||160,th=TIP.offsetHeight||50;
+      /* 锚定数据点本身(视口坐标), 不跟随鼠标 */
+      let px=r.left+best.x, py=r.top+best.y;
+      let x=px+12,y=py-th-8;
+      if(x+tw>innerWidth-6)x=px-tw-12;
+      if(y<4)y=py+12;
+      TIP.style.left=x+"px";TIP.style.top=y+"px";
+      /* 高亮当前数据点 */
+      if(cv._marker!==undefined){const g=cv.getContext("2d");g.save();g.setTransform(1,0,0,1,0,0);}
+    }else TIP.style.display="none";
+  };
+  cv.onmousemove=show;
+  cv.onclick=show;
+  cv.onmouseleave=()=>TIP.style.display="none";
+}
+function setup(cv){
+  /* 高度随容器宽度自适应(宽高比约 0.38, 200-460 区间); 派生自 clientWidth, 无反馈循环 */
+  const dpr=window.devicePixelRatio||1;
+  const w=Math.max(cv.clientWidth,60);
+  const h=Math.round(Math.min(460,Math.max(200,w*0.38)));
+  cv.width=Math.round(w*dpr);cv.height=Math.round(h*dpr);
+  const g=cv.getContext("2d");g.setTransform(dpr,0,0,dpr,0,0);
+  g.clearRect(0,0,w,h);return {g,w,h};
+}
+function line2(cv,seriesList,opt){
+  /* 类别轴折线: 每档一个等距刻度, 标签为档名; 大数字千分位 */
+  const {g,w,h}=setup(cv);cv._hit=[];if(!seriesList[0]){g.fillText("无数据",w/2,h/2);return}
+  const pad={l:52,r:20,t:12,b:36};
+  const cats=seriesList.filter(s=>s).flatMap(s=>s.pts.map(p=>p.label));
+  const seen=new Set(),labels=[];cats.forEach(c=>{if(!seen.has(c)){seen.add(c);labels.push(c)}});
+  const n=labels.length;
+  const all=seriesList.filter(s=>s).flatMap(s=>s.pts);
+  const ymax=Math.max(...all.map(p=>p[opt.yKey]))*1.15||10;
+  const X=i=>n>1?pad.l+(w-pad.l-pad.r)*i/(n-1):(pad.l+w-pad.r)/2;
+  const Y=v=>pad.t+(h-pad.t-pad.b)*(1-v/ymax);
+  const fmtn=v=>Math.round(v).toLocaleString();
+  g.strokeStyle=C.grid;g.fillStyle=C.muted;g.font="10px system-ui";g.lineWidth=1;
+  for(let i=0;i<=4;i++){const y=pad.t+(h-pad.t-pad.b)*i/4;
+    g.beginPath();g.moveTo(pad.l,y);g.lineTo(w-pad.r,y);g.stroke();
+    g.fillText(fmtn(ymax-(ymax)*i/4),6,y+3);}
+  labels.forEach((lab,i)=>{
+    g.textAlign=i===0?"left":(i===n-1?"right":"center");
+    g.fillText(String(lab),X(i),h-18);g.textAlign="left";});
+  g.textAlign="center";g.fillText(opt.xLabel,(pad.l+w-pad.r)/2,h-3);g.textAlign="left";
+  g.save();g.translate(11,(pad.t+h-pad.b)/2);g.rotate(-Math.PI/2);g.textAlign="center";g.fillText(opt.yLabel,0,0);g.restore();
+  seriesList.filter(s=>s).forEach(s=>{
+    g.strokeStyle=s.color;g.lineWidth=2;g.beginPath();let started=false;
+    s.pts.forEach(p=>{const x=X(labels.indexOf(p.label)),y=Y(p[opt.yKey]);
+      started?g.lineTo(x,y):g.moveTo(x,y);started=true;});
+    g.stroke();
+    cv._hit=[];
+    s.pts.forEach(p=>{const x=X(labels.indexOf(p.label)),y=Y(p[opt.yKey]);
+      g.fillStyle=s.color;g.beginPath();g.arc(x,y,3,0,7);g.fill();
+      cv._hit.push({x,y,html:`<b>${p.label}</b> · ${Math.round(p.tok).toLocaleString()} tok<br>${opt.yLabel}：<b style="color:${s.color}">${Math.round(p[opt.yKey]).toLocaleString()}</b>${p.ttft?`<br>TTFT：${fmt(p.ttft,2)}s`:""}`});});
+  });
+  bindTips(cv);
+}
+function drawPrefill(a,b,cvId,lgId){
+  const sA=prefillSeries(a);if(sA)sA.color=C.acc;
+  const sB=b?prefillSeries(b):null;if(sB)sB.color=C.acc2;
+  line2(document.getElementById(cvId),[VIS.pre.a&&sA,VIS.pre.b&&sB].filter(Boolean),
+    {xKey:"tok",yKey:"tps",xLabel:"上下文档位",yLabel:"prefill t/s"});
+  document.getElementById(lgId).innerHTML=
+    (sA?`<span class="${VIS.pre.a?"":"off"}" data-t="pre.a"><i style="background:${C.acc}"></i>A 单流 prefill t/s</span>`:"")+
+    (sB?`<span class="${VIS.pre.b?"":"off"}" data-t="pre.b"><i style="background:${C.acc2}"></i>B 单流 prefill t/s</span>`:"")+
+    `<span style="opacity:.6">点击图例显隐 · 悬停看数值</span>`;
+  bindLegend(lgId);
+}
+function concChart(a,b,cvId,lgId){
+  const cv=document.getElementById(cvId),{g,w,h}=setup(cv);
+  const pa=phase(a,"concurrency"),pb=b?phase(b,"concurrency"):null;
+  if(!pa){g.fillText("无数据",w/2,h/2);return}
+  const pad={l:44,r:44,t:12,b:36};
+  const pts=pa.points,xmax=pts[pts.length-1].conc;
+  const ymax=Math.max(...pts.map(p=>Math.max(p.agg_tps,p.per_stream_tps_med||0)),
+    ...(pb?pb.points.map(p=>Math.max(p.agg_tps,p.per_stream_tps_med||0)):[]))*1.15||10;
+  const tmax=Math.max(...pts.map(p=>p.ttft_p95_s||0),...(pb?pb.points.map(p=>p.ttft_p95_s||0):[0]))*1.15||1;
+  const nPts=pts.length,X=i=>nPts>1?pad.l+(w-pad.l-pad.r)*i/(nPts-1):(pad.l+w-pad.r)/2,
+        Xi=c=>X(pts.findIndex(p=>p.conc===c)),
+        Y=v=>pad.t+(h-pad.t-pad.b)*(1-v/ymax),Y2=v=>pad.t+(h-pad.t-pad.b)*(1-v/tmax);
+  g.strokeStyle=C.grid;g.fillStyle=C.muted;g.font="10px system-ui";
+  for(let i=0;i<=4;i++){const y=pad.t+(h-pad.t-pad.b)*i/4;g.beginPath();g.moveTo(pad.l,y);g.lineTo(w-pad.r,y);g.stroke();
+    g.fillText(Math.round(ymax-(ymax)*i/4).toLocaleString(),6,y+3);
+    g.textAlign="right";g.fillStyle=C.warn;g.fillText(fmt(tmax-(tmax)*i/4,2)+"s",w-6,y+3);g.textAlign="left";g.fillStyle=C.muted;}
+  pts.forEach((p,i)=>{g.textAlign=i===0?"left":(i===nPts-1?"right":"center");
+    g.fillText(String(p.conc),Xi(p.conc),h-18);g.textAlign="left";});
+  g.textAlign="center";g.fillText("并发数",(pad.l+w-pad.r)/2,h-3);g.textAlign="left";
+  g.save();g.translate(11,(pad.t+h-pad.b)/2);g.rotate(-Math.PI/2);g.textAlign="center";g.fillText("tok/s",0,0);g.restore();
+  g.save();g.translate(w-3,(pad.t+h-pad.b)/2);g.rotate(Math.PI/2);g.textAlign="center";g.fillStyle=C.warn;g.fillText("TTFT p95 (s)",0,0);g.restore();g.fillStyle=C.muted;
+  const drawSet=(p,color,aggCol)=>{if(!p)return;
+    g.strokeStyle=color;g.lineWidth=2;g.beginPath();
+    p.points.forEach((q,i)=>{const x=Xi(q.conc),y=Y(q.agg_tps);i?g.lineTo(x,y):g.moveTo(x,y)});g.stroke();
+    g.strokeStyle=aggCol;g.setLineDash([5,4]);g.lineWidth=1.5;g.beginPath();
+    p.points.forEach((q,i)=>{const y=Y(q.per_stream_tps_med||0);i?g.lineTo(Xi(q.conc),y):g.moveTo(Xi(q.conc),y)});g.stroke();g.setLineDash([]);};
+  drawSet(VIS.conc.a&&pa, C.acc,"#2a6fb8");drawSet(VIS.conc.b&&pb,C.acc2,"#1f9e7a");
+  cv._hit=[];
+  const regHits=(p,base)=>{if(!p)return;
+    p.points.forEach(q=>{
+      const x=Xi(q.conc);
+      cv._hit.push({x,y:Y(q.agg_tps),html:`<b>并发 ${q.conc}</b>（${base}）<br>聚合：<b style="color:${base==="A"?C.acc:C.acc2}">${Math.round(q.agg_tps).toLocaleString()} t/s</b><br>单流：${fmt(q.per_stream_tps_med)} t/s<br>TTFT p50：${fmt(q.ttft_p50_s,2)}s · p95：${fmt(q.ttft_p95_s,2)}s<br>成功：${q.ok}/${q.ok+q.fail}`});
+    });};
+  regHits(VIS.conc.a&&pa,"A");regHits(VIS.conc.b&&pb,"B");
+  if(VIS.conc.t){
+    g.strokeStyle=C.warn;g.lineWidth=1.5;g.setLineDash([2,3]);g.beginPath();
+    pts.forEach((q,i)=>{const y=Y2(q.ttft_p95_s||0);i?g.lineTo(Xi(q.conc),y):g.moveTo(Xi(q.conc),y)});g.stroke();g.setLineDash([]);
+    pts.forEach(q=>{if(q.ttft_p95_s==null)return;
+      cv._hit.push({x:Xi(q.conc),y:Y2(q.ttft_p95_s),html:`<b>并发 ${q.conc}</b><br>TTFT p95：<b style="color:${C.warn}">${fmt(q.ttft_p95_s,2)}s</b>`});});
+  }
+  document.getElementById(lgId).innerHTML=
+    `<span class="${VIS.conc.a?"":"off"}" data-t="conc.a"><i style="background:${C.acc}"></i>A 聚合 t/s</span><span class="${VIS.conc.a?"":"off"}" data-t="conc.a"><i style="background:#2a6fb8"></i>A 单流 t/s</span>`+
+    (pb?`<span class="${VIS.conc.b?"":"off"}" data-t="conc.b"><i style="background:${C.acc2}"></i>B 聚合 t/s</span><span class="${VIS.conc.b?"":"off"}" data-t="conc.b"><i style="background:#1f9e7a"></i>B 单流 t/s</span>`:"")+
+    `<span class="${VIS.conc.t?"":"off"}" data-t="conc.t"><i style="background:${C.warn}"></i>TTFT p95 (s)</span>`+
+    `<span style="opacity:.6">点击图例显隐</span>`;
+  bindLegend(lgId);
+  bindTips(cv);
+}
+function renderCmp(){
+  const a=RUNS[document.getElementById("cmpA").value];
+  const b=RUNS[document.getElementById("cmpB").value];
+  const el=document.getElementById("cmpBody");
+  if(!a){el.innerHTML='<div id="empty">暂无结果，先在总览页发起测试</div>';return}
+  if(!b){el.innerHTML='<div class="muted" style="padding:34px 0;font-size:13px">选择运行 B（如 1.6.3 vs 1.6.5、两种量化、两台引擎）后显示全维度对比</div>';return}
+  const get=(r,fn)=>{try{return fn(r)}catch(e){return null}};
+  const lastPre=r=>{const ps=phase(r,"prefill").points;return ps[ps.length-1]};
+  const dA=phase(a,"decode"),dB=phase(b,"decode");
+  const pA=phase(a,"prefill_conc"),pB=phase(b,"prefill_conc");
+  const z=x=>x&&x.cases.find(c=>c.lang==="zh"),e=x=>x&&x.cases.find(c=>c.lang==="en");
+  const pL=lastPre(a);
+  const METRICS=[
+    ["中文单流解码 t/s",get(a,r=>z(dA).decode_tps_med),get(b,r=>z(dB).decode_tps_med),1],
+    ["英文单流解码 t/s",get(a,r=>e(dA).decode_tps_med),get(b,r=>e(dB).decode_tps_med),1],
+    ["ITL p50 ms（英文）",get(a,r=>e(dA).itl_p50_ms_med),get(b,r=>e(dB).itl_p50_ms_med),-1],
+    ["投机 burst（中文）",get(a,r=>z(dA).spec_burst_med),get(b,r=>z(dB).spec_burst_med),1],
+    ["峰值聚合 t/s",get(a,r=>Math.max(...phase(r,"concurrency").points.map(p=>p.agg_tps))),
+                   get(b,r=>Math.max(...phase(r,"concurrency").points.map(p=>p.agg_tps))),1],
+    ["Prefill@max t/s",get(a,r=>lastPre(r).prefill_tps_med),get(b,r=>lastPre(r).prefill_tps_med),1],
+    ["TTFT@max s",get(a,r=>lastPre(r).ttft_med_s),get(b,r=>lastPre(r).ttft_med_s),-1],
+    ["阶梯×并发 prefill 均",get(a,r=>phase(r,"prefill_conc").summary.prefill_avg),get(b,r=>phase(r,"prefill_conc").summary.prefill_avg),1],
+    ["阶梯×并发 输出均",get(a,r=>phase(r,"prefill_conc").summary.decode_avg),get(b,r=>phase(r,"prefill_conc").summary.decode_avg),1],
+    ["单流输出 P50 t/s",get(a,r=>phase(r,"prefill_conc").summary.per_stream_decode_p50),get(b,r=>phase(r,"prefill_conc").summary.per_stream_decode_p50),1],
+  ];
+  const card=(nm,va,vb,dir)=>{
+    if(va==null||vb==null)return `<div class="cmpcard"><div class="nm">${nm}</div><div class="vs muted">—</div><div class="dl na">无数据</div></div>`;
+    const d=(vb-va)/va*100,good=d*dir>=0,abs=Math.abs(d);
+    const cl=abs<1?"na":(good?"up":"down");
+    const arrow=abs<1?"≈":(d>0?"▲":"▼");
+    return `<div class="cmpcard" style="${abs>=5&&cl!=="na"?"border-color:"+(good?"var(--acc2)":"var(--err)"):''}">
+      <div class="nm">${nm}</div>
+      <div class="vs"><span>${fmt(va)}</span><span class="muted" style="font-size:12px;font-weight:400">→</span><span class="b2">${fmt(vb)}</span></div>
+      <div class="dl ${cl}">${arrow} ${(d>=0?"+":"")+fmt(d)}%</div></div>`;
+  };
+  const fA=(a.framework&&a.framework.name)?`${a.framework.name} ${a.framework.version||""}`.trim():null;
+  const fB=(b.framework&&b.framework.name)?`${b.framework.name} ${b.framework.version||""}`.trim():null;
+  const fline=(fA||fB)?`<div class="muted" style="margin:6px 2px 2px;font-size:12.5px">同一模型 <b>${a.model}</b> 跨后端对比：A = <b style="color:var(--acc)">${fA||"未标注"}</b>　vs　B = <b style="color:var(--acc2)">${fB||"未标注"}</b></div>`:"";
+  let html=fline+'<div class="cmpcards">'+METRICS.map(m=>card(...m)).join("")+"</div>";
+  html+=`<div class="grid panels">
+    <div class="panel"><h3>Prefill 阶梯对比</h3><div class="desc">蓝=A 绿=B · 悬停看数值 · 点图例显隐</div><canvas id="cCmpPrefill"></canvas><div class="legend" id="lCmpPre"></div></div>
+    <div class="panel"><h3>并发阶梯对比</h3><div class="desc">聚合/单流/TTFT p95 双运行叠加</div><canvas id="cCmpConc"></canvas><div class="legend" id="lCmpConc"></div></div>
+    <div class="panel" style="grid-column:1/-1"><h3>矩阵逐档对比</h3><div class="desc">同长度档 A vs B 的 prefill / 输出吞吐与逐档变化</div><div id="cmpMatrix"></div></div>
+    <div class="panel" style="grid-column:1/-1"><h3>指标差异明细</h3><div class="desc">全部关键指标 A → B 变化（绿=提升，红=退步；TTFT/ITL 反色）</div><div id="diffTbl"></div></div>
+  </div>`;
+  el.innerHTML=html;
+  drawPrefill(a,b,"cCmpPrefill","lCmpPre");
+  concChart(a,b,"cCmpConc","lCmpConc");
+  let mx='<table><tr><th>长度</th><th>A prefill</th><th>B prefill</th><th>Δ prefill</th><th>A 输出</th><th>B 输出</th><th>Δ 输出</th></tr>';
+  (pA?pA.points:[]).forEach(p=>{
+    const q=pB?pB.points.reduce((bst,x)=>Math.abs(x.in_tokens-p.in_tokens)<Math.abs(bst.in_tokens-p.in_tokens)?x:bst,pB.points[0]):null;
+    const far=q&&Math.abs(q.in_tokens-p.in_tokens)/p.in_tokens>0.3;
+    const dl=(x,y)=>{if(x==null||y==null)return '<td class="same">—</td>';
+      if(far)return `<td class="same" title="B 档为 ${q.label}，与 A ${p.label} 差异大">不同档</td>`;
+      const d=(y-x)/x*100;
+      return `<td class="${d>=0?"up":"down"}">${d>=0?"+":""}${fmt(d)}%</td>`;};
+    mx+=`<tr><td>${p.label} (${p.in_tokens.toLocaleString()})</td>
+      <td>${fmt(p.prefill_tps_agg,0)}</td><td>${q?fmt(q.prefill_tps_agg,0):"—"}</td>${dl(p.prefill_tps_agg,q&&q.prefill_tps_agg)}
+      <td>${fmt(p.decode_tps_agg)}</td><td>${q?fmt(q.decode_tps_agg):"—"}</td>${dl(p.decode_tps_agg,q&&q.decode_tps_agg)}</tr>`;
+  });
+  document.getElementById("cmpMatrix").innerHTML=mx+"</table>";
+  diffTable(a,b);
+}
+
+function decodeTable(a,b){
+  const rows=[];
+  const da=phase(a,"decode"),db=b?phase(b,"decode"):null;
+  for(const lang of ["zh","en"]){
+    const ca=da&&da.cases.find(c=>c.lang===lang),cb=db&&db.cases.find(c=>c.lang===lang);
+    const cell=(x,k,d=1)=>x==null?"—":fmt(x[k],d);
+    rows.push(`<tr><td>${lang==="zh"?"中文":"英文"}${ca?` · ${ca.out_tokens} tok`:""}</td>
+      <td>${cell(ca,"decode_tps_med")}${cb?` / ${cell(cb,"decode_tps_med")}`:""}</td>
+      <td>${cell(ca,"itl_p50_ms_med")}${cb?` / ${cell(cb,"itl_p50_ms_med")}`:""}</td>
+      <td>${cell(ca,"decode_tps_best")}${cb?` / ${cell(cb,"decode_tps_best")}`:""}</td>
+      <td>${cell(ca,"spec_burst_med",2)}${cb?` / ${cell(cb,"spec_burst_med",2)}`:""}</td></tr>`);
+  }
+  const perRun=(da&&da.cases[0]&&da.cases[0].runs[0])||null;
+  let extra="";
+  if(perRun){
+    extra=`<tr><td>明细（A·中文 run1）</td><td>${fmt(perRun.decode_tps)}</td><td>${fmt(perRun.itl_p50_ms)}</td>
+    <td>p95 ${fmt(perRun.itl_p95_ms)} / p99 ${fmt(perRun.itl_p99_ms)} ms · 抖动 ${fmt(perRun.itl_jitter_ms)} ms</td>
+    <td>TPOT ${fmt(perRun.tpot_ms)} ms</td></tr>`;
+  }
+  document.getElementById("decodeTbl").innerHTML=`<table>
+    <tr><th>场景${b?"（A / B）":""}</th><th>解码 t/s</th><th>ITL p50 ms</th><th>最佳 t/s</th><th>投机 burst</th></tr>
+    ${rows.join("")}${extra}</table>`;
+}
+function diffTable(a,b){
+  const el=document.getElementById("diffTbl");
+  if(!b){el.innerHTML='<div class="muted" style="padding:12px 4px">选择 B 运行后显示对比（例如 1.6.3 vs 1.6.5 镜像、不同量化、不同引擎）</div>';return}
+  const get=(r,fn)=>{try{return fn(r)}catch(e){return null}};
+  const lastPre=r=>{const ps=phase(r,"prefill").points;return ps[ps.length-1]};
+  const pL=a?lastPre(a):null;
+  const items=[
+    ["中文单流 t/s",get(a,r=>phase(r,"decode").cases.find(c=>c.lang==="zh").decode_tps_med),
+                   get(b,r=>phase(r,"decode").cases.find(c=>c.lang==="zh").decode_tps_med)],
+    ["英文单流 t/s",get(a,r=>phase(r,"decode").cases.find(c=>c.lang==="en").decode_tps_med),
+                   get(b,r=>phase(r,"decode").cases.find(c=>c.lang==="en").decode_tps_med)],
+    ["峰值聚合 t/s",get(a,r=>Math.max(...phase(r,"concurrency").points.map(p=>p.agg_tps))),
+                   get(b,r=>Math.max(...phase(r,"concurrency").points.map(p=>p.agg_tps)))],
+    ["阶梯并发×4 prefill 均",get(a,r=>phase(r,"prefill_conc").summary.prefill_avg),
+                            get(b,r=>phase(r,"prefill_conc").summary.prefill_avg)],
+    ["阶梯并发×4 输出均",get(a,r=>phase(r,"prefill_conc").summary.decode_avg),
+                        get(b,r=>phase(r,"prefill_conc").summary.decode_avg)],
+    ["单流输出 P50",get(a,r=>phase(r,"prefill_conc").summary.per_stream_decode_p50),
+                  get(b,r=>phase(r,"prefill_conc").summary.per_stream_decode_p50)],
+    [`Prefill@${pL?pL.label:"max"} t/s`,get(a,r=>lastPre(r).prefill_tps_med),get(b,r=>lastPre(r).prefill_tps_med)],
+    [`TTFT@${pL?pL.label:"max"} s`,get(a,r=>lastPre(r).ttft_med_s),get(b,r=>lastPre(r).ttft_med_s)],
+  ];
+  el.innerHTML=`<table><tr><th>指标</th><th>${label(a).slice(0,40)}</th><th>${label(b).slice(0,40)}</th><th>Δ</th><th>幅度</th></tr>`+
+    items.map(([n,va,vb])=>{
+      if(va==null||vb==null)return `<tr><td>${n}</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>`;
+      const d=vb-va,pctv=va?100*d/va:null,good=d>=0;
+      return `<tr><td>${n}</td><td>${fmt(va)}</td><td>${fmt(vb)}</td>
+      <td class="${good?"up":"down"}">${d>=0?"+":""}${fmt(d)}</td>
+      <td class="${good?"up":"down"}">${pctv!=null?(d>=0?"+":"")+fmt(pctv)+"%":"—"}</td></tr>`;
+    }).join("")+"</table>";
+}
+function metricsChart(a){
+  const s=a.metrics_samples||[];
+  const panel=document.getElementById("metricsPanel");
+  if(!s.length){panel.style.display="none";return}
+  panel.style.display="block";
+  const cv=document.getElementById("cMetrics"),{g,w,h}=setup(cv);
+  const pad={l:44,r:14,t:10,b:22},t0=s[0].t,tmax=s[s.length-1].t-t0||1;
+  const series=[["gpu_cache_usage",C.acc,"KV 显存占用 %"],["prefix_cache_hit",C.acc2,"前缀缓存命中 %"]];
+  g.strokeStyle=C.grid;g.fillStyle=C.muted;g.font="10px system-ui";
+  for(let i=0;i<=4;i++){const y=pad.t+(h-pad.t-pad.b)*i/4;g.beginPath();g.moveTo(pad.l,y);g.lineTo(w-pad.r,y);g.stroke();
+    g.fillText(fmt(100-25*i,0),6,y+3);}
+  const norm=(k,v)=>{if(v==null)return null;
+    if(k==="gpu_cache_usage")return v<=1.05?v*100:v;      /* vLLM 0-1 比例 */
+    return v;};                                             /* 命中率已是百分数 */
+  series.forEach(([k,col])=>{
+    g.strokeStyle=col;g.lineWidth=1.6;g.beginPath();let st=false;
+    s.forEach(m=>{const v=norm(k,m[k]);if(v==null)return;const x=pad.l+(w-pad.l-pad.r)*(m.t-t0)/tmax,
+      y=pad.t+(h-pad.t-pad.b)*(1-v/100);st?g.lineTo(x,y):g.moveTo(x,y);st=true;});
+    g.stroke();});
+  cv._hit=[];
+  series.forEach(([k,col,n])=>{
+    s.forEach((m,i)=>{const v=norm(k,m[k]);if(v==null||i%2)return;const x=pad.l+(w-pad.l-pad.r)*(m.t-t0)/tmax,
+      y=pad.t+(h-pad.t-pad.b)*(1-v/100);
+      cv._hit.push({x,y,html:`t+${Math.round(m.t-t0)}s<br>${n}：<b style="color:${col}">${fmt(v)}%</b><br>运行 ${fmt(m.requests_running,0)} · 排队 ${fmt(m.requests_waiting,0)}`});});
+  });
+  bindTips(cv);
+  g.fillText("t (s)",(pad.l+w-pad.r)/2,h-4);
+  let lg=panel.querySelector(".legend");
+  if(!lg){lg=document.createElement("div");lg.className="legend";panel.appendChild(lg);}
+  lg.innerHTML=series.map(([k,c,n])=>`<span><i style="background:${c}"></i>${n}</span>`).join("");
+}
+function showView(v){
+  document.querySelectorAll(".nav").forEach(b=>b.classList.toggle("active",b.dataset.v===v));
+  document.querySelectorAll(".view").forEach(s=>s.classList.toggle("on",s.id==="view"+v[0].toUpperCase()+v.slice(1)));
+  if(v==="cmp")renderCmp();
+  if(v==="iq"){loadBanks();loadIqResults();}
+  if(v==="gen"){renderTaskChips();chipChange();loadGenResults();}
+}
+function renderAll(){render();if(document.getElementById("viewCmp").classList.contains("on"))renderCmp();}
+let rzT;/* ================= 智力测试 ================= */
+let IQ_RUNS={}, IQ_BANKS=[], iqPoll=null;
+
+async function loadBanks(){
+  try{
+    IQ_BANKS=await(await fetch("/api/banks")).json();
+    const sel=document.getElementById("iqBank");
+    const keep=sel.value;
+    sel.innerHTML=IQ_BANKS.map(b=>`<option value="${b.bank_id}">${b.bank_id} · ${b.total}题 · ${b.created_utc.slice(0,10)}</option>`).join("");
+    if(keep&&IQ_BANKS.find(b=>b.bank_id===keep))sel.value=keep;
+    else if(!sel.value&&IQ_BANKS[0])sel.value=IQ_BANKS[0].bank_id;
+    bankInfo();
+  }catch(e){document.getElementById("iqBankInfo").textContent="题库加载失败: "+e.message;}
+}
+function bankInfo(){
+  const b=IQ_BANKS.find(x=>x.bank_id===document.getElementById("iqBank").value);
+  if(!b)return;
+  document.getElementById("iqBankInfo").innerHTML=
+    `✓ ${b.total} 题 · ${(b.subjects||[]).map(s=>`${s.name} ${s.n}`).join(" · ")}`;
+}
+async function bankUpdate(){
+  const btn=document.getElementById("iqBtnBank"),out=document.getElementById("iqBankInfo");
+  btn.disabled=true;out.textContent="拉取官方题集（MMLU全57科+GSM8K+MATH500+ARC+HellaSwag+C-Eval+IFEval）中…限速保护下约 3-5 分钟，请勿关闭页面";
+  try{
+    const r=await fetch("/api/bank-update",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({proxy:document.getElementById("iqProxy")?.value||""})});
+    const d=await r.json();
+    if(!d.ok){out.innerHTML=`<span style="color:var(--err)">更新失败：${d.error}</span>`+(d.hint?`<br><span style="color:var(--warn)">${d.hint}</span>`:"");return}
+    out.innerHTML=`✓ 新题集 <b>${d.bank_id}</b> · ${d.total} 题 · ${(d.subjects||[]).map(s=>`${s.name} ${s.n}`).join(" · ")}`;
+    loadBanks();
+  }catch(e){out.innerHTML=`<span style="color:var(--err)">请求失败：${e.message}</span>`}
+  finally{btn.disabled=false}
+}
+function tierChange(){document.getElementById("iqBankInfo").textContent=""}
+async function iqStart(){
+  const model=document.getElementById("iqModel").value.trim();
+  if(!model){document.getElementById("iqBankInfo").innerHTML='<span style="color:var(--err)">请填写模型名</span>';return}
+  const body={base:document.getElementById("iqBase").value,api_key:document.getElementById("iqKey").value,
+    model,bank_id:document.getElementById("iqBank").value,conc:document.getElementById("iqConc").value,
+    tag:document.getElementById("iqTag").value,limit:document.getElementById("iqTier").value||null};
+  const r=await fetch("/api/iq-start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  const d=await r.json();
+  if(!d.ok){document.getElementById("iqBankInfo").innerHTML=`<span style="color:var(--err)">${d.error}</span>`;return}
+  document.getElementById("iqBtnStart").disabled=true;
+  const ro=document.getElementById("iqOut");ro.style.display="block";ro.textContent="已启动…\n";
+  iqPoll=setInterval(async()=>{
+    try{
+      const s=await(await fetch("/api/iq-status")).json();
+      const lines=(s.log||[]).map(x=>x.msg);
+      ro.textContent=lines.slice(-14).join("\n")+(s.running?"\n…":"");
+      ro.scrollTop=ro.scrollHeight;
+      if(!s.running){
+        clearInterval(iqPoll);iqPoll=null;
+        document.getElementById("iqBtnStart").disabled=false;
+        if(s.error)ro.textContent+="\n✗ "+s.error;
+        else ro.textContent+="\n✓ 完成";
+        loadIqResults(true);
+      }
+    }catch(e){}
+  },2000);
+}
+async function loadIqResults(focusNew){
+  try{
+    const list=await(await fetch("/api/iq-results")).json();
+    const prev=new Set(Object.keys(IQ_RUNS));
+    IQ_RUNS={};list.forEach(r=>IQ_RUNS[r.run_id]=r);
+    const names=Object.keys(IQ_RUNS).sort().reverse();
+    const sel=document.getElementById("iqCmpSel");
+    const keep=sel.value;
+    sel.innerHTML=names.map(n=>`<option value="${n}" ${n===keep?"selected":""}>${iqLabel(IQ_RUNS[n])}</option>`).join("");
+    renderIq(focusNew?names.find(n=>!prev.has(n)):null);
+  }catch(e){}
+}
+function iqLabel(r){
+  const fw=r.framework&&r.framework.name?` ${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:"";
+  return `${(r.model||"?").slice(0,26)}${fw} · ${((r.overall&&r.overall.acc)||"—")}% · ${r.bank_id.slice(3,13)} · ${r.started_utc.slice(5,16).replace("T"," ")}`;
+}
+const IQ_COLORS=["#4da3ff","#37d4a0","#ffb454","#ff6b7a","#b48cff","#4dd8e6"];
+function renderIq(focusRunId){
+  const el=document.getElementById("iqResult");
+  const names=Object.keys(IQ_RUNS).sort().reverse();
+  const mainId=focusRunId||names[0];
+  const a=IQ_RUNS[mainId];
+  const sel=document.getElementById("iqCmpSel");
+  const cmpIds=[...sel.selectedOptions].map(o=>o.value).filter(v=>v&&IQ_RUNS[v]&&v!==mainId);
+  const cmps=cmpIds.map((id,i)=>({r:IQ_RUNS[id],color:IQ_COLORS[(i+1)%IQ_COLORS.length],label:String.fromCharCode(66+i)}));
+  if(!a){el.innerHTML='<div class="muted" style="padding:26px 2px">暂无智力测试结果——上方发起第一次测试</div>';return}
+  const ov=a.overall||{};
+  const shortName=r=>{const fw=r.framework&&r.framework.name?`${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:"";return `${(r.model||"?").slice(0,20)}${fw?" "+fw:""}`};
+  const cardOf=(r,color,tag,base)=>{
+    const o=r.overall||{};
+    let delta="";
+    if(base){const d=(o.acc??0)-(base.acc??0);
+      delta=`<div class="dl ${d>=0?"up":"down"}" style="margin-top:6px">${d>=0?"▲":"▼"} ${d>=0?"+":""}${fmt(d,1)}pp</div>`}
+    return `<div class="card" style="flex:1 1 175px;text-align:center;${tag?"":"border-color:var(--acc)"}">
+      <div class="muted" style="font-size:11px">${tag||"主运行 A"} · ${shortName(r).slice(0,26)}</div>
+      <div style="font-size:34px;font-weight:800;color:${color};font-variant-numeric:tabular-nums">${o.acc??"—"}</div>
+      <div class="muted" style="font-size:11px">CI ${o.ci_lo}–${o.ci_hi}% · ${o.correct}/${o.n}</div>${delta}</div>`;
+  };
+  let html=`<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">`+
+    cardOf(a,"#4da3ff","")+
+    cmps.map(c=>cardOf(c.r,c.color,c.label,ov)).join("")+`</div>`;
+  const mismatch=cmps.filter(c=>c.r.bank_id!==a.bank_id);
+  if(mismatch.length)html+=`<div class="card" style="border-color:var(--warn);margin-bottom:12px;font-size:12.5px">⚠️ 题集版本不一致：${mismatch.map(c=>c.label+"="+c.r.bank_id).join("、")} 与主运行 ${a.bank_id} 分数不可直接比较</div>`;
+  html+=`<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:stretch">
+    <div class="card" style="flex:0 0 330px"><canvas id="iqRadar" height="230" style="width:100%"></canvas></div>
+    <div class="card" style="flex:1 1 380px"><h3 style="font-size:13.5px;margin-bottom:6px">逐科目成绩（${cmps.length+1} 次运行，绿=最优）</h3><div id="iqSubjTbl"></div></div>
+  </div>`;
+  el.innerHTML=html;
+  const series=[{r:a,color:"#4da3ff",label:"A"},...cmps];
+  let t=`<div class="tblwrap"><table><thead><tr><th>科目</th>${series.map(s=>`<th style="color:${s.color}">${s.label}</th>`).join("")}</tr></thead><tbody>`;
+  (a.subjects||[]).forEach(sub=>{
+    const vals=series.map(s=>{const x=(s.r.subjects||[]).find(y=>y.id===sub.id);return x?x.acc:null});
+    const valid=vals.filter(v=>v!=null);
+    const best=valid.length?Math.max(...valid):null;
+    t+=`<tr><td>${sub.name}</td>`+series.map((s,i)=>
+      vals[i]==null?'<td class="same">—</td>':
+      `<td class="${cmps.length&&vals[i]===best?"up":""}" style="${vals[i]===best?"font-weight:700":""}">${vals[i]}%</td>`).join("")+`</tr>`;
+  });
+  const bestAll=Math.max(...series.map(s=>(s.r.overall&&s.r.overall.acc)||0));
+  t+=`<tr style="border-top:2px solid var(--line)"><td><b>总体</b></td>`+series.map(s=>
+    `<td style="font-weight:700;color:${(s.r.overall&&s.r.overall.acc)===bestAll?"var(--acc2)":"inherit"}">${(s.r.overall&&s.r.overall.acc)??"—"}%</td>`).join("")+`</tr>`;
+  t+="</tbody></table></div>";
+  document.getElementById("iqSubjTbl").innerHTML=t;
+  drawRadar(series);
+}
+function drawRadar(series){
+  const cv=document.getElementById("iqRadar");if(!cv)return;
+  const {g,w,h}=setup(cv);
+  const subs=(series[0].r.subjects||[]).slice(0,8);
+  const n=subs.length;if(!n){g.fillText("无数据",w/2,h/2);return}
+  const cx=w/2,cy=h/2+4,R=Math.min(w,h)/2-36;
+  const ang=i=>-Math.PI/2+2*Math.PI*i/n;
+  g.strokeStyle=C.grid;
+  for(let ring=1;ring<=4;ring++){g.beginPath();
+    for(let i=0;i<=n;i++){const r=R*ring/4;i?g.lineTo(cx+r*Math.cos(ang(i%n)),cy+r*Math.sin(ang(i%n))):g.moveTo(cx+r*Math.cos(ang(i%n)),cy+r*Math.sin(ang(i%n)))}
+    g.stroke()}
+  for(let i=0;i<n;i++){g.beginPath();g.moveTo(cx,cy);g.lineTo(cx+R*Math.cos(ang(i)),cy+R*Math.sin(ang(i)));g.stroke()}
+  g.fillStyle=C.muted;g.font="10px system-ui";
+  subs.forEach((s,i)=>{const x=cx+(R+16)*Math.cos(ang(i)),y=cy+(R+16)*Math.sin(ang(i));
+    g.textAlign=Math.abs(Math.cos(ang(i)))<.3?"center":(Math.cos(ang(i))>0?"left":"right");
+    g.fillText(s.id.replace("mmlu_","").slice(0,11),x,y+3)});
+  g.textAlign="left";
+  series.forEach(s=>{
+    const ss=s.r.subjects||[];
+    g.beginPath();
+    subs.forEach((sub,i)=>{const m=ss.find(x=>x.id===sub.id);const v=m?Math.max(0,Math.min(100,m.acc||0)):0;
+      const r=R*v/100;i?g.lineTo(cx+r*Math.cos(ang(i)),cy+r*Math.sin(ang(i))):g.moveTo(cx+r*Math.cos(ang(i)),cy+r*Math.sin(ang(i)))});
+    g.closePath();g.strokeStyle=s.color;g.lineWidth=2;g.stroke();
+    g.fillStyle=s.color+"26";g.fill();
+  });
+  let lg=cv.parentElement.querySelector(".legend");
+  if(!lg){lg=document.createElement("div");lg.className="legend";cv.parentElement.appendChild(lg);}
+  lg.innerHTML=series.map(s=>`<span><i style="background:${s.color}"></i>${s.label} ${(s.r.overall&&s.r.overall.acc)??"—"}%</span>`).join("");
+}
+
+/* ================= 生成效果测试 ================= */
+let GEN_RUNS={}, genPoll=null;
+const STAR_ON="★",STAR_OFF="☆";
+
+async function genStart(){
+  const model=document.getElementById("genModel").value.trim();
+  if(!model){document.getElementById("genInfo").innerHTML='<span style="color:var(--err)">请填写模型名</span>';return}
+  const tasks=selectedTasks();
+  if(!tasks.length){document.getElementById("genInfo").innerHTML='<span style="color:var(--err)">请至少勾选一个题目</span>';return}
+  const body={base:document.getElementById("genBase").value,api_key:document.getElementById("genKey").value,
+    model,conc:document.getElementById("genConc").value,tag:document.getElementById("genTag").value,tasks};
+  const r=await fetch("/api/gen-start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  const d=await r.json();
+  if(!d.ok){document.getElementById("genInfo").innerHTML=`<span style="color:var(--err)">${d.error}</span>`;return}
+  document.getElementById("genBtnStart").disabled=true;
+  const ro=document.getElementById("genOut");ro.style.display="block";ro.textContent="已启动（23 题生成，地狱级单题可能 2-4 分钟，全程约 15-30 分钟）…\n";
+  genPoll=setInterval(async()=>{
+    try{
+      const s=await(await fetch("/api/gen-status")).json();
+      const lines=(s.log||[]).map(x=>x.msg);
+      ro.textContent=lines.slice(-12).join("\n")+(s.running?"\n…":"");
+      ro.scrollTop=ro.scrollHeight;
+      if(!s.running){
+        clearInterval(genPoll);genPoll=null;
+        document.getElementById("genBtnStart").disabled=false;
+        ro.textContent+=s.error?("\n✗ "+s.error):"\n✓ 完成";
+        loadGenResults(true);
+      }
+    }catch(e){}
+  },3000);
+}
+async function loadGenResults(focusNew){
+  try{
+    const list=await(await fetch("/api/gen-results")).json();
+    const prev=new Set(Object.keys(GEN_RUNS));
+    GEN_RUNS={};list.forEach(r=>GEN_RUNS[r.run_id]=r);
+    const names=Object.keys(GEN_RUNS).sort().reverse();
+    const sel=document.getElementById("genCmpSel");
+    const keep=sel.value;
+    sel.innerHTML=names.map(n=>`<option value="${n}" ${n===keep?"selected":""}>${genLabel(GEN_RUNS[n])}</option>`).join("");
+    renderGen(focusNew?names.find(n=>!prev.has(n)):null);
+  }catch(e){}
+}
+function genLabel(r){
+  const done=(r.items||[]).filter(x=>!x.error).length;
+  const avg=((r.items||[]).reduce((s,x)=>s+(x.stars||0),0)/Math.max(1,(r.items||[]).filter(x=>x.stars).length));
+  const fw=r.framework&&r.framework.name?` ${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:"";
+  return `${(r.model||"?").slice(0,22)}${fw} · 特征${done}题${(r.items||[]).some(x=>x.stars)?` · ★${avg.toFixed(1)}`:""} · ${r.started_utc.slice(5,16).replace("T"," ")}`;
+}
+function renderGen(focusRunId){
+  const el=document.getElementById("genResult");
+  const names=Object.keys(GEN_RUNS).sort().reverse();
+  const mainId=focusRunId||names[0];
+  const a=GEN_RUNS[mainId];
+  const cmpId=document.getElementById("genCmpSel").value;
+  const b=cmpId&&GEN_RUNS[cmpId];
+  if(!a){el.innerHTML='<div class="muted" style="padding:26px 2px">暂无生成结果——上方发起第一次生成测试</div>';return}
+  const ok=(a.items||[]).filter(x=>!x.error);
+  const featAvg=ok.length?Math.round(100*ok.reduce((s,x)=>s+x.pass/x.total,0)/ok.length):0;
+  let html=`<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+    <div class="card" style="flex:1 1 150px;text-align:center"><div class="muted" style="font-size:11px">完成作品</div>
+      <div style="font-size:32px;font-weight:800;color:var(--acc)">${ok.length}/${(a.items||[]).length}</div></div>
+    <div class="card" style="flex:1 1 150px;text-align:center"><div class="muted" style="font-size:11px">特征完整度</div>
+      <div style="font-size:32px;font-weight:800;color:var(--acc2)">${featAvg}%</div></div>
+    <div class="card" style="flex:1 1 150px;text-align:center"><div class="muted" style="font-size:11px">人工均分</div>
+      <div style="font-size:32px;font-weight:800;color:var(--warn)">${starAvg(a)}</div></div>
+  </div>`;
+  html+=`<div class="grid panels" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr))">`;
+  ok.forEach((it,idx)=>{
+    html+=`<div class="panel">
+      <h3 style="cursor:default">${it.name}</h3>
+      <div class="desc">${(it.tags||[]).join(" · ")} · ${it.lines} 行 · 特征 ${it.pass}/${it.total}
+        ${(it.checks||[]).map((c,i)=>c?'<span style="color:var(--acc2)">✓</span>':'<span style="color:var(--err)">✗</span>').join(" ")}</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+        <button onclick="previewWork('${it.file}','${it.name}')">预览效果</button>
+        ${b?`<button onclick="previewCompare('${it.id}','${it.name}')">A/B 并排</button>`:""}
+        <span style="margin-left:auto;font-size:18px;letter-spacing:2px;color:var(--warn);cursor:pointer" title="点击打星"
+          onmouseout="paintStars(this,'${a.run_id}','${it.id}')" onmouseover="hoverStars(this,5)"
+          onclick="rateStars('${a.run_id}','${it.id}',window.__hover||0)">${starsHtml(it.stars)}</span>
+      </div>
+    </div>`;
+  });
+  html+="</div>";
+  el.innerHTML=html;
+}
+function starsHtml(n){n=n||0;return STAR_ON.repeat(n)+STAR_OFF.repeat(5-n)}
+function starAvg(r){const s=(r.items||[]).filter(x=>x.stars);return s.length?(s.reduce((a,x)=>a+x.stars,0)/s.length).toFixed(1):"—"}
+let __curStars=0;
+function hoverStars(el,n){__curStars=n}
+function rateStars(runId,itemId,n){
+  if(!n)return;
+  const r=GEN_RUNS[runId];const it=(r.items||[]).find(x=>x.id===itemId);
+  it.stars=(it.stars===n)?null:n;
+  fetch("/api/gen-rate",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({run_id:runId,item_id:itemId,stars:it.stars})}).catch(()=>{});
+  renderGen();
+}
+function paintStars(el,runId,itemId){const r=GEN_RUNS[runId];const it=(r.items||[]).find(x=>x.id===itemId);el.textContent=starsHtml(it&&it.stars)}
+/* 沙箱预览 + 题目勾选 */
+const GEN_SANDBOX="allow-scripts allow-pointer-lock allow-forms"; /* 无 same-origin/top-nav/popups/modals: 生成的代码完全隔离, 无法触碰本测试页 */
+const TASK_CATALOG=[
+ {id:"pelican",name:"鹈鹕骑自行车",tier:"普通"},{id:"earth",name:"可拖拽3D地球",tier:"普通"},
+ {id:"blackhole",name:"黑洞吸积盘",tier:"普通"},{id:"matrix",name:"矩阵字符雨",tier:"普通"},
+ {id:"koi",name:"锦鲤池塘",tier:"普通"},{id:"fireworks",name:"点击烟花",tier:"普通"},
+ {id:"solar",name:"太阳系模拟",tier:"普通"},{id:"landing",name:"产品落地页",tier:"普通"},
+ {id:"dashboard",name:"数据看板",tier:"普通"},
+ {id:"flappy",name:"Flappy Bird",tier:"困难"},{id:"tetris",name:"俄罗斯方块",tier:"困难"},
+ {id:"breakout",name:"打砖块",tier:"困难"},{id:"ninja",name:"切水果忍者",tier:"困难"},
+ {id:"platformer",name:"2D平台跳跃",tier:"困难"},{id:"snake",name:"贪吃蛇",tier:"困难"},
+ {id:"fps",name:"3D第一人称迷宫",tier:"地狱"},{id:"cube3d",name:"可拧3D魔方",tier:"地狱"},
+ {id:"pinball",name:"物理弹珠台",tier:"地狱"},{id:"fluid",name:"实时流体模拟",tier:"地狱"},
+ {id:"eco",name:"生态进化模拟",tier:"地狱"},{id:"piano",name:"可弹奏钢琴",tier:"地狱"},
+ {id:"sortviz",name:"排序算法可视化",tier:"地狱"},{id:"win95",name:"Win95桌面",tier:"地狱"},
+ {id:"applecard",name:"Apple产品卡",tier:"实战"},{id:"stripe",name:"Stripe英雄区",tier:"实战"},
+ {id:"iostodo",name:"iOS待办App",tier:"实战"},{id:"ecomdetail",name:"电商详情页",tier:"实战"},
+ {id:"ioscalc",name:"iOS计算器",tier:"实战"},{id:"dock",name:"Mac Dock栏",tier:"实战"},
+ {id:"terminal",name:"macOS终端",tier:"实战"},{id:"parallax",name:"3D视差卡",tier:"实战"},
+ {id:"glasslogin",name:"玻璃登录页",tier:"实战"},{id:"feed",name:"社区信息流",tier:"实战"},
+];
+const TIER_COLOR={普通:"#4da3ff",困难:"#ffb454",地狱:"#ff6b7a",实战:"#37d4a0"};
+function renderTaskChips(){
+  const box=document.getElementById("genTasks");
+  if(!box)return;
+  const groups={};
+  TASK_CATALOG.forEach(t=>{(groups[t.tier]=groups[t.tier]||[]).push(t)});
+  let html=`<div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">
+    <span class="muted" style="font-size:11px">勾选要跑的题目（${TASK_CATALOG.length} 题）</span>
+    <button style="padding:3px 10px;font-size:11px" onclick="setAllTasks(true)">全选</button>
+    <button style="padding:3px 10px;font-size:11px" onclick="setAllTasks(false)">清空</button></div>`;
+  for(const[tier,list]of Object.entries(groups)){
+    html+=`<div style="margin:4px 0 8px"><span style="font-size:11px;color:${TIER_COLOR[tier]};font-weight:600">${tier}</span>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:5px">`+
+      list.map(t=>`<label class="chip" style="border-color:${TIER_COLOR[tier]}55">
+        <input type="checkbox" value="${t.id}" checked onchange="chipChange()"><span>${t.name}</span></label>`).join("")+
+      `</div></div>`;
+  }
+  box.innerHTML=html;
+}
+function selectedTasks(){return[...document.querySelectorAll('#genTasks input:checked')].map(x=>x.value)}
+function setAllTasks(on){document.querySelectorAll('#genTasks input').forEach(x=>x.checked=on);chipChange()}
+function chipChange(){
+  const n=selectedTasks().length;
+  document.getElementById("genTaskCount").textContent=n?`已选 ${n} 题`:"未选任何题目";
+}
+function previewWork(file,name){
+  openModal(`<iframe sandbox="${GEN_SANDBOX}" src="/${file}" style="width:100%;height:100%;border:0;background:#fff"></iframe>`,name+" · 沙箱隔离预览");
+}
+function previewCompare(taskId,name){
+  const a=GEN_RUNS[Object.keys(GEN_RUNS).sort().reverse()[0]];
+  const b=GEN_RUNS[document.getElementById("genCmpSel").value];
+  const ia=(a.items||[]).find(x=>x.id===taskId),ib=(b&&b.items||[]).find(x=>x.id===taskId);
+  openModal(`<div style="display:flex;height:100%;gap:6px">
+    <div style="flex:1;display:flex;flex-direction:column"><div class="muted" style="padding:4px">A · ${(a.model||"").slice(0,18)}</div>
+      <iframe sandbox="${GEN_SANDBOX}" src="/${ia.file}" style="flex:1;border:1px solid var(--line);background:#fff"></iframe></div>
+    <div style="flex:1;display:flex;flex-direction:column"><div class="muted" style="padding:4px">B · ${(b.model||"").slice(0,18)}</div>
+      <iframe sandbox="${GEN_SANDBOX}" src="/${ib?ib.file:""}" style="flex:1;border:1px solid var(--line);background:#fff"></iframe></div>
+  </div>`,name+" · A/B 并排（沙箱隔离）");
+}
+
+function openModal(inner,title){
+  let m=document.getElementById("genModal");
+  if(!m){m=document.createElement("div");m.id="genModal";
+    m.style.cssText="position:fixed;inset:0;background:#000c;z-index:200;display:none;padding:30px";
+    m.innerHTML=`<div style="background:var(--panel);border:1px solid var(--line);border-radius:14px;height:100%;display:flex;flex-direction:column">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line)">
+        <b id="genModalTitle"></b><button onclick="document.getElementById('genModal').style.display='none'">关闭 ✕</button></div>
+      <div id="genModalBody" style="flex:1;padding:10px"></div></div>`;
+    document.body.appendChild(m);}
+  document.getElementById("genModalTitle").textContent=title||"预览";
+  document.getElementById("genModalBody").innerHTML=inner;
+  m.style.display="block";
+}
+
+window.addEventListener("resize",()=>{clearTimeout(rzT);rzT=setTimeout(renderAll,150)});
+/* 面板折叠: 点击标题显示/关闭 */
+document.querySelectorAll(".panel").forEach(p=>{
+  const body=document.createElement("div");body.className="pbody";
+  while(p.lastElementChild&&p.lastElementChild.tagName!=="H3")body.prepend(p.lastElementChild);
+  if(body.childElementCount)p.appendChild(body);
+  const h=p.querySelector("h3");if(h)h.onclick=()=>p.classList.toggle("closed");
+});
+refresh();
+</script>
+</body>
+</html>

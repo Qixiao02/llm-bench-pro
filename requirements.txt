@@ -1,0 +1,2 @@
+# llm-bench-pro: Python 3.8+ 纯标准库, 零第三方依赖
+# 无需 pip install 任何包
