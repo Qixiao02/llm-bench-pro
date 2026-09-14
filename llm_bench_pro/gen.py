@@ -2,24 +2,24 @@
 # -*- coding: utf-8 -*-
 """
 gen.py — 真实生成效果测试引擎
-四档题库(普通/困难/地狱/实战 33 题) -> 模型生成完整 HTML -> 特征自动检查 + 人工星级。
-作品落盘 works/, 元数据落 results/gen_*.json。
+四档题库(普通/困难/地狱/实战 33 题) -> 模型生成完整 HTML -> 运行检测 + 视觉评审(geneval) + 人工星级。
+作品与截图落盘 works/<run_id>/, 元数据经 sink 写库或 JSON。
 """
-import json
 import os
 import re
-import time
-import urllib.request
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 try:
-    from . import iq, sinks  # 包内导入: python -m llm_bench_pro.gen
+    from . import geneval, iq, sinks, store  # 包内导入: python -m llm_bench_pro.gen
 except ImportError:
-    import iq  # server.py 以包目录为 sys.path 顶层导入
+    import geneval  # server.py 以包目录为 sys.path 顶层导入
+    import iq
     import sinks
+    import store
 
-GEN_VERSION = "1.2.0"  # 1.2: 特征检查去重(闭合只计一次), features 标签与 checks 一一对应
+# 2.0: 源码正则特征 -> 无头浏览器运行检测(逐题交互脚本/功能断言) + 可选视觉模型清单评审, 与 1.x 结果不可直接比较
+GEN_VERSION = "2.0.0"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
 WORKS = os.path.join(ROOT, "works")
 
@@ -130,8 +130,6 @@ GEN_TASKS = [
 ]
 
 
-_BASE_FEATURES = [r"<!doctype html|<html", r"<script|<style"]
-_BASE_LABELS = ["<!doctype/<html", "<script/<style", "完整闭合</html>"]  # 前两项正则 + 闭合完整性检查
 def chat(url, payload, headers, timeout=600):
     d = iq.post_chat(url, payload, headers, timeout)
     ch = d["choices"][0]
@@ -194,9 +192,6 @@ def extract_html(resp):
         return resp[i:j + 7].strip() if j > i else resp[i:].strip()
     return resp.strip()
 
-def check_features(html, features):
-    return [bool(re.search(f, html, re.I)) for f in features]
-
 
 _GEN_PROGRESS = None
 
@@ -211,8 +206,9 @@ def plog(msg):
 
 
 def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
-            framework=None, fw_version=None, thinking=False, sink=None):
-    """跑生成测试。作品落 works/<run_id>/; 元数据经 sink (默认 outdir/<run_id>.json); 返回落地位置。"""
+            framework=None, fw_version=None, thinking=False, sink=None, judge=None, browsers=2):
+    """跑生成测试。作品落 works/<run_id>/; 每件作品生成后即做运行检测(+可选视觉评审);
+    元数据经 sink (默认 outdir/<run_id>.json); 返回落地位置。judge: {base, model, api_key}"""
     outdir = outdir or os.path.join(ROOT, "results")
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
     tasks = [t for t in GEN_TASKS if not task_ids or t["id"] in task_ids]
@@ -229,18 +225,21 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
               "started_utc": datetime.now(timezone.utc).isoformat(),
               "works_dir": "works/" + run_id, "items": []}
     sink = sink or sinks.JsonFileSink(outdir)
+    evaluator = geneval.Evaluator(judge, browsers=browsers, log=plog)
+    result["eval"] = evaluator.meta()
 
     def save():
         sink.save(result)
 
-    plog("== gen v%s | %s | %d 题 | conc=%d ==" % (GEN_VERSION, model, len(tasks), conc))
+    plog("== gen v%s | %s | %d 题 | conc=%d | 评测: %s%s ==" % (
+        GEN_VERSION, model, len(tasks), conc, "无头浏览器运行检测" if evaluator.method == "browser" else "源码检查(未找到浏览器)",
+        " + 视觉评审 " + judge["model"] if evaluator.judge_cfg else ""))
 
     done_ct = [0]
 
     def failed(task, err):
         return {"id": task["id"], "name": task["name"], "tags": task["tags"], "error": err,
-                "checks": [], "pass": 0, "total": len(_BASE_LABELS) + len(task["features"]),
-                "features": [], "stars": None, "lines": 0, "chars": 0}
+                "checks": [], "pass": 0, "total": 0, "features": [], "stars": None, "lines": 0, "chars": 0}
 
     def worker(task):
         plog("▶ 开始: %s (%s)" % (task["name"], "/".join(task["tags"])))
@@ -257,11 +256,6 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
             plog("  ✗ [%s] 失败: %s · 进度 %d/%d" % (task["name"], str(e)[:60], done_ct[0], len(tasks)))
             return failed(task, str(e)[:120])
         html = extract_html(resp)
-        low = html.lower()
-        complete = "</html>" in low and low.count("<script") <= low.count("</script>")
-        checks = check_features(html, _BASE_FEATURES)
-        checks.append(complete)
-        checks += check_features(html, task["features"])
         fname = task["id"] + ".html"
         fpath = os.path.join(work_dir, fname)
         with open(fpath + ".tmp", "w", encoding="utf-8") as f:
@@ -270,12 +264,11 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
         item = {"id": task["id"], "name": task["name"], "tags": task["tags"],
                 "file": "works/%s/%s" % (run_id, fname), "chars": len(html),
                 "lines": html.count("\n") + 1,
-                "features": _BASE_LABELS + task["features"],  # 与 checks 一一对应
                 "continuations": cont_n, "reason_chars": reason_len,
-                "checks": checks, "pass": sum(checks), "total": len(checks),
                 "stars": None, "in_tokens": in_tok, "out_tokens": out_tok}
+        geneval.apply_eval(item, evaluator.evaluate(task, fpath, html))
         done_ct[0] += 1
-        plog("  ✓ [%s] 特征 %d/%d · %d 行 · 进度 %d/%d" % (task["name"], item["pass"], item["total"], item["lines"], done_ct[0], len(tasks)))
+        plog("  ✓ [%s] %s · 进度 %d/%d" % (task["name"], _eval_brief(item), done_ct[0], len(tasks)))
         return item
 
     result["status"] = "running"
@@ -291,7 +284,58 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
         result["error"] = "%s: %s" % (type(e).__name__, str(e)[:300])
         raise
     finally:
+        evaluator.close()
+        result["eval"] = evaluator.meta()
         result["finished_utc"] = datetime.now(timezone.utc).isoformat()
         save()
     plog("完成 => %s" % sink.location)
     return sink.location
+
+
+def _eval_brief(item):
+    ev = item.get("eval") or {}
+    s = "运行检测 %d/%d" % (item["pass"], item["total"])
+    fails = [c["label"] for c in ev.get("checks", []) if not c["pass"]]
+    if fails:
+        s += "（未通过：%s）" % "、".join(fails[:3])
+    j = ev.get("judge") or {}
+    if j.get("score") is not None:
+        s += " · 评审 %.0f 分" % j["score"]
+    elif j.get("error"):
+        s += " · 评审失败"
+    return s + " · %d 行" % item["lines"]
+
+
+def reevaluate(run_id, judge=None, only=None, db_path=None, browsers=2, log=None):
+    """对库中已有生成运行重新评测(运行检测 + 可选视觉评审), 就地更新作品条目, 保留人工星级。"""
+    log = log or plog
+    doc = store.get_run(run_id, db_path=db_path)
+    if not doc or doc.get("kind") != "gen":
+        raise KeyError("生成运行不存在: %s" % run_id)
+    tasks = {t["id"]: t for t in GEN_TASKS}
+    evaluator = geneval.Evaluator(judge, browsers=browsers, log=log)
+    targets = [it for it in doc.get("items", []) if not it.get("error") and it.get("id") in tasks
+               and (not only or it["id"] in only)]
+    log("== 重新评测 %s | %d 件作品 | %s%s ==" % (run_id, len(targets), evaluator.method,
+                                              " + 视觉评审 " + judge["model"] if evaluator.judge_cfg else ""))
+    done = [0]
+
+    def one(it):
+        path = os.path.join(ROOT, it["file"])
+        if not os.path.isfile(path):
+            log("  ✗ [%s] 作品文件缺失: %s" % (it["name"], it["file"]))
+            return
+        with open(path, encoding="utf-8", errors="replace") as f:
+            html = f.read()
+        geneval.apply_eval(it, evaluator.evaluate(tasks[it["id"]], path, html))
+        store.update_gen_item(run_id, it, db_path=db_path)
+        done[0] += 1
+        log("  ✓ [%s] %s · 进度 %d/%d" % (it["name"], _eval_brief(it), done[0], len(targets)))
+
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, browsers)) as ex:
+            list(ex.map(one, targets))
+    finally:
+        evaluator.close()
+        store.update_run_meta(run_id, {"eval": evaluator.meta(), "gen_version": GEN_VERSION}, db_path=db_path)
+    log("重新评测完成")

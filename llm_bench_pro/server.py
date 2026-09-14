@@ -20,6 +20,7 @@ if _PKG_DIR not in _sys.path:
 import bankman
 import bench
 import gen
+import geneval
 import iq
 import sinks
 import store
@@ -54,13 +55,36 @@ def gen_status_line(msg):
         _gen_state["log"] = _gen_state["log"][-400:]
 
 
-def run_gen_benchmark(url, model, api_key, task_ids, conc, tag, framework, fw_version, thinking=False):
+def _judge_cfg(body):
+    """请求体中的视觉评审配置 (judge_base/judge_model/judge_key); 未填返回 None。"""
+    base, model = (body.get("judge_base") or "").strip(), (body.get("judge_model") or "").strip()
+    if not base or not model:
+        return None
+    return {"base": base, "model": model, "api_key": body.get("judge_key") or ""}
+
+
+def run_gen_reeval(run_id, judge, only):
+    gen._GEN_PROGRESS = gen_status_line
+    try:
+        gen.reevaluate(run_id, judge, only=only, log=gen_status_line)
+    except Exception as e:
+        with _gen_lock:
+            _gen_state["error"] = "%s: %s" % (type(e).__name__, str(e)[:300])
+        gen_status_line("FAILED: %s" % _gen_state["error"])
+    finally:
+        gen._GEN_PROGRESS = None
+        with _gen_lock:
+            _gen_state["running"] = False
+
+
+def run_gen_benchmark(url, model, api_key, task_ids, conc, tag, framework, fw_version, thinking=False, judge=None):
     gen._GEN_PROGRESS = gen_status_line
     try:
         with _gen_lock:
             _gen_state["error"] = None
         sink = sinks.SqliteSink()
-        gen.run_gen(url, model, api_key, task_ids, conc, RESULTS, tag, framework, fw_version, thinking, sink=sink)
+        gen.run_gen(url, model, api_key, task_ids, conc, RESULTS, tag, framework, fw_version, thinking,
+                    sink=sink, judge=judge)
         with _gen_lock:
             _gen_state["run_id"] = sink.run_id
     except Exception as e:
@@ -168,8 +192,9 @@ class Handler(BaseHTTPRequestHandler):
             self._body(json.dumps(payload, ensure_ascii=False).encode(), "application/json")
         elif path.startswith("/works/"):
             full = safe_join(WORKS, path[len("/works/"):])
-            if full and full.lower().endswith(".html") and os.path.isfile(full):
-                self._serve_file(full, "text/html; charset=utf-8")
+            ctype = {".html": "text/html; charset=utf-8", ".jpg": "image/jpeg"}.get(os.path.splitext(full or "")[1].lower())
+            if full and ctype and os.path.isfile(full):
+                self._serve_file(full, ctype)
             else:
                 self._json({"error": "not found"}, 404)
         elif path == "/api/banks":
@@ -199,6 +224,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_gen_start(body)
         if path == "/api/gen-rate":
             return self.api_gen_rate(body)
+        if path == "/api/gen-eval":
+            return self.api_gen_eval(body)
         self._json({"ok": False, "error": "not found"}, 404)
 
     def api_probe(self, body):
@@ -336,9 +363,10 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             return self._json({"ok": False, "error": "并发应为整数"}, 400)
         task_ids = body.get("tasks") or None
+        judge = _judge_cfg(body)
         with _gen_lock:
             if _gen_state["running"]:
-                return self._json({"ok": False, "error": "已有生成测试在运行"}, 409)
+                return self._json({"ok": False, "error": "已有生成测试或评测在运行"}, 409)
             _gen_state.update({"running": True, "log": [], "error": None, "run_id": None,
                                "started_at": time.strftime("%Y-%m-%d %H:%M:%S")})
         th = threading.Thread(target=run_gen_benchmark,
@@ -346,11 +374,28 @@ class Handler(BaseHTTPRequestHandler):
                                     (body.get("tag") or "").strip(),
                                     (body.get("framework") or "").strip() or None,
                                     (body.get("fw_version") or "").strip() or None,
-                                    bool(body.get("thinking"))),
+                                    bool(body.get("thinking")), judge),
                               daemon=True)
         th.start()
         return self._json({"ok": True, "url": url, "tasks": len(task_ids) if task_ids else len(gen.GEN_TASKS),
-                           "thinking": bool(body.get("thinking"))})
+                           "thinking": bool(body.get("thinking")), "eval": geneval.Evaluator(judge).meta()})
+
+    def api_gen_eval(self, body):
+        """对已有生成运行重新评测 (运行检测 + 可选视觉评审)。与生成测试共用运行状态/日志。"""
+        run_id = body.get("run_id") or ""
+        if not isinstance(run_id, str) or not run_id.startswith("gen_") or not _RUN_ID_RE.match(run_id):
+            return self._json({"ok": False, "error": "非法 run_id"}, 400)
+        if store.get_run(run_id, items=False) is None:
+            return self._json({"ok": False, "error": "run 不存在"}, 404)
+        only = set(body.get("tasks") or []) or None
+        judge = _judge_cfg(body)
+        with _gen_lock:
+            if _gen_state["running"]:
+                return self._json({"ok": False, "error": "已有生成测试或评测在运行"}, 409)
+            _gen_state.update({"running": True, "log": [], "error": None, "run_id": run_id,
+                               "started_at": time.strftime("%Y-%m-%d %H:%M:%S")})
+        threading.Thread(target=run_gen_reeval, args=(run_id, judge, only), daemon=True).start()
+        return self._json({"ok": True, "run_id": run_id, "eval": geneval.Evaluator(judge).meta()})
 
     def api_gen_rate(self, body):
         run_id, item_id = body.get("run_id") or "", body.get("item_id")

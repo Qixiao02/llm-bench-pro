@@ -208,15 +208,23 @@ tr.sumrow td{background:#101827;color:var(--warn);font-weight:600;border-top:1px
         <label class="chk" title="推理模型: 开启后先思考再生成, 质量可能更高但更慢"><input type="checkbox" id="genThink">思考模式</label>
         <button id="genBtnStart" style="background:var(--acc);color:#08121f;font-weight:600;border-color:var(--acc)" onclick="genStart()">开始生成</button></div>
     </div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+      <div style="flex:2 1 240px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">视觉评审模型端点（可选，需支持图片输入的 OpenAI 兼容接口）</div><input id="genJudgeBase" placeholder="留空则只做运行检测"></div>
+      <div style="flex:1 1 160px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">评审模型</div><input id="genJudgeModel" placeholder="如 Qwen2.5-VL-72B / gpt-4o"></div>
+      <div style="flex:1 1 130px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">评审 API Key</div><input id="genJudgeKey" type="password"></div>
+    </div>
+    <div class="muted" style="margin-top:6px;font-size:11.5px">每件作品生成后在本机无头 Chrome/Edge 中实际运行：检查报错、白屏、动画，并按题目脚本模拟按键/点击/拖拽验证功能；配置评审模型后，再将截图、检测报告与代码交给评审模型按清单逐项打分。</div>
     <div id="genInfo" class="muted" style="margin-top:8px;font-size:12px"></div>
     <div id="genTasks" style="margin-top:12px"></div>
     <div id="genTaskCount" class="muted" style="margin-top:6px;font-size:11.5px"></div>
     <div id="genOut" style="display:none;margin-top:10px;background:#0d1420;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:11.5px/1.7 Consolas,monospace;max-height:150px;overflow:auto;white-space:pre-wrap"></div>
   </div>
   <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:0 0 12px">
+    <span class="muted">运行</span>
+    <select id="genMainSel" onchange="renderGen()"></select>
     <span class="muted">对比运行</span>
     <select id="genCmpSel" onchange="renderGen()"></select>
-    <span class="muted" style="font-size:11px">选中后每个作品可 A/B 并排预览</span>
+    <button id="genBtnEval" onclick="genReeval()" title="用当前表单中的评审模型配置，对所选运行的全部作品重新做运行检测与视觉评审（保留人工评分）">重新评测</button>
   </div>
   <div id="genResult"></div>
 </section>
@@ -858,105 +866,195 @@ function drawRadar(series){
 
 /* ================= 生成效果测试 ================= */
 let GEN_RUNS={}, genPoll=null;
-const STAR_ON="★",STAR_OFF="☆";
+const GEN_LS="llm-bench-pro-gen-judge";
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+(function restoreJudge(){try{const k=JSON.parse(localStorage.getItem(GEN_LS)||"{}");
+  ["genJudgeBase","genJudgeModel"].forEach(id=>{const el=document.getElementById(id);if(el&&k[id])el.value=k[id]})}catch(e){}})();
+["genJudgeBase","genJudgeModel"].forEach(id=>document.getElementById(id).addEventListener("input",()=>{
+  const k={};["genJudgeBase","genJudgeModel"].forEach(i=>k[i]=document.getElementById(i).value);
+  try{localStorage.setItem(GEN_LS,JSON.stringify(k))}catch(e){}}));
+function judgeBody(){return{judge_base:document.getElementById("genJudgeBase").value.trim(),
+  judge_model:document.getElementById("genJudgeModel").value.trim(),judge_key:document.getElementById("genJudgeKey").value}}
+function genMsg(text,isErr){document.getElementById("genInfo").innerHTML=isErr?`<span style="color:var(--err)">${esc(text)}</span>`:esc(text)}
 
 async function genStart(){
   const model=document.getElementById("genModel").value.trim();
-  if(!model){document.getElementById("genInfo").innerHTML='<span style="color:var(--err)">请填写模型名</span>';return}
+  if(!model){genMsg("请填写模型名称",true);return}
   const tasks=selectedTasks();
-  if(!tasks.length){document.getElementById("genInfo").innerHTML='<span style="color:var(--err)">请至少勾选一个题目</span>';return}
+  if(!tasks.length){genMsg("请至少选择 1 道题目",true);return}
+  const jb=judgeBody();
+  if(!!jb.judge_base!==!!jb.judge_model){genMsg("视觉评审需同时填写端点和评审模型，或都留空",true);return}
   const body={base:document.getElementById("genBase").value,api_key:document.getElementById("genKey").value,
     model,conc:document.getElementById("genConc").value,tag:document.getElementById("genTag").value,tasks,
-    thinking:document.getElementById("genThink").checked};
+    thinking:document.getElementById("genThink").checked,...jb};
   const r=await fetch("/api/gen-start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   const d=await r.json();
-  if(!d.ok){document.getElementById("genInfo").innerHTML=`<span style="color:var(--err)">${d.error}</span>`;return}
-  document.getElementById("genBtnStart").disabled=true;
-  const ro=document.getElementById("genOut");ro.style.display="block";ro.textContent=`已启动（${tasks.length} 题生成${tasks.length>8?"，单题可能 1-4 分钟":""}）…
-`;
+  if(!d.ok){genMsg(d.error,true);return}
+  genMsg(evalMethodText(d.eval));
+  genWatch(`运行已开始：${tasks.length} 题${tasks.length>8?"，单题约 1–4 分钟":""}`);
+}
+async function genReeval(){
+  const runId=document.getElementById("genMainSel").value;
+  if(!runId){genMsg("没有可评测的运行",true);return}
+  const jb=judgeBody();
+  if(!!jb.judge_base!==!!jb.judge_model){genMsg("视觉评审需同时填写端点和评审模型，或都留空",true);return}
+  const r=await fetch("/api/gen-eval",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_id:runId,...jb})});
+  const d=await r.json();
+  if(!d.ok){genMsg(d.error,true);return}
+  genMsg(evalMethodText(d.eval));
+  genWatch("重新评测已开始："+runId,runId);
+}
+function genWatch(first,keepRun){
+  ["genBtnStart","genBtnEval"].forEach(id=>document.getElementById(id).disabled=true);
+  const ro=document.getElementById("genOut");ro.style.display="block";ro.textContent=first+"\n";
+  clearInterval(genPoll);
   genPoll=setInterval(async()=>{
     try{
       const s=await(await fetch("/api/gen-status")).json();
-      const lines=(s.log||[]).map(x=>x.msg);
-      ro.textContent=lines.slice(-12).join("\n")+(s.running?"\n…":"");
+      ro.textContent=(s.log||[]).map(x=>x.msg).slice(-14).join("\n")+(s.running?"\n…":"");
       ro.scrollTop=ro.scrollHeight;
       if(!s.running){
         clearInterval(genPoll);genPoll=null;
-        document.getElementById("genBtnStart").disabled=false;
-        ro.textContent+=s.error?("\n✗ "+s.error):"\n✓ 完成";
-        loadGenResults(true);
+        ["genBtnStart","genBtnEval"].forEach(id=>document.getElementById(id).disabled=false);
+        ro.textContent+=s.error?("\n失败："+s.error):"\n已完成";
+        loadGenResults(keepRun?null:true,keepRun);
       }
     }catch(e){}
   },3000);
 }
-async function loadGenResults(focusNew){
+function evalMethodText(ev){
+  if(!ev)return"";
+  const m=ev.method==="browser"?"无头浏览器运行检测":"源码检查（未找到 Chrome/Edge，结果仅供参考）";
+  return "评测方式："+m+(ev.judge_model?" + 视觉评审（"+ev.judge_model+"）":"，未配置视觉评审");
+}
+async function loadGenResults(focusNew,keepRun){
   try{
     const list=await(await fetch("/api/gen-results")).json();
     const prev=new Set(Object.keys(GEN_RUNS));
     GEN_RUNS={};list.forEach(r=>GEN_RUNS[r.run_id]=r);
     const names=Object.keys(GEN_RUNS).sort().reverse();
-    const sel=document.getElementById("genCmpSel");
-    const keep=sel.value;
-    sel.innerHTML=names.map(n=>`<option value="${n}" ${n===keep?"selected":""}>${genLabel(GEN_RUNS[n])}</option>`).join("");
-    renderGen(focusNew?names.find(n=>!prev.has(n)):null);
+    const main=document.getElementById("genMainSel"),cmp=document.getElementById("genCmpSel");
+    const fresh=focusNew?names.find(n=>!prev.has(n)):null;
+    const keepMain=keepRun||fresh||(GEN_RUNS[main.value]?main.value:names[0]);
+    const keepCmp=cmp.value;
+    main.innerHTML=names.map(n=>`<option value="${esc(n)}" ${n===keepMain?"selected":""}>${esc(genLabel(GEN_RUNS[n]))}</option>`).join("");
+    cmp.innerHTML=`<option value="">不对比</option>`+names.map(n=>`<option value="${esc(n)}" ${n===keepCmp?"selected":""}>${esc(genLabel(GEN_RUNS[n]))}</option>`).join("");
+    renderGen();
   }catch(e){}
 }
-function genLabel(r){
-  const tk=r.thinking?"🧠思考":"⚡直答";
-  const done=(r.items||[]).filter(x=>!x.error).length;
-  const avg=((r.items||[]).reduce((s,x)=>s+(x.stars||0),0)/Math.max(1,(r.items||[]).filter(x=>x.stars).length));
-  const fw=r.framework&&r.framework.name?` ${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:"";
-  return `${(r.model||"?").slice(0,22)}${fw} ${tk} · 特征${done}题${(r.items||[]).some(x=>x.stars)?` · ★${avg.toFixed(1)}`:""} · ${r.started_utc.slice(5,16).replace("T"," ")}`;
+function avgOf(xs){const v=xs.filter(x=>typeof x==="number");return v.length?v.reduce((a,b)=>a+b,0)/v.length:null}
+function genStats(r){
+  const ok=(r.items||[]).filter(x=>!x.error);
+  const v2=(r.eval&&r.eval.eval_version)||ok.some(x=>x.eval);
+  return{ok,v2,
+    exec:v2?avgOf(ok.map(x=>x.exec_score)):null,
+    judge:avgOf(ok.map(x=>x.judge_score)),
+    stars:avgOf(ok.map(x=>x.stars||null))};
 }
-function renderGen(focusRunId){
+function genLabel(r){
+  const s=genStats(r);
+  const fw=r.framework&&r.framework.name?` ${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:"";
+  const parts=[`${(r.model||"?").slice(0,22)}${fw}`,r.thinking?"思考":"非思考",`完成 ${s.ok.length}/${(r.items||[]).length}`];
+  if(s.exec!=null)parts.push(`检测 ${s.exec.toFixed(0)}%`);
+  if(s.judge!=null)parts.push(`评审 ${s.judge.toFixed(0)}`);
+  if(s.stars!=null)parts.push(`人工 ${s.stars.toFixed(1)}`);
+  if(!s.v2)parts.push("旧口径");
+  return parts.join(" · ")+" · "+(r.started_utc||"").slice(5,16).replace("T"," ");
+}
+function kpiCard(label,value,sub){
+  return `<div class="card" style="flex:1 1 170px"><div class="muted" style="font-size:12px">${label}</div>
+    <div style="font-size:26px;font-weight:600;margin-top:6px;font-variant-numeric:tabular-nums">${value}</div>
+    <div class="muted" style="font-size:11.5px;margin-top:4px">${sub||"&nbsp;"}</div></div>`;
+}
+function scoreColor(p){return p==null?"var(--muted)":p>=80?"var(--acc2)":p>=50?"var(--warn)":"var(--err)"}
+function renderGen(){
   const el=document.getElementById("genResult");
-  const names=Object.keys(GEN_RUNS).sort().reverse();
-  const mainId=focusRunId||names[0];
-  const a=GEN_RUNS[mainId];
-  const cmpId=document.getElementById("genCmpSel").value;
-  const b=cmpId&&GEN_RUNS[cmpId];
-  if(!a){el.innerHTML='<div class="muted" style="padding:26px 2px">暂无生成结果——上方发起第一次生成测试</div>';return}
-  const ok=(a.items||[]).filter(x=>!x.error);
-  const featAvg=ok.length?Math.round(100*ok.reduce((s,x)=>s+x.pass/x.total,0)/ok.length):0;
-  let html=`<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
-    <div class="card" style="flex:1 1 150px;text-align:center"><div class="muted" style="font-size:11px">完成作品</div>
-      <div style="font-size:32px;font-weight:800;color:var(--acc)">${ok.length}/${(a.items||[]).length}</div></div>
-    <div class="card" style="flex:1 1 150px;text-align:center"><div class="muted" style="font-size:11px">特征完整度</div>
-      <div style="font-size:32px;font-weight:800;color:var(--acc2)">${featAvg}%</div></div>
-    <div class="card" style="flex:1 1 150px;text-align:center"><div class="muted" style="font-size:11px">人工均分</div>
-      <div style="font-size:32px;font-weight:800;color:var(--warn)">${starAvg(a)}</div></div>
+  const a=GEN_RUNS[document.getElementById("genMainSel").value];
+  const b=GEN_RUNS[document.getElementById("genCmpSel").value];
+  if(!a){el.innerHTML='<div class="muted" style="padding:26px 2px">暂无生成结果</div>';return}
+  const s=genStats(a);
+  const ev=a.eval||{};
+  let html=`<div class="muted" style="font-size:12px;margin-bottom:10px">${s.v2?esc(evalMethodText(ev))+(ev.browser?"（"+esc(ev.browser)+"）":""):
+    '<span style="color:var(--warn)">该运行为旧版评测口径（源码关键词匹配），分数不可信，建议点击“重新评测”</span>'}</div>`;
+  html+=`<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+    ${kpiCard("已完成",`${s.ok.length}<span class="muted" style="font-size:14px"> / ${(a.items||[]).length}</span>`,"生成失败或思考耗尽不计入")}
+    ${kpiCard("运行检测通过率",s.exec==null?"—":s.exec.toFixed(1)+"%","加载、报错、白屏、动画、交互脚本")}
+    ${kpiCard("视觉评审均分",s.judge==null?"—":s.judge.toFixed(1),ev.judge_model?"评审模型 "+esc(ev.judge_model):"未配置评审模型")}
+    ${kpiCard("人工评分均值",s.stars==null?"—":s.stars.toFixed(1),"点击作品卡片上的星级评分")}
   </div>`;
-  html+=`<div class="grid panels" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr))">`;
-  ok.forEach((it,idx)=>{
+  html+=`<div class="grid panels" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">`;
+  (a.items||[]).forEach(it=>{
+    if(it.error){
+      html+=`<div class="panel"><h3 style="cursor:default">${esc(it.name)}</h3>
+        <div class="desc" style="color:var(--err)">生成失败：${esc(it.error)}</div></div>`;
+      return;
+    }
+    const e=it.eval, checks=e?e.checks:[];
+    const fails=checks.filter(c=>!c.pass);
+    const j=e&&e.judge;
+    const bar=checks.map(c=>`<i title="${esc((c.pass?"通过：":"未通过：")+c.label+(c.detail?"\n"+c.detail:""))}" style="display:inline-block;width:14px;height:6px;border-radius:2px;margin-right:3px;background:${c.pass?"var(--acc2)":"var(--err)"}"></i>`).join("");
     html+=`<div class="panel">
-      <h3 style="cursor:default">${it.name}</h3>
-      <div class="desc">${(it.tags||[]).join(" · ")} · ${it.lines} 行 · 特征 ${it.pass}/${it.total}
-        ${(it.checks||[]).map((c,i)=>c?'<span style="color:var(--acc2)">✓</span>':'<span style="color:var(--err)">✗</span>').join(" ")}</div>
-      <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-        <button onclick="previewWork('${it.file}','${it.name}')">预览效果</button>
-        ${b?`<button onclick="previewCompare('${it.id}','${it.name}')">A/B 并排</button>`:""}
-        <span style="margin-left:auto;font-size:18px;letter-spacing:2px;color:var(--warn);cursor:pointer" title="点击打星"
-          onmouseout="paintStars(this,'${a.run_id}','${it.id}')" onmouseover="hoverStars(this,5)"
-          onclick="rateStars('${a.run_id}','${it.id}',window.__hover||0)">${starsHtml(it.stars)}</span>
+      <h3 style="cursor:default;display:flex;justify-content:space-between;gap:8px"><span>${esc(it.name)}</span>
+        <span style="font-size:12px;font-weight:500;color:${scoreColor(j&&j.score)}">${j&&j.score!=null?"评审 "+j.score.toFixed(0):j&&j.error?"评审失败":""}</span></h3>
+      <div class="desc">${esc((it.tags||[]).join(" · "))} · ${it.lines} 行${it.continuations?" · 续写 "+it.continuations+" 轮":""}</div>
+      ${e?`<div style="margin-top:8px;display:flex;align-items:center;gap:8px"><span style="white-space:nowrap">${bar}</span>
+        <span style="font-size:12px;color:${scoreColor(it.exec_score)}">运行检测 ${it.pass}/${it.total}</span></div>
+        ${fails.length?`<div style="margin-top:6px;font-size:12px;color:var(--muted);line-height:1.6">${fails.slice(0,3).map(c=>"未通过："+esc(c.label)).join("<br>")}${fails.length>3?"<br>…":""}</div>`:""}`
+        :`<div class="desc" style="margin-top:6px;color:var(--warn)">未评测（旧版结果）</div>`}
+      <div style="display:flex;gap:8px;align-items:center;margin-top:10px">
+        <button onclick="previewWork('${esc(it.file)}','${esc(it.name)}')">预览</button>
+        ${e?`<button onclick="genDetail('${esc(a.run_id)}','${esc(it.id)}')">检测详情</button>`:""}
+        ${b?`<button onclick="previewCompare('${esc(it.id)}','${esc(it.name)}')">并排对比</button>`:""}
+        <span style="margin-left:auto;white-space:nowrap">${starsHtml(a.run_id,it.id,it.stars)}</span>
       </div>
     </div>`;
   });
   html+="</div>";
   el.innerHTML=html;
 }
-function starsHtml(n){n=n||0;return STAR_ON.repeat(n)+STAR_OFF.repeat(5-n)}
-function starAvg(r){const s=(r.items||[]).filter(x=>x.stars);return s.length?(s.reduce((a,x)=>a+x.stars,0)/s.length).toFixed(1):"—"}
-let __curStars=0;
-function hoverStars(el,n){__curStars=n}
+function starsHtml(runId,itemId,n){
+  n=n||0;
+  return [1,2,3,4,5].map(i=>`<span role="button" tabindex="0" aria-label="${i} 分" title="${i} 分（再次点击取消）"
+    style="cursor:pointer;font-size:17px;color:${i<=n?"var(--warn)":"var(--muted)"};padding:0 1px"
+    onclick="rateStars('${esc(runId)}','${esc(itemId)}',${i})">${i<=n?"★":"☆"}</span>`).join("");
+}
 function rateStars(runId,itemId,n){
-  if(!n)return;
-  const r=GEN_RUNS[runId];const it=(r.items||[]).find(x=>x.id===itemId);
+  const r=GEN_RUNS[runId];const it=r&&(r.items||[]).find(x=>x.id===itemId);
+  if(!it||!n)return;
   it.stars=(it.stars===n)?null:n;
   fetch("/api/gen-rate",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({run_id:runId,item_id:itemId,stars:it.stars})}).catch(()=>{});
+    body:JSON.stringify({run_id:runId,item_id:itemId,stars:it.stars})})
+    .then(x=>x.json()).then(d=>{if(!d.ok)genMsg("评分保存失败："+d.error,true)}).catch(()=>genMsg("评分保存失败：无法连接服务",true));
   renderGen();
 }
-function paintStars(el,runId,itemId){const r=GEN_RUNS[runId];const it=(r.items||[]).find(x=>x.id===itemId);el.textContent=starsHtml(it&&it.stars)}
+function genDetail(runId,itemId){
+  const r=GEN_RUNS[runId];const it=r&&(r.items||[]).find(x=>x.id===itemId);
+  if(!it||!it.eval)return;
+  const e=it.eval, dir=it.file.replace(/[^/]+$/,"")+e.shots_dir+"/";
+  const j=e.judge;
+  let h=`<div style="display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:16px;height:100%;overflow:auto">
+    <div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px">
+        ${(e.shots||[]).map(s=>`<figure style="margin:0"><img src="/${esc(dir+s.file)}" loading="lazy" style="width:100%;border:1px solid var(--line);border-radius:6px;background:#fff">
+          <figcaption class="muted" style="font-size:11.5px;margin-top:3px">${esc(s.caption)}</figcaption></figure>`).join("")||'<div class="muted">无截图（源码检查模式）</div>'}
+      </div>
+    </div>
+    <div style="font-size:12.5px;line-height:1.6">
+      <h4 style="margin:0 0 6px;font-size:13px">运行检测 ${it.pass}/${it.total}（${e.method==="browser"?"无头浏览器":"源码检查"}）</h4>
+      <table style="width:100%;border-collapse:collapse;text-align:left">${e.checks.map(c=>`<tr style="border-bottom:1px solid var(--line)">
+        <td style="text-align:left;padding:5px 6px 5px 0;vertical-align:top;color:${c.pass?"var(--acc2)":"var(--err)"};white-space:nowrap">${c.pass?"通过":"未通过"}</td>
+        <td style="text-align:left;padding:5px 0">${esc(c.label)}${c.detail?`<div class="muted" style="font-size:11.5px">${esc(c.detail)}</div>`:""}</td></tr>`).join("")}</table>
+      ${(e.notes||[]).length?`<div class="muted" style="margin-top:6px">${e.notes.map(esc).join("<br>")}</div>`:""}
+      <h4 style="margin:14px 0 6px;font-size:13px">视觉评审${j&&j.model?"（"+esc(j.model)+"）":""}</h4>
+      ${!j?'<div class="muted">未配置评审模型</div>':j.error?`<div style="color:var(--err)">${esc(j.error)}</div>`:
+        `<div style="font-size:20px;font-weight:600;color:${scoreColor(j.score)}">${j.score.toFixed(1)} <span class="muted" style="font-size:12px;font-weight:400">/ 100</span></div>
+        <div style="margin:4px 0 8px">${esc(j.summary)}</div>
+        <table style="width:100%;border-collapse:collapse;text-align:left">${j.items.map(x=>`<tr style="border-bottom:1px solid var(--line)">
+          <td style="text-align:left;padding:5px 8px 5px 0;vertical-align:top;white-space:nowrap;font-variant-numeric:tabular-nums;color:${scoreColor(x.score*10)}">${x.score}/10</td>
+          <td style="text-align:left;padding:5px 0">${esc(x.label)}<div class="muted" style="font-size:11.5px">${esc(x.reason)}</div></td></tr>`).join("")}</table>`}
+    </div></div>`;
+  openModal(h,it.name+" · 检测详情");
+}
 /* 沙箱预览 + 题目勾选 */
 const GEN_SANDBOX="allow-scripts allow-pointer-lock allow-forms"; /* 无 same-origin/top-nav/popups/modals: 生成的代码完全隔离, 无法触碰本测试页 */
 const TASK_CATALOG=[

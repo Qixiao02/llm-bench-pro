@@ -408,6 +408,32 @@ def rate_gen_item(run_id, task_id, stars, db_path=None):
         return cur.rowcount > 0
 
 
+def update_gen_item(run_id, item, db_path=None):
+    """重新评测后就地更新作品条目 (不改 stars)。返回是否命中。"""
+    data = {k: v for k, v in item.items() if k != "stars"}
+    with session(db_path) as conn, write_tx(conn):
+        row = conn.execute("SELECT data_json FROM gen_items WHERE run_id=? AND task_id=?", (run_id, item.get("id"))).fetchone()
+        if not row:
+            return False
+        data["__has_stars"] = json.loads(row["data_json"]).get("__has_stars", True)
+        cur = conn.execute("UPDATE gen_items SET name=?, file=?, error=?, pass=?, total=?, data_json=? WHERE run_id=? AND task_id=?",
+                           (item.get("name"), item.get("file"), item.get("error"), item.get("pass"), item.get("total"),
+                            _dumps(data), run_id, item.get("id")))
+        return cur.rowcount > 0
+
+
+def update_run_meta(run_id, patch, db_path=None):
+    """合并更新运行的顶层元数据 (meta_json), 如评测口径。"""
+    with session(db_path) as conn, write_tx(conn):
+        row = conn.execute("SELECT meta_json FROM runs WHERE run_id=?", (run_id,)).fetchone()
+        if not row:
+            return False
+        meta = json.loads(row["meta_json"])
+        meta.update(patch)
+        conn.execute("UPDATE runs SET meta_json=? WHERE run_id=?", (_dumps(meta), run_id))
+        return True
+
+
 def heartbeat(run_id, db_path=None):
     with session(db_path) as conn, write_tx(conn):
         conn.execute("UPDATE runs SET heartbeat_ts=? WHERE run_id=? AND status='running'", (time.time(), run_id))
