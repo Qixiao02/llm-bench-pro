@@ -3,1142 +3,1712 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LLM Bench Pro — 推理性能基准台</title>
+<title>LLM Bench Pro</title>
 <link rel="icon" href="data:,">
+<script>
+/* 首帧前确定主题, 避免闪烁: 本地偏好 > 系统偏好 > 暗色 */
+(function(){try{var t=localStorage.getItem("llm-bench-pro-theme");
+  if(!t)t=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";
+  document.documentElement.dataset.theme=t;}catch(e){document.documentElement.dataset.theme="dark";}})();
+</script>
 <style>
+/* ============================================================
+   1. Tokens
+   ============================================================ */
 :root{
-  --bg:#0b0f17;--panel:#131a26;--panel2:#1a2332;--line:#243147;
-  --txt:#e6edf7;--muted:#8b9bb4;--acc:#4da3ff;--acc2:#37d4a0;--warn:#ffb454;--err:#ff6b7a;
+  color-scheme:dark;
+  --bg:#0B0E14; --surface-1:#111827; --surface-2:#171F2E; --surface-3:#1F2937;
+  --border:#243044; --border-strong:#374151;
+  --text-1:#F3F4F6; --text-2:#9CA3AF; --text-3:#6B7280;
+  --primary:#6950E8; --primary-hover:#7B64EE; --primary-fg:#907AF1; --primary-soft:rgba(105,80,232,.16);
+  --success:#43D49A; --success-soft:rgba(17,184,134,.14);
+  --danger:#F37795;  --danger-soft:rgba(239,71,112,.14);
+  --warning:#FED14D; --warning-soft:rgba(254,191,6,.14);
+  --info:#8C8DFF;    --info-soft:rgba(140,141,255,.14);
+  --series-1:#907AF1; --series-2:#22B8CF; --series-3:#F5A524; --series-4:#EC6FAE; --series-5:#60A5FA; --series-6:#A3E635;
+  --chart-grid:rgba(255,255,255,.06); --chart-axis:rgba(255,255,255,.16);
+  --font-sans:"Inter","Segoe UI Variable Text","Segoe UI",-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei UI","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif;
+  --font-mono:"JetBrains Mono","Cascadia Mono","Cascadia Code",Consolas,"SF Mono",Menlo,monospace;
+  --fs-11:11px; --fs-12:12px; --fs-13:13px; --fs-14:14px; --fs-16:16px; --fs-20:20px; --fs-28:28px;
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px; --sp-6:24px; --sp-8:32px; --sp-10:40px;
+  --h-sm:28px; --h-md:32px; --h-lg:36px;
+  --r-xs:4px; --r-sm:6px; --r-md:8px; --r-lg:12px;
+  --shadow-pop:0 8px 24px rgba(0,0,0,.4); --shadow-modal:0 16px 48px rgba(0,0,0,.5);
+  --dur-fast:120ms; --dur-base:180ms; --ease:cubic-bezier(.2,0,0,1);
+  --z-sticky:10; --z-pop:800; --z-modal:900; --z-tooltip:1000;
 }
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--txt);font:14px/1.55 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;padding:0;margin:0;display:flex;min-height:100vh}
-#side{width:198px;flex:0 0 198px;background:var(--panel);border-right:1px solid var(--line);padding:18px 12px;position:sticky;top:0;height:100vh;box-sizing:border-box}
-#side .logo{font-weight:700;font-size:15px;padding:2px 12px 18px;letter-spacing:.5px}
-#side .logo span{color:var(--acc)}
-.nav{display:block;width:100%;text-align:left;background:none;border:none;color:var(--muted);padding:10px 12px;border-radius:8px;font-size:13.5px;margin-bottom:4px}
-.nav:hover{color:var(--txt)}
-.nav.active{background:var(--panel2);color:var(--txt)}
-.side-foot{position:absolute;bottom:14px;left:24px;font-size:11px}
-main{flex:1;min-width:0;padding:22px;box-sizing:border-box}
-.view{display:none}.view.on{display:block}
-.cmpcards{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:12px;margin:14px 0}
-.cmpcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
-.cmpcard .nm{color:var(--muted);font-size:11.5px;margin-bottom:6px}
-.cmpcard .vs{display:flex;align-items:baseline;gap:10px;font-size:17px;font-weight:700;font-variant-numeric:tabular-nums}
-.cmpcard .vs .b2{color:var(--acc2)}
-.dl{font-size:12px;font-weight:600;padding:2px 8px;border-radius:6px;margin-left:auto}
-.dl.up{background:#0e2b21;color:var(--acc2)} .dl.down{background:#33161b;color:var(--err)} .dl.na{background:var(--panel2);color:var(--muted)}
-h1{font-size:20px;font-weight:600;letter-spacing:.5px}
-h1 .v{color:var(--muted);font-weight:400;font-size:12px;margin-left:8px}
-header{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-bottom:18px}
-select,button,input{background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:7px 12px;font-size:13px;outline:none;cursor:pointer}
-input{cursor:text;width:100%}
-select:focus,input:focus{border-color:var(--acc)}
-button:hover{border-color:var(--acc)}
-button:disabled{opacity:.45;cursor:not-allowed}
-.muted{color:var(--muted);font-size:12px}
-.grid{display:grid;gap:14px}
-.kpis{grid-template-columns:repeat(auto-fit,minmax(170px,1fr));margin-bottom:16px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
-.kpi .lab{color:var(--muted);font-size:12px;margin-bottom:4px}
-.kpi .val{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums}
-.kpi .sub{color:var(--muted);font-size:11px;margin-top:2px}
-.kpi.a .val{color:var(--acc)} .kpi.b .val{color:var(--acc2)} .kpi.w .val{color:var(--warn)}
-.panels{grid-template-columns:1fr 1fr}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;position:relative}
-#tip{display:none;position:fixed;z-index:99;background:#0d1420ee;border:1px solid var(--acc);border-radius:8px;padding:7px 10px;font-size:11.5px;line-height:1.6;pointer-events:none;min-width:130px;max-width:280px;box-shadow:0 4px 14px #0009}
-.panel h3{font-size:14px;font-weight:600;margin-bottom:2px;cursor:pointer;user-select:none}
-.panel h3::before{content:"▾ ";color:var(--muted);font-size:11px}
-.panel.closed h3::before{content:"▸ "}
-.panel.closed .pbody{display:none}
-.legend span{cursor:pointer;padding:2px 4px;border-radius:4px}
-.legend span:hover{background:var(--panel2)}
-.legend span.off{opacity:.35;text-decoration:line-through}
-.panel .desc{color:var(--muted);font-size:11px;margin-bottom:10px}
-canvas{width:100%;height:auto;display:block;cursor:crosshair}
-tr.datarow{cursor:pointer}
-tr.detail td{background:#0d1420;color:var(--muted);font-size:11.5px}
-table{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
-.tblwrap{max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:8px}
-.tblwrap table{margin:0}
-.tblwrap thead th{position:sticky;top:0;background:var(--panel);z-index:1}
-tbody tr:hover td{background:#16202f}
-th{color:var(--muted);text-align:right;font-weight:500;padding:6px 8px;border-bottom:1px solid var(--line)}
-td{text-align:right;padding:6px 8px;border-bottom:1px solid #1b2536}
-th:first-child,td:first-child{text-align:left}
-.up{color:var(--acc2)} .down{color:var(--err)} .same{color:var(--muted)}
-tr.sumrow td{background:#101827;color:var(--warn);font-weight:600;border-top:1px solid var(--line)}
-#meta{margin:10px 0 4px;display:flex;gap:14px;flex-wrap:wrap}
-.badge{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:3px 9px;font-size:11px;color:var(--muted)}
-#empty{color:var(--muted);text-align:center;padding:60px 0}
-.legend{display:flex;gap:12px;font-size:11px;color:var(--muted);margin-top:6px;flex-wrap:wrap;overflow:visible}
-.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
-.chk{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none}
-.chk input{width:auto;cursor:pointer}
-.chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:14px;padding:3px 10px;font-size:11.5px;cursor:pointer;user-select:none;background:var(--panel2)}
-.chip input{width:auto;cursor:pointer;accent-color:var(--acc)}
-@media(max-width:1000px){.panels{grid-template-columns:1fr}#launcher .frm{grid-template-columns:1fr 1fr!important}}
-@media(max-width:760px){body{flex-direction:column}#side{width:100%;flex:none;height:auto;position:static;display:flex;align-items:center;gap:6px}.side-foot{display:none}#side .logo{padding:6px 10px}.nav{width:auto;padding:8px 10px}}
+[data-theme="light"]{
+  color-scheme:light;
+  --bg:#F6F7F8; --surface-1:#FFFFFF; --surface-2:#F9FAFB; --surface-3:#F3F4F6;
+  --border:#E5E7EB; --border-strong:#D1D5DB;
+  --text-1:#111827; --text-2:#4B5563; --text-3:#6B7280;
+  --primary:#6950E8; --primary-hover:#592BE7; --primary-fg:#592BE7; --primary-soft:#F1EEFD;
+  --success:#0C8A70; --success-soft:#E3FDEB;
+  --danger:#D6174A;  --danger-soft:#FEF1F4;
+  --warning:#A85611; --warning-soft:#FFF8E6;
+  --info:#4F46E5;    --info-soft:#EEF2FF;
+  --series-1:#6950E8; --series-2:#0E9AB0; --series-3:#D97F06; --series-4:#D6408E; --series-5:#2F7FE0; --series-6:#5E9E12;
+  --chart-grid:rgba(17,24,39,.07); --chart-axis:rgba(17,24,39,.22);
+  --shadow-pop:0 8px 24px rgba(17,24,39,.12); --shadow-modal:0 16px 48px rgba(17,24,39,.18);
+}
+
+/* ============================================================
+   2. Base
+   ============================================================ */
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{background:var(--bg);color:var(--text-1);font:400 var(--fs-13)/1.5 var(--font-sans);
+  -webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
+h1,h2,h3,h4,p,figure,pre{margin:0}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:var(--primary-fg)}
+[hidden]{display:none!important}
+:focus-visible{outline:2px solid var(--primary-fg);outline-offset:2px}
+::selection{background:var(--primary-soft)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:10px;border:2px solid var(--bg)}
+::-webkit-scrollbar-track{background:transparent}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+.icon{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;vertical-align:middle}
+.icon-sm{width:14px;height:14px}
+.icon-lg{width:24px;height:24px}
+.num{font-variant-numeric:tabular-nums}
+.mono{font-family:var(--font-mono)}
+.muted{color:var(--text-2)}
+.faint{color:var(--text-3)}
+.small{font-size:var(--fs-12)}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{50%{opacity:.35}}
+@keyframes shimmer{to{background-position:-200% 0}}
+
+/* ============================================================
+   3. Layout
+   ============================================================ */
+.app{display:grid;grid-template-columns:216px minmax(0,1fr);min-height:100vh}
+.sidebar{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;background:var(--surface-1);
+  border-right:1px solid var(--border);padding:var(--sp-3)}
+.brand{display:flex;align-items:center;gap:10px;padding:var(--sp-1) var(--sp-2) var(--sp-5)}
+.brand-mark{width:28px;height:28px;border-radius:var(--r-sm);background:var(--primary);color:#fff;display:grid;place-items:center;flex:none}
+.brand-name{font-size:var(--fs-14);font-weight:600;line-height:1.2}
+.brand-sub{font-size:var(--fs-11);color:var(--text-3)}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav-label{padding:var(--sp-2) 10px var(--sp-1);font-size:var(--fs-11);color:var(--text-3)}
+.nav-item{position:relative;display:flex;align-items:center;gap:10px;height:34px;padding:0 10px;border:0;border-radius:var(--r-sm);
+  background:transparent;color:var(--text-2);cursor:pointer;text-align:left;font-size:var(--fs-13);
+  transition:background-color var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease)}
+.nav-item:hover{background:var(--surface-2);color:var(--text-1)}
+.nav-item[aria-current="page"]{background:var(--primary-soft);color:var(--text-1);font-weight:500}
+.nav-item[aria-current="page"] .icon{color:var(--primary-fg)}
+.nav-item[aria-current="page"]::before{content:"";position:absolute;left:-12px;top:8px;bottom:8px;width:2px;border-radius:2px;background:var(--primary-fg)}
+.sidebar-foot{margin-top:auto;display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-3) var(--sp-2) 0;border-top:1px solid var(--border);font-size:var(--fs-12);color:var(--text-3)}
+.conn{display:inline-flex;align-items:center;gap:6px;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.conn-dot{width:7px;height:7px;border-radius:50%;background:var(--text-3);flex:none}
+.conn.is-ok .conn-dot{background:var(--success)}
+.conn.is-err .conn-dot{background:var(--danger)}
+.sidebar-foot .btn{margin-left:auto}
+.main{min-width:0;padding:var(--sp-6) var(--sp-8) var(--sp-10)}
+.page{display:none;max-width:1480px;margin:0 auto}
+.page.is-active{display:block}
+.page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--sp-4);flex-wrap:wrap}
+.page-title{font-size:var(--fs-20);font-weight:600;line-height:1.3}
+.page-sub{margin-top:2px;color:var(--text-2)}
+.page-actions{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
+.toolbar{display:flex;align-items:center;gap:var(--sp-3) var(--sp-4);flex-wrap:wrap;margin:var(--sp-5) 0 var(--sp-4);
+  padding-bottom:var(--sp-4);border-bottom:1px solid var(--border)}
+.toolbar .spacer{flex:1 1 auto}
+.tb-field{display:flex;align-items:center;gap:var(--sp-2);min-width:0}
+.tb-field>.tb-label{color:var(--text-2);font-size:var(--fs-12);white-space:nowrap}
+.tb-field .select{width:auto;min-width:240px;max-width:440px}
+.stack>*+*{margin-top:var(--sp-4)}
+.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-4)}
+.span-all{grid-column:1/-1}
+.row{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
+
+/* ============================================================
+   4. Components
+   ============================================================ */
+/* 按钮 */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:var(--h-md);padding:0 12px;border-radius:var(--r-sm);
+  border:1px solid transparent;font-size:var(--fs-13);font-weight:500;line-height:1;cursor:pointer;white-space:nowrap;user-select:none;
+  transition:background-color var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease)}
+.btn-primary{background:var(--primary);color:#fff}
+.btn-primary:hover:not(:disabled){background:var(--primary-hover)}
+.btn-secondary{background:var(--surface-2);border-color:var(--border-strong);color:var(--text-1)}
+.btn-secondary:hover:not(:disabled){background:var(--surface-3)}
+.btn-ghost{background:transparent;color:var(--text-2)}
+.btn-ghost:hover:not(:disabled){background:var(--surface-2);color:var(--text-1)}
+.btn-danger{background:var(--danger-soft);color:var(--danger)}
+.btn-sm{height:var(--h-sm);padding:0 8px;font-size:var(--fs-12)}
+.btn-icon{width:var(--h-md);padding:0}
+.btn-icon.btn-sm{width:var(--h-sm)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn.is-loading .icon{animation:spin 1s linear infinite}
+
+/* 表单 */
+.form-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:var(--sp-3) var(--sp-4)}
+.field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.field.span-2{grid-column:span 2}
+.field>label,.field>.label{font-size:var(--fs-12);font-weight:500;color:var(--text-2)}
+.field .help{font-size:var(--fs-11);color:var(--text-3);line-height:1.4}
+.input,.select{height:var(--h-md);width:100%;padding:0 10px;background:var(--surface-2);color:var(--text-1);
+  border:1px solid var(--border-strong);border-radius:var(--r-sm);font-size:var(--fs-13);outline:none;
+  transition:border-color var(--dur-fast) var(--ease),box-shadow var(--dur-fast) var(--ease)}
+.input::placeholder{color:var(--text-3)}
+.input:focus,.select:focus{border-color:var(--primary-fg);box-shadow:0 0 0 3px var(--primary-soft)}
+.select{appearance:none;padding-right:30px;cursor:pointer;text-overflow:ellipsis;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%239CA3AF' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 8px center}
+.select option{background:var(--surface-1);color:var(--text-1)}
+input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+input[type=number]{-moz-appearance:textfield}
+.check{display:inline-flex;align-items:center;gap:8px;height:var(--h-md);font-size:var(--fs-13);color:var(--text-1);cursor:pointer;user-select:none}
+.check input{width:16px;height:16px;margin:0;accent-color:var(--primary);cursor:pointer}
+.form-section{margin-top:var(--sp-4);padding-top:var(--sp-4);border-top:1px solid var(--border)}
+.form-section-title{display:flex;align-items:center;gap:var(--sp-2);font-size:var(--fs-13);font-weight:600;margin-bottom:var(--sp-3)}
+.form-section-title .faint{font-weight:400;font-size:var(--fs-12)}
+details.advanced{margin-top:var(--sp-4);border-top:1px solid var(--border);padding-top:var(--sp-3)}
+details.advanced>summary{display:inline-flex;align-items:center;gap:6px;cursor:pointer;list-style:none;color:var(--text-2);font-size:var(--fs-13);font-weight:500;user-select:none}
+details.advanced>summary::-webkit-details-marker{display:none}
+details.advanced>summary .icon{transition:transform var(--dur-fast) var(--ease)}
+details.advanced[open]>summary .icon{transform:rotate(180deg)}
+details.advanced>.form-grid{margin-top:var(--sp-3)}
+.form-actions{display:flex;align-items:center;justify-content:flex-end;gap:var(--sp-2);flex-wrap:wrap;margin-top:var(--sp-4);
+  padding-top:var(--sp-4);border-top:1px solid var(--border)}
+.form-actions .inline-msg{margin-right:auto}
+
+/* 卡片 / 面板 */
+.card,.panel{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--r-md)}
+.card{padding:var(--sp-4)}
+.card-head,.panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--sp-3)}
+.card-title,.panel-title{font-size:var(--fs-14);font-weight:600;line-height:1.4}
+.card-desc,.panel-desc{margin-top:2px;font-size:var(--fs-12);color:var(--text-3);line-height:1.5}
+.card-head+*{margin-top:var(--sp-4)}
+.panel{padding:var(--sp-4);min-width:0}
+.panel-body{margin-top:var(--sp-3)}
+.panel.is-collapsed .panel-body{display:none}
+.panel-toggle .icon{transition:transform var(--dur-fast) var(--ease)}
+.panel.is-collapsed .panel-toggle .icon{transform:rotate(-90deg)}
+
+/* 徽标 / 标签 */
+.badge{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:var(--r-xs);background:var(--surface-2);
+  border:1px solid var(--border);color:var(--text-2);font-size:var(--fs-12);white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.badge b{color:var(--text-1);font-weight:500}
+.badge.is-success{background:var(--success-soft);border-color:transparent;color:var(--success)}
+.badge.is-danger{background:var(--danger-soft);border-color:transparent;color:var(--danger)}
+.badge.is-warning{background:var(--warning-soft);border-color:transparent;color:var(--warning)}
+.badge.is-primary{background:var(--primary-soft);border-color:transparent;color:var(--primary-fg)}
+.meta-list{display:flex;gap:var(--sp-2);flex-wrap:wrap;margin-bottom:var(--sp-4)}
+.run-tag{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:var(--r-xs);font-size:var(--fs-11);font-weight:600;color:#fff;flex:none}
+.run-tag.a{background:var(--series-1)} .run-tag.b{background:var(--series-2)}
+.delta{display:inline-flex;align-items:center;gap:2px;height:20px;padding:0 6px;border-radius:var(--r-xs);font-size:var(--fs-12);font-weight:500;white-space:nowrap}
+.delta .icon{width:12px;height:12px;stroke-width:2}
+.delta.up{background:var(--success-soft);color:var(--success)}
+.delta.down{background:var(--danger-soft);color:var(--danger)}
+.delta.flat{background:var(--surface-3);color:var(--text-2)}
+.swatch{display:inline-block;width:10px;height:10px;border-radius:2px;flex:none}
+
+/* KPI */
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:var(--sp-3);margin-bottom:var(--sp-4)}
+.kpi{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--r-md);padding:var(--sp-4);min-width:0}
+.kpi-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);min-height:20px}
+.kpi-label{font-size:var(--fs-12);font-weight:500;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi-value{margin-top:var(--sp-2);font-size:var(--fs-28);font-weight:600;line-height:1.15;color:var(--text-1)}
+.kpi-value small{margin-left:4px;font-size:var(--fs-13);font-weight:400;color:var(--text-3)}
+.kpi-sub{margin-top:var(--sp-1);font-size:var(--fs-12);color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* 表格 */
+.table-wrap{border:1px solid var(--border);border-radius:var(--r-md);overflow:auto;max-height:420px}
+.table{width:100%;border-collapse:separate;border-spacing:0;font-size:var(--fs-13)}
+.table th{position:sticky;top:0;z-index:1;background:var(--surface-2);color:var(--text-2);font-size:var(--fs-12);font-weight:500;
+  text-align:right;padding:8px 12px;border-bottom:1px solid var(--border);white-space:nowrap}
+.table td{text-align:right;padding:8px 12px;border-bottom:1px solid var(--border);color:var(--text-1);vertical-align:top}
+.table th:first-child,.table td:first-child{text-align:left}
+.table .text-left{text-align:left}
+.table tbody tr:last-child td{border-bottom:0}
+.table tbody tr:hover td{background:var(--surface-2)}
+.table td .sub{display:block;margin-top:1px;font-size:var(--fs-11);color:var(--text-3);line-height:1.3}
+.table tr.total td{font-weight:600;border-top:1px solid var(--border-strong)}
+.table tr.expandable{cursor:pointer}
+.table tr.expandable td:first-child .icon{margin-right:4px;color:var(--text-3);transition:transform var(--dur-fast) var(--ease)}
+.table tr.expandable[aria-expanded="true"] td:first-child .icon{transform:rotate(90deg)}
+.table tr.detail td{background:var(--surface-2);color:var(--text-2);font-size:var(--fs-12);text-align:left;line-height:1.7}
+.table .best{font-weight:600}
+.table .up{color:var(--success)} .table .down{color:var(--danger)} .table .na{color:var(--text-3)}
+.table-caption{margin:var(--sp-4) 0 var(--sp-2);font-size:var(--fs-12);font-weight:500;color:var(--text-2)}
+
+/* 图表 */
+canvas.chart{display:block;width:100%;cursor:crosshair}
+.legend{display:flex;gap:var(--sp-1) var(--sp-2);flex-wrap:wrap;margin-top:var(--sp-3)}
+.legend-item{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border:0;border-radius:var(--r-xs);background:transparent;
+  color:var(--text-2);font-size:var(--fs-12);cursor:pointer}
+.legend-item:hover{background:var(--surface-2);color:var(--text-1)}
+.legend-item[aria-pressed="false"]{opacity:.4}
+.legend-item.static{cursor:default}
+.legend-item.static:hover{background:transparent;color:var(--text-2)}
+.legend-dash{width:14px;height:0;border-top:2px dashed currentColor;flex:none}
+.tooltip{position:fixed;z-index:var(--z-tooltip);display:none;min-width:160px;max-width:300px;padding:8px 10px;background:var(--surface-3);
+  border:1px solid var(--border-strong);border-radius:var(--r-sm);box-shadow:var(--shadow-pop);font-size:var(--fs-12);line-height:1.6;pointer-events:none}
+.tooltip .tt-title{font-weight:600;margin-bottom:2px}
+.tooltip .tt-row{display:flex;align-items:center;gap:8px}
+.tooltip .tt-row .tt-v{margin-left:auto;padding-left:12px;font-weight:500}
+
+/* 运行日志 */
+.runlog{margin-top:var(--sp-4);border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden}
+.runlog-head{display:flex;align-items:center;gap:var(--sp-2);height:36px;padding:0 var(--sp-2) 0 var(--sp-3);background:var(--surface-2);border-bottom:1px solid var(--border)}
+.runlog-dot{width:8px;height:8px;border-radius:50%;background:var(--text-3);flex:none}
+.runlog.is-running .runlog-dot{background:var(--primary-fg);animation:pulse 1.4s ease-in-out infinite}
+.runlog.is-ok .runlog-dot{background:var(--success)}
+.runlog.is-fail .runlog-dot{background:var(--danger)}
+.runlog-title{font-size:var(--fs-13);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.runlog-time{font-size:var(--fs-12);color:var(--text-3)}
+.runlog-head .btn{margin-left:auto}
+.runlog-body{max-height:220px;overflow:auto;padding:var(--sp-2) var(--sp-3);background:var(--bg);font:12px/1.65 var(--font-mono);color:var(--text-2);white-space:pre-wrap;word-break:break-all}
+
+/* 行内提示 / 提示框 / toast */
+.inline-msg{display:inline-flex;align-items:flex-start;gap:6px;font-size:var(--fs-12);color:var(--text-2);line-height:1.5}
+.inline-msg .icon{width:14px;height:14px;margin-top:2px}
+.inline-msg.is-error{color:var(--danger)}
+.inline-msg.is-success{color:var(--success)}
+.inline-msg.is-warning{color:var(--warning)}
+.alert{display:flex;gap:var(--sp-2);align-items:flex-start;padding:10px var(--sp-3);border-radius:var(--r-md);border:1px solid transparent;font-size:var(--fs-13);margin-bottom:var(--sp-4)}
+.alert .icon{margin-top:2px}
+.alert.is-warning{background:var(--warning-soft);color:var(--warning)}
+.alert.is-info{background:var(--info-soft);color:var(--info)}
+.toasts{position:fixed;right:var(--sp-4);bottom:var(--sp-4);z-index:var(--z-tooltip);display:flex;flex-direction:column;gap:var(--sp-2);max-width:380px}
+.toast{display:flex;gap:var(--sp-2);align-items:flex-start;padding:10px var(--sp-3);background:var(--surface-3);border:1px solid var(--border-strong);
+  border-radius:var(--r-md);box-shadow:var(--shadow-pop);font-size:var(--fs-13)}
+.toast.is-error .icon{color:var(--danger)}
+.toast .btn{margin-left:auto;margin-top:-4px;margin-right:-6px}
+
+/* 空状态 / 骨架 */
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:180px;padding:var(--sp-6);text-align:center;
+  color:var(--text-3);background:var(--surface-1);border:1px dashed var(--border);border-radius:var(--r-md)}
+.empty .icon{width:24px;height:24px;margin-bottom:var(--sp-1)}
+.empty-title{font-size:var(--fs-13);font-weight:500;color:var(--text-1)}
+.empty-desc{font-size:var(--fs-12)}
+.empty .btn{margin-top:var(--sp-2)}
+.empty.is-inline{min-height:96px;border-style:solid}
+.skeleton{border-radius:var(--r-xs);background:linear-gradient(90deg,var(--surface-2) 25%,var(--surface-3) 50%,var(--surface-2) 75%);background-size:200% 100%;animation:shimmer 1.4s linear infinite}
+
+/* 弹窗 */
+.modal-backdrop{position:fixed;inset:0;z-index:var(--z-modal);background:rgba(0,0,0,.6);display:flex;padding:var(--sp-6)}
+.modal{display:flex;flex-direction:column;width:100%;height:100%;background:var(--surface-1);border:1px solid var(--border-strong);border-radius:var(--r-lg);box-shadow:var(--shadow-modal);overflow:hidden}
+.modal-head{display:flex;align-items:center;gap:var(--sp-2);height:48px;padding:0 var(--sp-2) 0 var(--sp-4);border-bottom:1px solid var(--border);flex:none}
+.modal-title{font-size:var(--fs-14);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.modal-head .btn:first-of-type{margin-left:auto}
+.modal-body{flex:1;min-height:0;overflow:auto;padding:var(--sp-4)}
+.modal-body.is-flush{padding:0;overflow:hidden}
+.frame{display:block;width:100%;height:100%;border:0;background:#fff}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:1px;height:100%;background:var(--border)}
+.split>div{display:flex;flex-direction:column;min-width:0;background:var(--surface-1)}
+.split-head{display:flex;align-items:center;gap:var(--sp-2);height:36px;padding:0 var(--sp-3);font-size:var(--fs-12);color:var(--text-2);border-bottom:1px solid var(--border);white-space:nowrap;overflow:hidden}
+
+/* 下拉多选 */
+.dropdown{position:relative}
+.dropdown>summary{list-style:none}
+.dropdown>summary::-webkit-details-marker{display:none}
+.dropdown-panel{position:absolute;z-index:var(--z-pop);top:calc(100% + 4px);left:0;min-width:360px;max-width:520px;max-height:320px;overflow:auto;padding:var(--sp-1);
+  background:var(--surface-1);border:1px solid var(--border-strong);border-radius:var(--r-md);box-shadow:var(--shadow-pop)}
+.option-row{display:flex;align-items:center;gap:var(--sp-2);padding:6px var(--sp-2);border-radius:var(--r-xs);cursor:pointer;font-size:var(--fs-13)}
+.option-row:hover{background:var(--surface-2)}
+.option-row input{accent-color:var(--primary);margin:0}
+.option-row .grow{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* 题目选择 */
+.task-groups{display:grid;gap:var(--sp-3)}
+.task-group-head{display:flex;align-items:center;gap:var(--sp-2);margin-bottom:var(--sp-2)}
+.task-group-name{font-size:var(--fs-12);font-weight:600;color:var(--text-2)}
+.task-group-count{font-size:var(--fs-12);color:var(--text-3)}
+.task-group-head .btn{margin-left:auto}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{position:relative;display:inline-flex;align-items:center;gap:6px;height:var(--h-sm);padding:0 10px;border:1px solid var(--border);border-radius:var(--r-xs);
+  background:var(--surface-2);color:var(--text-2);font-size:var(--fs-12);cursor:pointer;user-select:none;
+  transition:background-color var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease)}
+.chip input{position:absolute;opacity:0;pointer-events:none}
+.chip .icon{width:12px;height:12px;stroke-width:2.25;display:none}
+.chip:hover{border-color:var(--border-strong);color:var(--text-1)}
+.chip:has(input:checked){background:var(--primary-soft);border-color:var(--primary-fg);color:var(--text-1)}
+.chip:has(input:checked) .icon{display:inline-block;color:var(--primary-fg)}
+.chip:has(input:focus-visible){outline:2px solid var(--primary-fg);outline-offset:2px}
+
+/* 生成作品 */
+.work-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:var(--sp-3)}
+.work{display:flex;flex-direction:column;gap:var(--sp-2);padding:var(--sp-4);background:var(--surface-1);border:1px solid var(--border);border-radius:var(--r-md);min-width:0}
+.work-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--sp-2)}
+.work-name{font-size:var(--fs-14);font-weight:600;line-height:1.4}
+.work-meta{font-size:var(--fs-12);color:var(--text-3)}
+.checkbar{display:flex;gap:3px;flex-wrap:wrap}
+.checkbar i{width:14px;height:6px;border-radius:2px;background:var(--success)}
+.checkbar i.fail{background:var(--danger)}
+.work-fails{font-size:var(--fs-12);color:var(--text-2);line-height:1.6}
+.work-actions{display:flex;align-items:center;gap:6px;margin-top:auto;padding-top:var(--sp-2)}
+.stars{display:inline-flex;margin-left:auto}
+.star{display:grid;place-items:center;width:24px;height:24px;border:0;border-radius:var(--r-xs);background:transparent;color:var(--text-3);cursor:pointer;padding:0}
+.star .icon{width:15px;height:15px}
+.star.on{color:var(--warning)}
+.star.on .icon{fill:currentColor}
+.stars:hover .star{color:var(--warning)}
+.stars:hover .star .icon{fill:currentColor}
+.stars .star:hover~.star{color:var(--text-3)}
+.stars .star:hover~.star .icon{fill:none}
+.score{font-size:var(--fs-12);font-weight:500;white-space:nowrap}
+.score.good{color:var(--success)} .score.mid{color:var(--warning)} .score.bad{color:var(--danger)}
+.shot-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:var(--sp-3)}
+.shot img{display:block;width:100%;border:1px solid var(--border);border-radius:var(--r-sm);background:#fff}
+.shot figcaption{margin-top:4px;font-size:var(--fs-12);color:var(--text-3)}
+.detail-layout{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:var(--sp-5)}
+.detail-section+.detail-section{margin-top:var(--sp-5)}
+.detail-section h4{font-size:var(--fs-13);font-weight:600;margin-bottom:var(--sp-2)}
+.score-big{font-size:var(--fs-28);font-weight:600;line-height:1.1}
+
+/* 成绩卡 */
+.score-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:var(--sp-3);margin-bottom:var(--sp-4)}
+.iq-layout{display:grid;grid-template-columns:minmax(300px,380px) minmax(0,1fr);gap:var(--sp-4);align-items:start}
+.cmp-runs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3);margin-bottom:var(--sp-4)}
+.cmp-run{display:flex;gap:var(--sp-3);align-items:flex-start}
+.cmp-run-name{font-size:var(--fs-14);font-weight:600}
+.cmp-run-meta{margin-top:2px;font-size:var(--fs-12);color:var(--text-3)}
+.cmp-values{display:flex;align-items:baseline;gap:var(--sp-2);margin-top:var(--sp-2);font-size:var(--fs-16);font-weight:600}
+.cmp-values .arrow{color:var(--text-3);font-weight:400;font-size:var(--fs-12)}
+
+/* ============================================================
+   5. Responsive
+   ============================================================ */
+@media (max-width:1180px){.grid-2,.iq-layout,.detail-layout{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:860px){
+  .app{grid-template-columns:minmax(0,1fr)}
+  .sidebar{position:sticky;z-index:var(--z-sticky);height:auto;flex-direction:row;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);border-right:0;border-bottom:1px solid var(--border);overflow-x:auto}
+  .brand{padding:0 var(--sp-1) 0 0}.brand-sub,.brand-name,.nav-label{display:none}
+  .nav{flex-direction:row;flex:none}.nav-item{flex:none;white-space:nowrap;padding:0 8px}
+  .nav-item[aria-current="page"]::before{display:none}
+  .sidebar-foot{margin:0 0 0 auto;border:0;padding:0;flex:none}.conn{display:none}
+  .main{padding:var(--sp-4)}
+  .form-grid{grid-template-columns:minmax(0,1fr)}.field.span-2{grid-column:auto}
+  .cmp-runs,.split{grid-template-columns:minmax(0,1fr)}
+  .tb-field{flex:1 1 100%}.tb-field .select{flex:1;min-width:0;max-width:none}
+  .page-head{align-items:center}
+  .kpi-grid,.score-cards{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .kpi{padding:var(--sp-3)}.kpi-value{font-size:22px}
+  .modal-backdrop{padding:0}
+}
 </style>
 </head>
 <body>
-<aside id="side">
-  <div class="logo">LLM<span>Bench Pro</span></div>
-  <nav>
-    <button class="nav active" data-v="dash" onclick="showView('dash')">📊 性能测试</button>
-    <button class="nav" data-v="cmp" onclick="showView('cmp')">⚖️ 数据对比</button>
-    <button class="nav" data-v="iq" onclick="showView('iq')">🧠 智力测试</button>
-    <button class="nav" data-v="gen" onclick="showView('gen')">🎨 生成测试</button>
+<!-- 线性图标: 路径参考 Lucide (https://lucide.dev), ISC License, Copyright (c) Lucide Contributors -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></symbol>
+  <symbol id="i-compare" viewBox="0 0 24 24"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></symbol>
+  <symbol id="i-list-checks" viewBox="0 0 24 24"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></symbol>
+  <symbol id="i-code" viewBox="0 0 24 24"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M6 4.5v15a.5.5 0 0 0 .76.43l12.5-7.5a.5.5 0 0 0 0-.86L6.76 4.07A.5.5 0 0 0 6 4.5Z"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+  <symbol id="i-plug" viewBox="0 0 24 24"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-columns" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+  <symbol id="i-loader" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.22-8.56"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-x-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
+  <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M7 17 17 7"/><path d="M7 7h10v10"/></symbol>
+  <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="m7 7 10 10"/><path d="M17 7v10H7"/></symbol>
+  <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 2.5l2.94 5.96 6.56.95-4.75 4.63 1.12 6.54L12 17.49l-5.87 3.09 1.12-6.54L2.5 9.41l6.56-.95L12 2.5Z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+  <symbol id="i-file-down" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M12 18v-6"/><path d="m9 15 3 3 3-3"/></symbol>
+  <symbol id="i-scan-check" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="m8 12 3 3 5-6"/></symbol>
+  <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M2 14h4"/><path d="M10 8h4"/><path d="M18 16h4"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21"/></symbol>
+  <symbol id="i-logo" viewBox="0 0 24 24"><path d="M5 19V11"/><path d="M10 19V5"/><path d="M15 19v-6"/><path d="M20 19V8"/></symbol>
+</svg>
+
+<div class="app">
+<aside class="sidebar">
+  <div class="brand">
+    <div class="brand-mark"><svg class="icon"><use href="#i-logo"/></svg></div>
+    <div><div class="brand-name">LLM Bench Pro</div><div class="brand-sub">推理评测平台</div></div>
+  </div>
+  <nav class="nav" aria-label="主导航">
+    <div class="nav-label">评测</div>
+    <button class="nav-item" data-view="dash" aria-current="page"><svg class="icon"><use href="#i-gauge"/></svg>性能基准</button>
+    <button class="nav-item" data-view="cmp"><svg class="icon"><use href="#i-compare"/></svg>运行对比</button>
+    <button class="nav-item" data-view="iq"><svg class="icon"><use href="#i-list-checks"/></svg>能力评测</button>
+    <button class="nav-item" data-view="gen"><svg class="icon"><use href="#i-code"/></svg>代码生成</button>
   </nav>
-  <div class="side-foot muted">v1.9</div>
+  <div class="sidebar-foot">
+    <span class="conn" id="conn" title="后端服务连接状态"><span class="conn-dot"></span><span id="connText">v2.0</span></span>
+    <button class="btn btn-ghost btn-icon btn-sm" id="themeBtn" aria-label="切换亮色/暗色主题" title="切换主题"><svg class="icon"><use href="#i-sun"/></svg></button>
+  </div>
 </aside>
-<main>
-<section class="view on" id="viewDash">
-<header>
-  <h1>LLM Bench Pro<span class="v">推理性能基准台 v1.9</span></h1>
-  <select id="runA" onchange="render()"></select>
-  <select id="runB" onchange="render()"><option value="">— 对比（可选）—</option></select>
-  <button onclick="refresh()">刷新结果</button>
-  <span class="muted" id="status"></span>
-</header>
-<div class="card" id="launcher" style="margin-bottom:16px">
-  <h3 style="font-size:14px;font-weight:600;margin-bottom:10px">新建基准测试</h3>
-  <div class="frm" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">
-    <div style="flex:2 1 280px;min-width:230px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">API 端点（base 或完整 /v1/chat/completions 均可）</div>
-      <input id="fBase" placeholder="http://192.168.0.51:8011" value="http://192.168.0.51:8011"></div>
-    <div style="flex:1 1 150px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">API Key（引擎直连可留空）</div>
-      <input id="fKey" type="password" placeholder="sk-... / sxai_..."></div>
-    <div style="flex:1 1 150px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">模型（检测后可选，可手填）</div>
-      <input id="fModel" list="modelList" placeholder="Qwen3.8-27B"><datalist id="modelList"></datalist></div>
-    <div style="flex:1 1 150px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">测试模式</div>
-      <select id="fSuite"><option value="quick">快速 · ~4分钟 · 冒烟检查</option><option value="standard" selected>标准 · ~12分钟 · 基线推荐</option><option value="full">深度 · ~35分钟 · 含128K/64并发</option></select></div>
-    <div style="flex:1 1 170px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">并发阶梯（逗号分隔，留空=默认）</div>
-      <input id="fConc" placeholder="如 1,2,4,8,16"></div>
-    <div style="flex:1 1 170px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">长度阶梯（K，逗号分隔，留空=默认）</div>
-      <input id="fLens" placeholder="如 1,2,4,8,16,32"></div>
-    <div style="flex:1 1 120px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">阶梯×并发路数</div>
-      <input id="fMConc" type="number" min="1" max="32" placeholder="4"></div>
-    <div style="flex:1 1 140px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">框架名称（区分后端）</div>
-      <input id="fFw" placeholder="1Cat-vLLM / vLLM / SGLang"></div>
-    <div style="flex:1 1 140px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">框架版本</div>
-      <input id="fFwVer" placeholder="如 1.6.5-sm70main"></div>
-    <div style="flex:1 1 130px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">标签（可选）</div>
-      <input id="fTag" placeholder="如 1.6.5-W4A16"></div>
-    <div style="display:flex;gap:8px;align-items:center">
-      <label class="chk" title="抓取 /metrics: KV占用、前缀缓存命中、运行/排队"><input type="checkbox" id="fMetrics" checked>框架指标</label>
-      <button id="btnProbe" onclick="probe()">检测模型</button>
-      <button id="btnStart" style="background:var(--acc);color:#08121f;font-weight:600;border-color:var(--acc)" onclick="start()">开始测试</button></div>
+
+<main class="main">
+<!-- ======================== 性能基准 ======================== -->
+<section class="page is-active" id="viewDash">
+  <div class="page-head">
+    <div><h1 class="page-title">性能基准</h1><p class="page-sub">吞吐、延迟与并发扩展性</p></div>
+    <div class="page-actions">
+      <button class="btn btn-secondary btn-icon" onclick="refresh()" aria-label="刷新结果" title="刷新"><svg class="icon"><use href="#i-refresh"/></svg></button>
+      <button class="btn btn-primary" data-toggle="launcher" aria-controls="launcher" aria-expanded="false"><svg class="icon"><use href="#i-plus"/></svg>新建测试</button>
+    </div>
   </div>
-  <div id="probeOut" class="muted" style="margin-top:8px;font-size:12px"></div>
-  <div id="runOut" style="display:none;margin-top:10px;background:#0d1420;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:11.5px/1.7 Consolas,monospace;max-height:170px;overflow:auto;white-space:pre-wrap"></div>
-</div>
-<div id="meta"></div>
-<div id="body">
-  <div id="empty">正在加载结果…（左侧表单可直接发起测试）</div>
-  <div class="grid kpis" id="kpis" style="display:none"></div>
-  <div class="grid panels" id="panels" style="display:none">
-    <div class="panel" style="grid-column:1/-1"><h3>提示词阶梯 × 并发矩阵</h3><div class="desc">各输入长度下并发流的 TTFT / ITL / 聚合吞吐 / 成功率；点击行展开单流明细；底部为范围/平均与单流分位数</div><div id="pcTbl"></div></div>
-    <div class="panel"><h3>Prefill 吞吐阶梯（单流）</h3><div class="desc">TTFT 与 prefill 速度随上下文长度变化 · 悬停数据点看数值</div><canvas id="cPrefill" height="240"></canvas><div class="legend" id="lPre"></div></div>
-    <div class="panel"><h3>并发吞吐阶梯</h3><div class="desc">聚合吞吐 / 单流吞吐 / TTFT p95 随并发变化</div><canvas id="cConc" height="240"></canvas><div class="legend" id="lConc"></div></div>
-    <div class="panel" style="grid-column:1/-1"><h3>单流解码质量</h3><div class="desc">中/英内容：解码速度、TPOT、ITL 分位数与抖动；burst 为 tokens/chunk（投机采样或多 token 聚合交付的信号）</div><div id="decodeTbl"></div></div>
-    <div class="panel" style="grid-column:1/-1;display:none" id="metricsPanel"><h3>框架指标时间线</h3><div class="desc">测试期间 vLLM KV 显存占用 / 前缀缓存命中率</div><canvas id="cMetrics" height="200"></canvas></div>
+
+  <div class="card" id="launcher" hidden style="margin-top:var(--sp-5)">
+    <div class="card-head"><div><h2 class="card-title">新建测试</h2><p class="card-desc">对 OpenAI 兼容端点运行流式基准，结果自动保存</p></div>
+      <button class="btn btn-ghost btn-icon btn-sm" data-toggle="launcher" aria-label="收起"><svg class="icon"><use href="#i-x"/></svg></button></div>
+    <div class="form-grid">
+      <div class="field span-2"><label for="fBase">API 地址</label>
+        <input class="input" id="fBase" placeholder="http://127.0.0.1:8000" value="http://192.168.0.51:8011">
+        <span class="help">支持 Base URL 或完整的 /v1/chat/completions</span></div>
+      <div class="field"><label for="fKey">API Key</label><input class="input" id="fKey" type="password" placeholder="可选" autocomplete="off"></div>
+      <div class="field"><label for="fModel">模型</label>
+        <input class="input" id="fModel" list="modelList" placeholder="测试连接后可选择"><datalist id="modelList"></datalist></div>
+      <div class="field"><label for="fSuite">测试套件</label>
+        <select class="select" id="fSuite">
+          <option value="quick">快速（约 4 分钟）</option>
+          <option value="standard" selected>标准（约 12 分钟，推荐）</option>
+          <option value="full">完整（约 35 分钟，含 32K–128K 与 64 并发）</option>
+        </select></div>
+    </div>
+    <details class="advanced">
+      <summary><svg class="icon"><use href="#i-chevron-down"/></svg>高级设置</summary>
+      <div class="form-grid">
+        <div class="field"><label for="fConc">并发梯度</label><input class="input" id="fConc" placeholder="默认 1,2,4,8,16"><span class="help">逗号分隔，留空使用套件默认值</span></div>
+        <div class="field"><label for="fLens">输入长度梯度 (K)</label><input class="input" id="fLens" placeholder="默认 1K–8K 共 8 档"><span class="help">逗号分隔，1–256</span></div>
+        <div class="field"><label for="fMConc">矩阵并发数</label><input class="input" id="fMConc" type="number" min="1" max="32" placeholder="4"><span class="help">输入长度 × 并发矩阵的并发路数</span></div>
+        <div class="field"><label for="fFw">推理框架</label><input class="input" id="fFw" placeholder="vLLM / SGLang"><span class="help">测试连接时自动识别 vLLM</span></div>
+        <div class="field"><label for="fFwVer">框架版本</label><input class="input" id="fFwVer" placeholder="如 0.8.5"></div>
+        <div class="field"><label for="fTag">标签</label><input class="input" id="fTag" placeholder="如 W4A16"></div>
+        <div class="field"><span class="label">引擎指标</span><label class="check"><input type="checkbox" id="fMetrics" checked>采集 /metrics（KV Cache、前缀缓存）</label></div>
+      </div>
+    </details>
+    <div class="form-actions">
+      <span class="inline-msg" id="probeOut"></span>
+      <button class="btn btn-secondary" id="btnProbe" onclick="probe()"><svg class="icon"><use href="#i-plug"/></svg>测试连接</button>
+      <button class="btn btn-primary" id="btnStart" onclick="start()"><svg class="icon"><use href="#i-play"/></svg>开始运行</button>
+    </div>
+    <div class="runlog" id="runLog" hidden></div>
   </div>
-</div>
+
+  <div class="toolbar">
+    <div class="tb-field"><span class="run-tag a">A</span><select class="select" id="runA" aria-label="运行 A" onchange="render()"></select></div>
+    <div class="tb-field"><span class="run-tag b">B</span><select class="select" id="runB" aria-label="对比运行 B" onchange="render()"><option value="">不对比</option></select></div>
+    <span class="spacer"></span>
+    <span class="faint small" id="status"></span>
+  </div>
+
+  <div id="dashEmpty"></div>
+  <div id="dashBody" hidden>
+    <div class="meta-list" id="meta"></div>
+    <div class="kpi-grid" id="kpis"></div>
+    <div class="grid-2">
+      <div class="panel span-all"><div class="panel-head"><div><h3 class="panel-title">输入长度 × 并发矩阵</h3>
+        <p class="panel-desc">各输入长度下的 TTFT、ITL、聚合吞吐与成功率，点击行查看单流明细</p></div>
+        <button class="btn btn-ghost btn-icon btn-sm panel-toggle" data-collapse aria-label="折叠"><svg class="icon"><use href="#i-chevron-down"/></svg></button></div>
+        <div class="panel-body" id="pcTbl"></div></div>
+      <div class="panel"><div class="panel-head"><div><h3 class="panel-title">Prefill 吞吐（单流）</h3>
+        <p class="panel-desc">Prefill 速度与 TTFT 随输入长度的变化</p></div>
+        <button class="btn btn-ghost btn-icon btn-sm panel-toggle" data-collapse aria-label="折叠"><svg class="icon"><use href="#i-chevron-down"/></svg></button></div>
+        <div class="panel-body"><canvas class="chart" id="cPrefill"></canvas><div class="legend" id="lPre"></div></div></div>
+      <div class="panel"><div class="panel-head"><div><h3 class="panel-title">并发扩展性</h3>
+        <p class="panel-desc">聚合吞吐、单流吞吐与 TTFT p95 随并发数的变化</p></div>
+        <button class="btn btn-ghost btn-icon btn-sm panel-toggle" data-collapse aria-label="折叠"><svg class="icon"><use href="#i-chevron-down"/></svg></button></div>
+        <div class="panel-body"><canvas class="chart" id="cConc"></canvas><div class="legend" id="lConc"></div></div></div>
+      <div class="panel span-all"><div class="panel-head"><div><h3 class="panel-title">单流解码性能</h3>
+        <p class="panel-desc">解码速度、TPOT、ITL 分位数与抖动。Burst 为每个 chunk 的平均 token 数，大于 1 通常表示启用了投机解码</p></div>
+        <button class="btn btn-ghost btn-icon btn-sm panel-toggle" data-collapse aria-label="折叠"><svg class="icon"><use href="#i-chevron-down"/></svg></button></div>
+        <div class="panel-body" id="decodeTbl"></div></div>
+      <div class="panel span-all" id="metricsPanel" hidden><div class="panel-head"><div><h3 class="panel-title">引擎指标</h3>
+        <p class="panel-desc">测试期间 KV Cache 使用率与前缀缓存命中率（vLLM /metrics）</p></div>
+        <button class="btn btn-ghost btn-icon btn-sm panel-toggle" data-collapse aria-label="折叠"><svg class="icon"><use href="#i-chevron-down"/></svg></button></div>
+        <div class="panel-body"><canvas class="chart" id="cMetrics"></canvas><div class="legend" id="lMetrics"></div></div></div>
+    </div>
+  </div>
 </section>
-<section class="view" id="viewCmp">
-  <header><h1>数据对比<span class="v">A / B 双运行全维度差异</span></h1></header>
-  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0 4px">
-    <span class="muted">运行 A</span><select id="cmpA" onchange="renderCmp()"></select>
-    <span class="muted" style="color:var(--acc)">vs</span>
-    <span class="muted">运行 B</span><select id="cmpB" onchange="renderCmp()"></select>
+
+<!-- ======================== 运行对比 ======================== -->
+<section class="page" id="viewCmp">
+  <div class="page-head">
+    <div><h1 class="page-title">运行对比</h1><p class="page-sub">比较两次性能基准运行的关键指标</p></div>
+  </div>
+  <div class="toolbar">
+    <div class="tb-field"><span class="run-tag a">A</span><select class="select" id="cmpA" aria-label="运行 A" onchange="renderCmp()"></select></div>
+    <button class="btn btn-ghost btn-icon" onclick="swapCmp()" aria-label="交换 A 与 B" title="交换 A / B"><svg class="icon"><use href="#i-compare"/></svg></button>
+    <div class="tb-field"><span class="run-tag b">B</span><select class="select" id="cmpB" aria-label="运行 B" onchange="renderCmp()"></select></div>
   </div>
   <div id="cmpBody"></div>
 </section>
-<section class="view" id="viewIq">
-  <header><h1>智力测试<span class="v">官方题集 · 发布级口径 · Wilson 置信区间</span></h1></header>
-  <div class="card" style="margin:14px 0 16px">
-    <h3 style="font-size:14px;font-weight:600;margin-bottom:10px">发起智力测试</h3>
-    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">
-      <div style="flex:2 1 260px;min-width:220px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">API 端点</div>
-        <input id="iqBase" value="http://192.168.0.51:8011"></div>
-      <div style="flex:1 1 140px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">API Key</div>
-        <input id="iqKey" type="password"></div>
-      <div style="flex:1 1 150px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">模型</div>
-        <input id="iqModel" placeholder="Qwen3.8-27B"></div>
-      <div style="flex:1.4 1 200px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">题集版本（可切换历史版本）</div>
-        <select id="iqBank"></select></div>
-      <div style="flex:.8 1 100px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">并发</div>
-        <input id="iqConc" type="number" value="8" min="1" max="32"></div>
-      <div style="flex:1 1 150px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">测试档位</div>
-        <select id="iqTier" onchange="tierChange()">
-          <option value="5">快速 · 每科5题 · ~8分钟</option>
-          <option value="15" selected>标准 · 每科15题 · ~25分钟</option>
-          <option value="">全量 · 发布级 · ~60分钟+</option>
-        </select></div>
-      <div style="flex:1 1 130px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">标签（可选）</div>
-        <input id="iqTag" placeholder="如 1.6.5-W4A16"></div>
-      <div style="flex:1 1 150px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">代理（拉取官方源失败时填，如 http://127.0.0.1:7890）</div>
-        <input id="iqProxy" placeholder="留空=直连"></div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <label class="chk" title="推理模型: 开启后先思考再作答(数学/竞赛题提升明显, 更慢)"><input type="checkbox" id="iqThink">思考模式</label>
-        <button id="iqBtnBank" onclick="bankUpdate()">拉取最新题集</button>
-        <button id="iqBtnStart" style="background:var(--acc);color:#08121f;font-weight:600;border-color:var(--acc)" onclick="iqStart()">开始测试</button></div>
+
+<!-- ======================== 能力评测 ======================== -->
+<section class="page" id="viewIq">
+  <div class="page-head">
+    <div><h1 class="page-title">能力评测</h1><p class="page-sub">标准题集准确率 · 95% Wilson 置信区间</p></div>
+    <div class="page-actions">
+      <button class="btn btn-secondary btn-icon" onclick="loadIqResults()" aria-label="刷新结果" title="刷新"><svg class="icon"><use href="#i-refresh"/></svg></button>
+      <button class="btn btn-primary" data-toggle="iqLauncher" aria-controls="iqLauncher" aria-expanded="false"><svg class="icon"><use href="#i-plus"/></svg>新建评测</button>
     </div>
-    <div id="iqBankInfo" class="muted" style="margin-top:8px;font-size:12px"></div>
-    <div id="iqOut" style="display:none;margin-top:10px;background:#0d1420;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:11.5px/1.7 Consolas,monospace;max-height:170px;overflow:auto;white-space:pre-wrap"></div>
   </div>
-  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:0 0 12px">
-    <span class="muted">对比运行</span>
-    <select id="iqCmpSel" multiple size="4" style="min-width:260px" onchange="renderIq()"></select>
-    <span class="muted" style="font-size:11px">按住 Ctrl 点选多个运行<br>同屏多对象对比</span>
+  <div class="card" id="iqLauncher" hidden style="margin-top:var(--sp-5)">
+    <div class="card-head"><div><h2 class="card-title">新建评测</h2><p class="card-desc">GSM8K、MMLU、MATH-500、ARC、HellaSwag、C-Eval 与指令遵循，按发布方口径判分</p></div>
+      <button class="btn btn-ghost btn-icon btn-sm" data-toggle="iqLauncher" aria-label="收起"><svg class="icon"><use href="#i-x"/></svg></button></div>
+    <div class="form-grid">
+      <div class="field span-2"><label for="iqBase">API 地址</label><input class="input" id="iqBase" value="http://192.168.0.51:8011" placeholder="http://127.0.0.1:8000"></div>
+      <div class="field"><label for="iqKey">API Key</label><input class="input" id="iqKey" type="password" placeholder="可选" autocomplete="off"></div>
+      <div class="field"><label for="iqModel">模型</label><input class="input" id="iqModel" placeholder="模型名称"></div>
+      <div class="field span-2"><label for="iqBank">题集版本</label><select class="select" id="iqBank" onchange="bankInfo()"></select>
+        <span class="help" id="iqBankInfo"></span></div>
+      <div class="field"><label for="iqTier">测试规模</label>
+        <select class="select" id="iqTier">
+          <option value="5">快速（每科 5 题，约 8 分钟）</option>
+          <option value="15" selected>标准（每科 15 题，约 25 分钟）</option>
+          <option value="">完整（全部题目，60 分钟以上）</option>
+        </select></div>
+      <div class="field"><label for="iqConc">并发数</label><input class="input" id="iqConc" type="number" value="8" min="1" max="32"></div>
+      <div class="field"><label for="iqTag">标签</label><input class="input" id="iqTag" placeholder="如 W4A16"></div>
+      <div class="field"><span class="label">推理模式</span><label class="check" title="开启后模型先思考再作答，数学类题目通常提升明显，耗时更长"><input type="checkbox" id="iqThink">启用思考（enable_thinking）</label></div>
+    </div>
+    <details class="advanced">
+      <summary><svg class="icon"><use href="#i-chevron-down"/></svg>题集管理</summary>
+      <div class="form-grid">
+        <div class="field span-2"><label for="iqProxy">HTTP 代理</label><input class="input" id="iqProxy" placeholder="如 http://127.0.0.1:7890"><span class="help">仅用于下载题集，留空为直连</span></div>
+        <div class="field" style="justify-content:flex-end"><button class="btn btn-secondary" id="iqBtnBank" onclick="bankUpdate()"><svg class="icon"><use href="#i-download"/></svg>更新题集</button></div>
+      </div>
+    </details>
+    <div class="form-actions">
+      <span class="inline-msg" id="iqMsg"></span>
+      <button class="btn btn-primary" id="iqBtnStart" onclick="iqStart()"><svg class="icon"><use href="#i-play"/></svg>开始运行</button>
+    </div>
+    <div class="runlog" id="iqLog" hidden></div>
+  </div>
+  <div class="toolbar">
+    <div class="tb-field"><span class="run-tag a">A</span><select class="select" id="iqMainSel" aria-label="主运行" onchange="renderIq()"></select></div>
+    <details class="dropdown" id="iqCmpDrop">
+      <summary class="btn btn-secondary"><svg class="icon"><use href="#i-columns"/></svg><span id="iqCmpLabel">对比运行</span><svg class="icon icon-sm"><use href="#i-chevron-down"/></svg></summary>
+      <div class="dropdown-panel" id="iqCmpList"></div>
+    </details>
   </div>
   <div id="iqResult"></div>
 </section>
-<section class="view" id="viewGen">
-  <header><h1>生成测试<span class="v">病毒题集实跑 · 浏览器真实渲染 · 人工打星</span></h1></header>
-  <div class="card" style="margin:14px 0 16px">
-    <h3 style="font-size:14px;font-weight:600;margin-bottom:10px">发起生成测试（23 题三档：普通动画 / 困难游戏 / 地狱引擎级——Flappy·俄罗斯方块·3D迷宫·流体·生态·Win95）</h3>
-    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">
-      <div style="flex:2 1 240px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">API 端点</div><input id="genBase" value="http://192.168.0.51:8011"></div>
-      <div style="flex:1 1 130px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">API Key</div><input id="genKey" type="password"></div>
-      <div style="flex:1 1 140px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">模型</div><input id="genModel" placeholder="Qwen3.8-27B"></div>
-      <div style="flex:.7 1 90px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">并发</div><input id="genConc" type="number" value="4" min="1" max="8"></div>
-      <div style="flex:1 1 120px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">标签</div><input id="genTag" placeholder="如 1.6.5"></div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <label class="chk" title="推理模型: 开启后先思考再生成, 质量可能更高但更慢"><input type="checkbox" id="genThink">思考模式</label>
-        <button id="genBtnStart" style="background:var(--acc);color:#08121f;font-weight:600;border-color:var(--acc)" onclick="genStart()">开始生成</button></div>
+
+<!-- ======================== 代码生成 ======================== -->
+<section class="page" id="viewGen">
+  <div class="page-head">
+    <div><h1 class="page-title">代码生成</h1><p class="page-sub">单文件前端应用生成 · 浏览器运行检测 · 视觉评审</p></div>
+    <div class="page-actions">
+      <button class="btn btn-secondary btn-icon" onclick="loadGenResults()" aria-label="刷新结果" title="刷新"><svg class="icon"><use href="#i-refresh"/></svg></button>
+      <button class="btn btn-primary" data-toggle="genLauncher" aria-controls="genLauncher" aria-expanded="false"><svg class="icon"><use href="#i-plus"/></svg>新建任务</button>
     </div>
-    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
-      <div style="flex:2 1 240px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">视觉评审模型端点（可选，需支持图片输入的 OpenAI 兼容接口）</div><input id="genJudgeBase" placeholder="留空则只做运行检测"></div>
-      <div style="flex:1 1 160px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">评审模型</div><input id="genJudgeModel" placeholder="如 Qwen2.5-VL-72B / gpt-4o"></div>
-      <div style="flex:1 1 130px"><div class="lab" style="color:var(--muted);font-size:11px;margin-bottom:4px">评审 API Key</div><input id="genJudgeKey" type="password"></div>
-    </div>
-    <div class="muted" style="margin-top:6px;font-size:11.5px">每件作品生成后在本机无头 Chrome/Edge 中实际运行：检查报错、白屏、动画，并按题目脚本模拟按键/点击/拖拽验证功能；配置评审模型后，再将截图、检测报告与代码交给评审模型按清单逐项打分。</div>
-    <div id="genInfo" class="muted" style="margin-top:8px;font-size:12px"></div>
-    <div id="genTasks" style="margin-top:12px"></div>
-    <div id="genTaskCount" class="muted" style="margin-top:6px;font-size:11.5px"></div>
-    <div id="genOut" style="display:none;margin-top:10px;background:#0d1420;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:11.5px/1.7 Consolas,monospace;max-height:150px;overflow:auto;white-space:pre-wrap"></div>
   </div>
-  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:0 0 12px">
-    <span class="muted">运行</span>
-    <select id="genMainSel" onchange="renderGen()"></select>
-    <span class="muted">对比运行</span>
-    <select id="genCmpSel" onchange="renderGen()"></select>
-    <button id="genBtnEval" onclick="genReeval()" title="用当前表单中的评审模型配置，对所选运行的全部作品重新做运行检测与视觉评审（保留人工评分）">重新评测</button>
+  <div class="card" id="genLauncher" hidden style="margin-top:var(--sp-5)">
+    <div class="card-head"><div><h2 class="card-title">新建生成任务</h2>
+      <p class="card-desc">作品生成后在本机无头 Chrome/Edge 中实际运行，检查报错、白屏与动画，并按题目脚本模拟按键、点击和拖拽验证功能</p></div>
+      <button class="btn btn-ghost btn-icon btn-sm" data-toggle="genLauncher" aria-label="收起"><svg class="icon"><use href="#i-x"/></svg></button></div>
+    <div class="form-grid">
+      <div class="field span-2"><label for="genBase">API 地址</label><input class="input" id="genBase" value="http://192.168.0.51:8011" placeholder="http://127.0.0.1:8000"></div>
+      <div class="field"><label for="genKey">API Key</label><input class="input" id="genKey" type="password" placeholder="可选" autocomplete="off"></div>
+      <div class="field"><label for="genModel">模型</label><input class="input" id="genModel" placeholder="模型名称"></div>
+      <div class="field"><label for="genConc">并发数</label><input class="input" id="genConc" type="number" value="4" min="1" max="8"></div>
+      <div class="field"><label for="genTag">标签</label><input class="input" id="genTag" placeholder="如 W4A16"></div>
+      <div class="field"><span class="label">推理模式</span><label class="check"><input type="checkbox" id="genThink">启用思考（enable_thinking）</label></div>
+    </div>
+    <div class="form-section">
+      <div class="form-section-title">视觉评审<span class="faint">可选 · 需支持图片输入的 OpenAI 兼容模型</span></div>
+      <div class="form-grid">
+        <div class="field span-2"><label for="genJudgeBase">评审模型地址</label><input class="input" id="genJudgeBase" placeholder="留空则只做运行检测"></div>
+        <div class="field"><label for="genJudgeModel">评审模型</label><input class="input" id="genJudgeModel" placeholder="如 Qwen2.5-VL-72B"></div>
+        <div class="field"><label for="genJudgeKey">评审 API Key</label><input class="input" id="genJudgeKey" type="password" placeholder="可选" autocomplete="off"></div>
+      </div>
+    </div>
+    <div class="form-section">
+      <div class="form-section-title">题目<span class="faint" id="genTaskCount"></span></div>
+      <div class="task-groups" id="genTasks"></div>
+    </div>
+    <div class="form-actions">
+      <span class="inline-msg" id="genInfo"></span>
+      <button class="btn btn-primary" id="genBtnStart" onclick="genStart()"><svg class="icon"><use href="#i-play"/></svg>开始运行</button>
+    </div>
+    <div class="runlog" id="genLog" hidden></div>
+  </div>
+  <div class="toolbar">
+    <div class="tb-field"><span class="run-tag a">A</span><select class="select" id="genMainSel" aria-label="运行" onchange="renderGen()"></select></div>
+    <div class="tb-field"><span class="run-tag b">B</span><select class="select" id="genCmpSel" aria-label="对比运行" onchange="renderGen()"></select></div>
+    <span class="spacer"></span>
+    <button class="btn btn-secondary" id="genBtnEval" onclick="genReeval()" title="用新建任务表单中的评审模型配置，对所选运行重新做运行检测与视觉评审，保留人工评分"><svg class="icon"><use href="#i-scan-check"/></svg>重新评测</button>
   </div>
   <div id="genResult"></div>
 </section>
 </main>
-<div id="tip"></div>
+</div>
+
+<div class="tooltip" id="tip" role="tooltip"></div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<div class="modal-backdrop" id="modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-head">
+      <h2 class="modal-title" id="modalTitle"></h2><span id="modalBadges"></span>
+      <button class="btn btn-ghost btn-icon btn-sm" id="modalClose" aria-label="关闭"><svg class="icon"><use href="#i-x"/></svg></button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
 <script>
-const C={acc:"#4da3ff",acc2:"#37d4a0",warn:"#ffb454",err:"#ff6b7a",muted:"#8b9bb4",grid:"#22304a"};
-window.onerror=function(msg,src,line){document.getElementById("status").innerHTML='<span style="color:var(--err)">脚本错误: '+msg+' (行'+line+') — 请强制刷新 Ctrl+F5</span>';};
-let RUNS={},pollTimer=null;
-const VIS={pre:{a:1,b:1},conc:{a:1,b:1,t:1}};
-function bindLegend(elId,prefix){
-  document.querySelectorAll("#"+elId+" span[data-t]").forEach(s=>{
-    s.onclick=()=>{const [g,k]=s.dataset.t.split(".");VIS[g][k]^=1;renderAll();};
-  });
+/* ============================================================
+   基础工具
+   ============================================================ */
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const icon=(name,cls="")=>`<svg class="icon ${cls}"><use href="#i-${name}"/></svg>`;
+function fmt(v,d=1){return v==null||!isFinite(v)?"—":Number(v).toFixed(d)}
+function fmtInt(v){return v==null||!isFinite(v)?"—":Math.round(v).toLocaleString()}
+function fmtAxis(v){
+  const a=Math.abs(v);
+  if(a>=1e6)return (v/1e6).toFixed(1).replace(/\.0$/,"")+"M";
+  if(a>=1e4)return (v/1e3).toFixed(1).replace(/\.0$/,"")+"k";
+  if(a>=100||v===0)return Math.round(v).toLocaleString();
+  if(a>=10)return v.toFixed(0);
+  return v.toFixed(a<1?2:1).replace(/\.?0+$/,"");
+}
+function median(xs){const v=xs.filter(x=>x!=null&&isFinite(x)).sort((p,q)=>p-q);if(!v.length)return null;const m=v.length>>1;return v.length%2?v[m]:(v[m-1]+v[m])/2}
+function timeText(iso){return iso?String(iso).slice(0,16).replace("T"," "):"—"}
+function shortTime(iso){return iso?String(iso).slice(5,16).replace("T"," "):""}
+async function getJSON(url){const r=await fetch(url,{cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);return r.json()}
+async function postJSON(url,body){
+  try{const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    try{return await r.json()}catch(e){return{ok:false,error:"HTTP "+r.status}}}
+  catch(e){return{ok:false,error:"无法连接后端服务（"+e.message+"）"}}
+}
+function lsGet(key){try{return JSON.parse(localStorage.getItem(key)||"{}")}catch(e){return{}}}
+function lsSet(key,val){try{localStorage.setItem(key,JSON.stringify(val))}catch(e){}}
+function bindFormMemory(key,ids){
+  const saved=lsGet(key);
+  ids.forEach(id=>{const el=$(id);if(el&&saved[id]!=null&&saved[id]!=="")el.value=saved[id]});
+  const save=()=>{const k={};ids.forEach(id=>k[id]=$(id).value);lsSet(key,k)};
+  ids.forEach(id=>{const el=$(id);if(el){el.addEventListener("input",save);el.addEventListener("change",save)}});
+  return save;
+}
+/* 行内提示: type = error | success | warning | info */
+function msg(el,type,text){
+  el=typeof el==="string"?$(el):el;if(!el)return;
+  if(!text){el.innerHTML="";el.className="inline-msg";return}
+  const ic={error:"x-circle",success:"check-circle",warning:"alert",info:"info"}[type]||"info";
+  el.className="inline-msg"+(type&&type!=="info"?" is-"+type:"");
+  el.innerHTML=icon(ic)+`<span>${esc(text).replace(/\n/g,"<br>")}</span>`;
+}
+function toast(text,type="info",ms=5000){
+  const el=document.createElement("div");
+  el.className="toast is-"+type;
+  el.innerHTML=icon({error:"x-circle",success:"check-circle",warning:"alert"}[type]||"info")+`<span>${esc(text)}</span>
+    <button class="btn btn-ghost btn-icon btn-sm" aria-label="关闭">${icon("x")}</button>`;
+  el.querySelector("button").onclick=()=>el.remove();
+  $("toasts").appendChild(el);
+  if(ms)setTimeout(()=>el.remove(),ms);
+}
+window.addEventListener("error",e=>toast(`页面脚本出错：${e.message}（第 ${e.lineno} 行），请刷新页面后重试`,"error",0));
+function setBusy(btn,busy){
+  btn=typeof btn==="string"?$(btn):btn;if(!btn)return;
+  btn.disabled=busy;btn.classList.toggle("is-loading",busy);
+  const use=btn.querySelector("use");if(!use)return;
+  if(busy){if(!btn.dataset.icon)btn.dataset.icon=use.getAttribute("href");use.setAttribute("href","#i-loader")}
+  else if(btn.dataset.icon){use.setAttribute("href",btn.dataset.icon)}
+}
+function setConn(ok,text){
+  $("conn").className="conn "+(ok?"is-ok":"is-err");
+  $("connText").textContent=text;
+}
+function emptyState(title,desc,{iconName="inbox",action="",inline=false}={}){
+  return `<div class="empty${inline?" is-inline":""}">${icon(iconName)}<div class="empty-title">${esc(title)}</div>${desc?`<div class="empty-desc">${esc(desc)}</div>`:""}${action}</div>`;
 }
 
-/* ---------------- 发起测试 ---------------- */
-const LS="llm-bench-pro-form";
-function saveForm(){const k={};["fBase","fModel","fTag","fSuite","fConc","fMConc","fLens","fFw","fFwVer"].forEach(id=>k[id]=document.getElementById(id).value);localStorage.setItem(LS,JSON.stringify(k))}
-function restoreForm(){try{const k=JSON.parse(localStorage.getItem(LS)||"{}");Object.entries(k).forEach(([id,v])=>{const el=document.getElementById(id);if(el&&v)el.value=v})}catch(e){}}
-["fBase","fModel","fTag","fConc","fMConc","fLens","fFw","fFwVer"].forEach(id=>document.addEventListener("input",e=>{if(e.target.id===id)saveForm()}));
-document.getElementById("fSuite").addEventListener("change",()=>{
-  const s=document.getElementById("fSuite").value;
-  document.getElementById("fConc").placeholder={quick:"默认 1,4,8",standard:"默认 1,2,4,8,16",full:"默认 1,2,4,8,16,32,48,64"}[s];
-  document.getElementById("fLens").placeholder={quick:"默认 1K,4K,8K",standard:"默认 1K–8K 共 8 档",full:"默认 1K–16K 共 8 档"}[s];
-  saveForm();
+/* ============================================================
+   主题
+   ============================================================ */
+let C={};
+function readTheme(){
+  const cs=getComputedStyle(document.documentElement),v=n=>cs.getPropertyValue(n).trim();
+  C={a:v("--series-1"),b:v("--series-2"),t:v("--series-3"),series:[1,2,3,4,5,6].map(i=>v("--series-"+i)),
+     grid:v("--chart-grid"),axis:v("--chart-axis"),text:v("--text-3"),text2:v("--text-2"),text1:v("--text-1"),
+     surface:v("--surface-1"),font:v("--font-sans")};
+}
+function withAlpha(hex,a){const h=String(hex).replace("#","");return h.length===6?"#"+h+Math.round(a*255).toString(16).padStart(2,"0"):hex}
+function applyTheme(t,persist){
+  document.documentElement.dataset.theme=t;
+  if(persist)try{localStorage.setItem("llm-bench-pro-theme",t)}catch(e){}
+  $("themeBtn").querySelector("use").setAttribute("href",t==="dark"?"#i-sun":"#i-moon");
+  $("themeBtn").setAttribute("aria-label",t==="dark"?"切换为亮色主题":"切换为暗色主题");
+  readTheme();
+  redrawVisible();
+}
+$("themeBtn").onclick=()=>applyTheme(document.documentElement.dataset.theme==="dark"?"light":"dark",true);
+
+/* ============================================================
+   导航 / 折叠 / 展开 / 弹窗
+   ============================================================ */
+let VIEW="dash";
+const VIEWS={dash:"viewDash",cmp:"viewCmp",iq:"viewIq",gen:"viewGen"};
+function showView(v){
+  if(!VIEWS[v])v="dash";
+  VIEW=v;
+  document.querySelectorAll(".nav-item").forEach(b=>{if(b.dataset.view===v)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
+  Object.entries(VIEWS).forEach(([k,id])=>$(id).classList.toggle("is-active",k===v));
+  try{history.replaceState(null,"","#"+v)}catch(e){}
+  if(v==="dash")render();
+  if(v==="cmp")renderCmp();
+  if(v==="iq"){loadBanks();loadIqResults();}
+  if(v==="gen"){renderTaskChips();loadGenResults();}
+}
+function redrawVisible(){
+  if(VIEW==="dash")render();
+  else if(VIEW==="cmp")renderCmp();
+  else if(VIEW==="iq")renderIq();
+}
+function toggleLauncher(id,force){
+  const el=$(id);const open=force==null?el.hidden:force;
+  el.hidden=!open;
+  document.querySelectorAll(`[data-toggle="${id}"][aria-expanded]`).forEach(b=>b.setAttribute("aria-expanded",String(open)));
+  if(open&&force==null){const f=el.querySelector("input:not([type=checkbox]),select");if(f)f.focus()}
+}
+document.addEventListener("click",e=>{
+  const nav=e.target.closest(".nav-item");if(nav){showView(nav.dataset.view);return}
+  const tg=e.target.closest("[data-toggle]");if(tg){toggleLauncher(tg.dataset.toggle);return}
+  const col=e.target.closest("[data-collapse]");
+  if(col){const p=col.closest(".panel");p.classList.toggle("is-collapsed");col.setAttribute("aria-expanded",String(!p.classList.contains("is-collapsed")));
+    if(!p.classList.contains("is-collapsed"))redrawVisible();return}
+  const vis=e.target.closest("[data-vis]");
+  if(vis){const [g,k]=vis.dataset.vis.split(".");VIS[g][k]^=1;redrawVisible();return}
+  const row=e.target.closest("tr[data-expand]");
+  if(row){const d=row.nextElementSibling;const open=d.hidden;d.hidden=!open;row.setAttribute("aria-expanded",String(open));return}
+  const dd=document.querySelector("details.dropdown[open]");
+  if(dd&&!dd.contains(e.target))dd.open=false;
 });
-restoreForm();
+
+const Modal={
+  last:null,
+  open(title,html,{badges="",flush=false}={}){
+    this.last=document.activeElement;
+    $("modalTitle").textContent=title;
+    $("modalBadges").innerHTML=badges;
+    const body=$("modalBody");body.className="modal-body"+(flush?" is-flush":"");body.innerHTML=html;
+    $("modal").hidden=false;
+    $("modalClose").focus();
+  },
+  close(){
+    if($("modal").hidden)return;
+    $("modal").hidden=true;$("modalBody").innerHTML="";  /* 清空 iframe, 停止作品音频/动画 */
+    if(this.last&&this.last.focus)this.last.focus();
+  }
+};
+$("modalClose").onclick=()=>Modal.close();
+$("modal").addEventListener("mousedown",e=>{if(e.target===$("modal"))Modal.close()});
+document.addEventListener("keydown",e=>{
+  if($("modal").hidden)return;
+  if(e.key==="Escape"){Modal.close();return}
+  if(e.key==="Tab"){  /* 焦点限制在弹窗内 */
+    const f=[...$("modal").querySelectorAll("button,[href],input,select,textarea,iframe,[tabindex]:not([tabindex='-1'])")].filter(x=>!x.disabled);
+    if(!f.length)return;
+    if(e.shiftKey&&document.activeElement===f[0]){e.preventDefault();f[f.length-1].focus()}
+    else if(!e.shiftKey&&document.activeElement===f[f.length-1]){e.preventDefault();f[0].focus()}
+  }
+});
+
+/* ============================================================
+   运行日志 + 状态轮询
+   ============================================================ */
+function LogBox(id){
+  const el=$(id);let t0=0,timer=null;
+  el.innerHTML=`<div class="runlog-head"><span class="runlog-dot"></span><span class="runlog-title"></span><span class="runlog-time"></span>
+    <button class="btn btn-ghost btn-sm" type="button">${icon("copy")}复制日志</button></div><pre class="runlog-body"></pre>`;
+  const title=el.querySelector(".runlog-title"),time=el.querySelector(".runlog-time"),body=el.querySelector(".runlog-body");
+  el.querySelector("button").onclick=()=>{
+    if(!navigator.clipboard){toast("当前浏览器不支持复制","error");return}
+    navigator.clipboard.writeText(body.textContent).then(()=>toast("日志已复制","success",2000),()=>toast("复制失败","error"));
+  };
+  const tick=()=>{const s=Math.max(0,Math.round((Date.now()-t0)/1000));time.textContent=(s>=60?Math.floor(s/60)+" 分 ":"")+(s%60)+" 秒"};
+  return{
+    start(text){el.hidden=false;el.className="runlog is-running";title.textContent=text;body.textContent="";t0=Date.now();clearInterval(timer);timer=setInterval(tick,1000);tick()},
+    lines(arr){const atBottom=body.scrollHeight-body.scrollTop-body.clientHeight<32;body.textContent=arr.join("\n");if(atBottom)body.scrollTop=body.scrollHeight},
+    finish(ok,text){clearInterval(timer);tick();el.className="runlog "+(ok?"is-ok":"is-fail");title.textContent=text}
+  };
+}
+function pollStatus(url,log,{interval=2000,onDone}={}){
+  const h=setInterval(async()=>{
+    try{
+      const s=await getJSON(url);
+      log.lines((s.log||[]).map(x=>x.msg).slice(-300));
+      if(!s.running){clearInterval(h);log.finish(!s.error,s.error?"运行失败："+s.error:"运行完成");if(onDone)onDone(s)}
+    }catch(e){}
+  },interval);
+  return h;
+}
+
+/* ============================================================
+   图表
+   ============================================================ */
+const TIP=$("tip");
+const VIS={pre:{a:1,b:1},conc:{a:1,b:1,t:1}};
+function setupCanvas(cv,ratio=.42,minH=220,maxH=420){
+  const dpr=window.devicePixelRatio||1;
+  const w=Math.max(cv.clientWidth,60);
+  const h=Math.round(Math.min(maxH,Math.max(minH,w*ratio)));
+  cv.width=Math.round(w*dpr);cv.height=Math.round(h*dpr);cv.style.height=h+"px";
+  const g=cv.getContext("2d");g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,w,h);
+  g.font=`11px ${C.font}`;g.textBaseline="middle";g.lineJoin="round";g.lineCap="round";
+  cv._hit=[];
+  return{g,w,h};
+}
+function noData(g,w,h,text="无数据"){g.fillStyle=C.text;g.textAlign="center";g.font=`12px ${C.font}`;g.fillText(text,w/2,h/2);g.textAlign="left"}
+/* 坐标轴上限: 先取整洁的刻度步长(1/2/2.5/5×10^n), 4 格网格刻度均为整洁数值 */
+function niceMax(v){
+  if(!(v>0))return 1;
+  const raw=v/4,p=10**Math.floor(Math.log10(raw)),n=raw/p;
+  return (n<=1?1:n<=2?2:n<=2.5?2.5:n<=5?5:10)*p*4;
+}
+function tt(title,rows){
+  return `<div class="tt-title">${esc(title)}</div>`+rows.map(([color,name,val])=>
+    `<div class="tt-row">${color?`<span class="swatch" style="background:${color}"></span>`:""}<span>${esc(name)}</span><span class="tt-v">${esc(val)}</span></div>`).join("");
+}
+function bindTips(cv){
+  const show=e=>{
+    const r=cv.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
+    let best=null,bd=600;
+    (cv._hit||[]).forEach(p=>{const d=(p.x-mx)**2+(p.y-my)**2;if(d<bd){bd=d;best=p}});
+    if(!best){TIP.style.display="none";return}
+    TIP.innerHTML=best.html;TIP.style.display="block";
+    const tw=TIP.offsetWidth,th=TIP.offsetHeight,px=r.left+best.x,py=r.top+best.y;
+    let x=px+14,y=py-th-10;
+    if(x+tw>innerWidth-8)x=px-tw-14;
+    if(y<8)y=py+14;
+    TIP.style.left=x+"px";TIP.style.top=y+"px";
+  };
+  cv.onmousemove=show;cv.onclick=show;cv.onmouseleave=()=>TIP.style.display="none";
+}
+function legendBtn(key,color,text,{dash=false,on=true}={}){
+  const mark=dash?`<span class="legend-dash" style="color:${color}"></span>`:`<span class="swatch" style="background:${color}"></span>`;
+  return key?`<button type="button" class="legend-item" data-vis="${key}" aria-pressed="${on?"true":"false"}">${mark}${esc(text)}</button>`
+            :`<span class="legend-item static">${mark}${esc(text)}</span>`;
+}
+function drawGrid(g,{pad,w,h,ymax,fmtY=fmtAxis,right=null}){
+  g.lineWidth=1;
+  for(let i=0;i<=4;i++){
+    const y=Math.round(pad.t+(h-pad.t-pad.b)*i/4)+.5;
+    g.strokeStyle=i===4?C.axis:C.grid;
+    g.beginPath();g.moveTo(pad.l,y);g.lineTo(w-pad.r,y);g.stroke();
+    g.fillStyle=C.text;g.textAlign="right";g.fillText(fmtY(ymax*(1-i/4)),pad.l-8,y);
+    if(right){g.textAlign="left";g.fillText(right.fmt(right.max*(1-i/4)),w-pad.r+8,y)}
+  }
+  g.textAlign="left";
+}
+function catX(pad,w,n){return i=>n>1?pad.l+(w-pad.l-pad.r)*i/(n-1):(pad.l+w-pad.r)/2}
+function drawXLabels(g,labels,X,h,pad){
+  g.fillStyle=C.text;
+  const step=Math.max(1,Math.ceil(labels.length/12));
+  labels.forEach((lab,i)=>{if(i%step&&i!==labels.length-1)return;
+    g.textAlign=labels.length===1?"center":(i===0?"left":(i===labels.length-1?"right":"center"));
+    g.fillText(String(lab),X(i),h-pad.b+14)});
+  g.textAlign="left";
+}
+function axisTitles(g,pad,w,left,right){
+  g.font=`11px ${C.font}`;g.fillStyle=C.text2;
+  if(left){g.textAlign="left";g.fillText(left,4,8)}
+  if(right){g.textAlign="right";g.fillText(right,w-4,8)}
+  g.textAlign="left";
+}
+function strokeSeries(g,pts,color,{width=2,dash=null}={}){
+  const v=pts.filter(p=>p.y!=null&&isFinite(p.y));if(!v.length)return;
+  g.strokeStyle=color;g.lineWidth=width;g.setLineDash(dash||[]);
+  g.beginPath();v.forEach((p,i)=>i?g.lineTo(p.x,p.y):g.moveTo(p.x,p.y));g.stroke();g.setLineDash([]);
+}
+function dots(g,pts,color,r=2.5){
+  pts.forEach(p=>{if(p.y==null||!isFinite(p.y))return;g.beginPath();g.arc(p.x,p.y,r+1.5,0,7);g.fillStyle=C.surface;g.fill();
+    g.beginPath();g.arc(p.x,p.y,r,0,7);g.fillStyle=color;g.fill()});
+}
+
+function prefillSeries(r){const p=phase(r,"prefill");return p&&p.points.length?p.points:null}
+function drawPrefill(a,b,cvId,lgId){
+  const cv=$(cvId);if(!cv||!cv.clientWidth)return;
+  const {g,w,h}=setupCanvas(cv);
+  const pa=prefillSeries(a),pb=b?prefillSeries(b):null;
+  const sets=[pa&&VIS.pre.a&&{pts:pa,color:C.a,tag:"A"},pb&&VIS.pre.b&&{pts:pb,color:C.b,tag:"B"}].filter(Boolean);
+  $(lgId).innerHTML=(pa?legendBtn("pre.a",C.a,"A · Prefill 吞吐",{on:VIS.pre.a}):"")+(pb?legendBtn("pre.b",C.b,"B · Prefill 吞吐",{on:VIS.pre.b}):"");
+  if(!pa){noData(g,w,h,"该运行不包含 Prefill 阶段数据");return}
+  const labels=[];[pa,pb].forEach(ps=>(ps||[]).forEach(p=>{if(!labels.includes(p.label))labels.push(p.label)}));
+  const all=sets.flatMap(s=>s.pts.map(p=>p.prefill_tps_med||0));
+  const ymax=niceMax(Math.max(...all,1)*1.08);
+  const pad={l:Math.ceil(g.measureText(fmtAxis(ymax)).width)+18,r:16,t:24,b:28};
+  drawGrid(g,{pad,w,h,ymax});
+  const X=catX(pad,w,labels.length),Y=v=>pad.t+(h-pad.t-pad.b)*(1-v/ymax);
+  drawXLabels(g,labels,X,h,pad);
+  axisTitles(g,pad,w,"Prefill (tok/s)");
+  sets.forEach(s=>{
+    const pts=s.pts.map(p=>({x:X(labels.indexOf(p.label)),y:Y(p.prefill_tps_med||0),p}));
+    strokeSeries(g,pts,s.color);dots(g,pts,s.color);
+    pts.forEach(q=>cv._hit.push({x:q.x,y:q.y,html:tt(`${s.tag} · ${q.p.label}`,[
+      [s.color,"Prefill",fmtInt(q.p.prefill_tps_med)+" tok/s"],["","TTFT",fmt(q.p.ttft_med_s,2)+" s"],["","输入",fmtInt(q.p.in_tokens)+" tokens"]])}));
+  });
+  bindTips(cv);
+}
+function concChart(a,b,cvId,lgId){
+  const cv=$(cvId);if(!cv||!cv.clientWidth)return;
+  const {g,w,h}=setupCanvas(cv);
+  const pa=phase(a,"concurrency"),pb=b?phase(b,"concurrency"):null;
+  let lg="";
+  if(pa){lg+=legendBtn("conc.a",C.a,"A · 聚合",{on:VIS.conc.a})+legendBtn("conc.a",C.a,"A · 单流",{dash:true,on:VIS.conc.a})}
+  if(pb){lg+=legendBtn("conc.b",C.b,"B · 聚合",{on:VIS.conc.b})+legendBtn("conc.b",C.b,"B · 单流",{dash:true,on:VIS.conc.b})}
+  if(pa)lg+=legendBtn("conc.t",C.t,"TTFT p95",{dash:true,on:VIS.conc.t});
+  $(lgId).innerHTML=lg;
+  if(!pa||!pa.points.length){noData(g,w,h,"该运行不包含并发阶段数据");return}
+  const concs=[...new Set([...pa.points,...(pb?pb.points:[])].map(p=>p.conc))].sort((x,y)=>x-y);
+  const sets=[VIS.conc.a&&{p:pa,color:C.a,tag:"A"},pb&&VIS.conc.b&&{p:pb,color:C.b,tag:"B"}].filter(Boolean);
+  const ymax=niceMax(Math.max(1,...sets.flatMap(s=>s.p.points.map(q=>Math.max(q.agg_tps||0,q.per_stream_tps_med||0))))*1.08);
+  const tmax=niceMax(Math.max(.01,...[pa,pb].filter(Boolean).flatMap(p=>p.points.map(q=>q.ttft_p95_s||0)))*1.08);
+  const fmtT=v=>fmt(v,tmax<1?2:1);
+  const pad={l:Math.ceil(g.measureText(fmtAxis(ymax)).width)+18,r:VIS.conc.t?Math.ceil(g.measureText(fmtT(tmax)).width)+18:16,t:24,b:28};
+  drawGrid(g,{pad,w,h,ymax,right:VIS.conc.t?{max:tmax,fmt:fmtT}:null});
+  const X=catX(pad,w,concs.length),Xc=c=>X(concs.indexOf(c));
+  const Y=v=>pad.t+(h-pad.t-pad.b)*(1-v/ymax),Y2=v=>pad.t+(h-pad.t-pad.b)*(1-v/tmax);
+  drawXLabels(g,concs,X,h,pad);
+  axisTitles(g,pad,w,"吞吐 (tok/s) · 横轴为并发数",VIS.conc.t?"TTFT p95 (s)":"");
+  sets.forEach(s=>{
+    const agg=s.p.points.map(q=>({x:Xc(q.conc),y:Y(q.agg_tps||0),q}));
+    const per=s.p.points.map(q=>({x:Xc(q.conc),y:q.per_stream_tps_med==null?null:Y(q.per_stream_tps_med)}));
+    strokeSeries(g,per,withAlpha(s.color,.6),{width:1.5,dash:[5,4]});
+    strokeSeries(g,agg,s.color);dots(g,agg,s.color);
+    agg.forEach(o=>cv._hit.push({x:o.x,y:o.y,html:tt(`${s.tag} · 并发 ${o.q.conc}`,[
+      [s.color,"聚合吞吐",fmtInt(o.q.agg_tps)+" tok/s"],["","单流吞吐",fmt(o.q.per_stream_tps_med)+" tok/s"],
+      ["","TTFT p50 / p95",`${fmt(o.q.ttft_p50_s,2)} / ${fmt(o.q.ttft_p95_s,2)} s`],["","成功",`${o.q.ok} / ${o.q.ok+o.q.fail}`]])}));
+  });
+  if(VIS.conc.t){
+    [[pa,"A",[2,4]],[pb,"B",[6,4]]].forEach(([p,tag,dash])=>{
+      if(!p)return;
+      const pts=p.points.map(q=>({x:Xc(q.conc),y:q.ttft_p95_s==null?null:Y2(q.ttft_p95_s),q}));
+      strokeSeries(g,pts,C.t,{width:1.5,dash});
+      pts.forEach(o=>{if(o.y!=null)cv._hit.push({x:o.x,y:o.y,html:tt(`${tag} · 并发 ${o.q.conc}`,[[C.t,"TTFT p95",fmt(o.q.ttft_p95_s,2)+" s"]])})});
+    });
+  }
+  bindTips(cv);
+}
+function metricsChart(a){
+  const s=a.metrics_samples||[];
+  const panel=$("metricsPanel");
+  const usable=s.filter(m=>m.gpu_cache_usage!=null||m.prefix_cache_hit!=null);
+  panel.hidden=!usable.length;
+  if(!usable.length||panel.classList.contains("is-collapsed"))return;
+  const cv=$("cMetrics");if(!cv.clientWidth)return;
+  const {g,w,h}=setupCanvas(cv,.22,180,260);
+  const t0=s[0].t,tspan=Math.max(1,s[s.length-1].t-t0);
+  const pad={l:Math.ceil(g.measureText("100%").width)+18,r:16,t:24,b:28};
+  drawGrid(g,{pad,w,h,ymax:100,fmtY:v=>Math.round(v)+"%"});
+  axisTitles(g,pad,w,"占比 (%) · 横轴为测试时间");
+  g.fillStyle=C.text;
+  for(let i=0;i<=4;i++){const t=tspan*i/4;g.textAlign=i===0?"left":(i===4?"right":"center");
+    g.fillText(t>=120?Math.round(t/60)+" min":Math.round(t)+" s",pad.l+(w-pad.l-pad.r)*i/4,h-pad.b+14)}
+  g.textAlign="left";
+  const norm=(k,v)=>v==null?null:(k==="gpu_cache_usage"&&v<=1.05?v*100:v);
+  const series=[["gpu_cache_usage",C.a,"KV Cache 使用率"],["prefix_cache_hit",C.b,"前缀缓存命中率"]];
+  const X=t=>pad.l+(w-pad.l-pad.r)*(t-t0)/tspan,Y=v=>pad.t+(h-pad.t-pad.b)*(1-v/100);
+  series.forEach(([k,col,name])=>{
+    const pts=s.map(m=>({x:X(m.t),y:norm(k,m[k])==null?null:Y(norm(k,m[k])),m,v:norm(k,m[k])})).filter(p=>p.y!=null);
+    strokeSeries(g,pts,col,{width:1.75});
+    pts.forEach((p,i)=>{if(i%2)return;cv._hit.push({x:p.x,y:p.y,html:tt(`t + ${Math.round(p.m.t-t0)} s`,[
+      [col,name,fmt(p.v)+"%"],["","运行 / 排队",`${fmt(p.m.requests_running,0)} / ${fmt(p.m.requests_waiting,0)}`]])})});
+  });
+  $("lMetrics").innerHTML=series.map(([k,c,n])=>legendBtn("",c,n)).join("");
+  bindTips(cv);
+}
+
+/* ============================================================
+   性能基准
+   ============================================================ */
+let RUNS={},RUNS_LOADED=false,perfPoll=null;
+const perfLog=LogBox("runLog");
+const SUITE_NAME={quick:"快速",standard:"标准",full:"完整",custom:"自定义"};
+const saveForm=bindFormMemory("llm-bench-pro-form",["fBase","fModel","fTag","fSuite","fConc","fMConc","fLens","fFw","fFwVer"]);
+function suitePlaceholders(){
+  const s=$("fSuite").value;
+  $("fConc").placeholder={quick:"默认 1,4,8",standard:"默认 1,2,4,8,16",full:"默认 1,2,4,8,16,32,48,64"}[s]||"";
+  $("fLens").placeholder={quick:"默认 1K、4K、8K",standard:"默认 1K–8K 共 8 档",full:"默认 1K–16K 共 8 档"}[s]||"";
+}
+$("fSuite").addEventListener("change",suitePlaceholders);
+suitePlaceholders();
 
 async function probe(){
-  const btn=document.getElementById("btnProbe"),out=document.getElementById("probeOut");
-  btn.disabled=true;out.textContent="探测中…";
+  const btn=$("btnProbe");setBusy(btn,true);msg("probeOut","info","正在连接…");
   try{
-    const r=await fetch("/api/probe",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({base:document.getElementById("fBase").value,api_key:document.getElementById("fKey").value})});
-    const d=await r.json();
-    if(!d.ok){out.innerHTML=`<span style="color:var(--err)">探测失败：${d.error}</span>`;return}
-    document.getElementById("modelList").innerHTML=d.models.map(m=>
-      `<option value="${m.id}">${m.max_model_len?"ctx "+Math.round(m.max_model_len/1024)+"K":""}</option>`).join("");
-    const mi=document.getElementById("fModel");
-    if(d.models.length&&!mi.value)mi.value=d.models[0].id;
-    if(!document.getElementById("fFw").value&&d.framework)document.getElementById("fFw").value=d.framework;
-    if(!document.getElementById("fFwVer").value&&d.fw_version)document.getElementById("fFwVer").value=d.fw_version;
-    out.innerHTML=`✓ 连通 ${d.latency_ms}ms · ${d.count} 个模型：`+
-      d.models.map(m=>`${m.id}${m.max_model_len?" ("+Math.round(m.max_model_len/1024)+"K)":""}`).join("、");
+    const d=await postJSON("/api/probe",{base:$("fBase").value,api_key:$("fKey").value});
+    if(!d.ok){msg("probeOut","error","连接失败："+d.error);return}
+    $("modelList").innerHTML=d.models.map(m=>`<option value="${esc(m.id)}">${m.max_model_len?"上下文 "+Math.round(m.max_model_len/1024)+"K":""}</option>`).join("");
+    if(d.models.length&&!$("fModel").value)$("fModel").value=d.models[0].id;
+    if(!$("fFw").value&&d.framework)$("fFw").value=d.framework;
+    if(!$("fFwVer").value&&d.fw_version)$("fFwVer").value=d.fw_version;
+    msg("probeOut","success",`连接成功 · 延迟 ${d.latency_ms} ms · 可用模型 ${d.count} 个${d.framework?" · "+d.framework+(d.fw_version?" "+d.fw_version:""):""}`);
     saveForm();
-  }catch(e){out.innerHTML=`<span style="color:var(--err)">请求失败：${e.message}</span>`}
-  finally{btn.disabled=false}
+  }finally{setBusy(btn,false)}
 }
 async function start(){
-  const model=document.getElementById("fModel").value.trim();
-  if(!model){document.getElementById("probeOut").innerHTML='<span style="color:var(--err)">请先填写或检测模型</span>';return}
-  const body={base:document.getElementById("fBase").value,api_key:document.getElementById("fKey").value,
-    model,suite:document.getElementById("fSuite").value,tag:document.getElementById("fTag").value,
-    metrics:document.getElementById("fMetrics").checked,
-    conc_ladder:document.getElementById("fConc").value,matrix_conc:document.getElementById("fMConc").value,
-    lens:document.getElementById("fLens").value,
-    framework:document.getElementById("fFw").value,fw_version:document.getElementById("fFwVer").value};
-  const r=await fetch("/api/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  const d=await r.json();
-  if(!d.ok){document.getElementById("probeOut").innerHTML=`<span style="color:var(--err)">${d.error}</span>`;return}
-  document.getElementById("btnStart").disabled=true;
-  const ro=document.getElementById("runOut");ro.style.display="block";ro.textContent="已启动…\n"+d.url+"\n";
-  pollTimer=setInterval(async()=>{
-    try{
-      const s=await(await fetch("/api/status")).json();
-      const lines=(s.log||[]).map(x=>x.msg);
-      ro.textContent=lines.slice(-14).join("\n")+(s.running?"\n…":"");
-      ro.scrollTop=ro.scrollHeight;
-      if(!s.running){
-        clearInterval(pollTimer);pollTimer=null;
-        document.getElementById("btnStart").disabled=false;
-        if(s.error)ro.textContent+="\n✗ "+s.error;
-        else ro.textContent+="\n✓ 完成，结果已入库";
-        refresh(true);
-      }
-    }catch(e){}
-  },2000);
+  const model=$("fModel").value.trim();
+  if(!model){msg("probeOut","error","请填写模型名称");$("fModel").focus();return}
+  const body={base:$("fBase").value,api_key:$("fKey").value,model,suite:$("fSuite").value,tag:$("fTag").value,
+    metrics:$("fMetrics").checked,conc_ladder:$("fConc").value,matrix_conc:$("fMConc").value,lens:$("fLens").value,
+    framework:$("fFw").value,fw_version:$("fFwVer").value};
+  const d=await postJSON("/api/start",body);
+  if(!d.ok){msg("probeOut","error",d.error);return}
+  msg("probeOut","",null);
+  watchPerf("运行中 · "+model);
+}
+function watchPerf(title){
+  $("btnStart").disabled=true;
+  perfLog.start(title);
+  clearInterval(perfPoll);
+  perfPoll=pollStatus("/api/status",perfLog,{onDone:()=>{$("btnStart").disabled=false;refresh(true)}});
 }
 
-/* ---------------- 结果加载与渲染 ---------------- */
 async function refresh(focusNew){
   status("加载中…");
+  if(!RUNS_LOADED)$("dashEmpty").innerHTML=`<div class="kpi-grid">${'<div class="kpi"><div class="skeleton" style="height:12px;width:50%"></div><div class="skeleton" style="height:28px;width:70%;margin-top:12px"></div></div>'.repeat(4)}</div>`;
   try{
-    const r=await fetch("/api/results");
-    const list=await r.json();
+    const list=await getJSON("/api/results");
+    setConn(true,"服务已连接");
     const prev=new Set(Object.keys(RUNS));
-    RUNS={};
-    for(const item of list){RUNS[item.run_id]=item}
+    RUNS={};list.forEach(r=>RUNS[r.run_id]=r);
+    RUNS_LOADED=true;
     const names=Object.keys(RUNS).sort().reverse();
     const fresh=focusNew?names.find(n=>!prev.has(n)):null;
-    for(const sel of ["runA","runB"]){
-      const keep=sel==="runA"?(fresh||document.getElementById(sel).value||names[0]||""):document.getElementById(sel).value;
-      document.getElementById(sel).innerHTML=(sel==="runB"?'<option value="">— 对比（可选）—</option>':"")
-        +names.map(n=>`<option value="${n}" ${n===keep?"selected":""}>${label(RUNS[n])}</option>`).join("");
-    }
-    for(const sel of ["cmpA","cmpB"]){
-      const keep=document.getElementById(sel).value;
-      document.getElementById(sel).innerHTML=(sel==="cmpB"?'<option value="">— 选择运行 B —</option>':"")
-        +names.map(n=>`<option value="${n}" ${n===keep?"selected":""}>${label(RUNS[n])}</option>`).join("");
-    }
-    if(!document.getElementById("cmpA").value&&names[0])document.getElementById("cmpA").value=names[0];
-    if(!document.getElementById("cmpB").value&&names[1])document.getElementById("cmpB").value=names[1];
-    status(names.length+" 个结果");
-    render();
-    if(document.getElementById("viewCmp").classList.contains("on"))renderCmp();
-  }catch(e){status("无法连接 /api/results — 用 serve.py 启动："+e.message)}
+    const opts=(keep)=>names.map(n=>`<option value="${esc(n)}" ${n===keep?"selected":""}>${esc(label(RUNS[n]))}</option>`).join("");
+    const keepA=fresh||(RUNS[$("runA").value]?$("runA").value:names[0]);
+    const keepB=RUNS[$("runB").value]?$("runB").value:"";
+    $("runA").innerHTML=opts(keepA);
+    $("runB").innerHTML=`<option value="">不对比</option>`+opts(keepB);
+    const cA=RUNS[$("cmpA").value]?$("cmpA").value:names[0],cB=RUNS[$("cmpB").value]?$("cmpB").value:(names[1]||"");
+    $("cmpA").innerHTML=opts(cA);
+    $("cmpB").innerHTML=`<option value="">选择运行 B</option>`+opts(cB);
+    status(names.length?`共 ${names.length} 次运行`:"");
+    if(!names.length)toggleLauncher("launcher",true);
+    redrawVisible();
+  }catch(e){
+    setConn(false,"服务未连接");
+    status("");
+    $("dashEmpty").innerHTML=emptyState("无法连接后端服务","请确认 python run.py 正在运行（"+e.message+"）",{iconName:"alert"});
+    $("dashBody").hidden=true;
+  }
 }
 function label(r){
-  const m={quick:"快速",standard:"标准",full:"深度",custom:"自定义"};
   const fw=r.framework&&r.framework.name?`${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:null;
-  return [r.model||"?",fw,m[r.suite]||r.suite,r.tag||"",r.started_utc.slice(5,16).replace("T"," ")].filter(Boolean).join(" · ");
+  return [r.model||"?",fw,SUITE_NAME[r.suite]||r.suite,r.tag||"",shortTime(r.started_utc)].filter(Boolean).join(" · ");
 }
-function status(s){document.getElementById("status").textContent=s}
-function phase(run,id){return (run.phases||[]).find(p=>p.id===id)}
-function fmt(v,d=1){return v==null?"—":Number(v).toFixed(d)}
+function status(s){$("status").textContent=s}
+function phase(run,id){return run&&(run.phases||[]).find(p=>p.id===id)}
+
+/* 指标提取: KPI / 对比卡 / 差异表共用; dir=1 越高越好, -1 越低越好 */
+function perfCtx(r){
+  const dp=phase(r,"decode"),pp=phase(r,"prefill"),cp=phase(r,"concurrency"),pcp=phase(r,"prefill_conc");
+  let ok=0,tot=0;(cp?cp.points:[]).forEach(p=>{ok+=p.ok;tot+=p.ok+p.fail});
+  return{
+    zh:dp&&dp.cases.find(c=>c.lang==="zh"),en:dp&&dp.cases.find(c=>c.lang==="en"),
+    peak:cp&&cp.points.length?cp.points.reduce((m,p)=>p.agg_tps>m.agg_tps?p:m):null,
+    pLast:pp&&pp.points.length?pp.points[pp.points.length-1]:null,
+    cLast:cp&&cp.points.length?cp.points[cp.points.length-1]:null,
+    pcp,s:pcp&&pcp.summary,succ:tot?100*ok/tot:null};
+}
+const PERF_METRICS=[
+  {key:"zh",label:()=>"单流解码 · 中文",unit:"tok/s",dir:1,val:m=>m.zh&&m.zh.decode_tps_med,sub:m=>m.zh?`${m.zh.out_tokens} tokens · Burst ${fmt(m.zh.spec_burst_med,2)}`:""},
+  {key:"en",label:()=>"单流解码 · 英文",unit:"tok/s",dir:1,val:m=>m.en&&m.en.decode_tps_med,sub:m=>m.en?`ITL p50 ${fmt(m.en.itl_p50_ms_med)} ms`:""},
+  {key:"peak",label:()=>"峰值聚合吞吐",unit:"tok/s",dir:1,val:m=>m.peak&&m.peak.agg_tps,sub:m=>m.peak?`并发 ${m.peak.conc}`:""},
+  {key:"mpre",label:m=>`矩阵 Prefill 均值${m.pcp?"（"+m.pcp.conc+" 并发）":""}`,unit:"tok/s",dir:1,digits:0,val:m=>m.s&&m.s.prefill_avg,sub:m=>m.s?`范围 ${fmtInt(m.s.prefill_min)}–${fmtInt(m.s.prefill_max)}`:""},
+  {key:"mdec",label:m=>`矩阵输出均值${m.pcp?"（"+m.pcp.conc+" 并发）":""}`,unit:"tok/s",dir:1,val:m=>m.s&&m.s.decode_avg,sub:m=>m.s?`单流 P50 ${fmt(m.s.per_stream_decode_p50)} · P95 ${fmt(m.s.per_stream_decode_p95)}`:""},
+  {key:"pmax",label:m=>`Prefill @${m.pLast?m.pLast.label:"最大长度"}`,unit:"tok/s",dir:1,digits:0,val:m=>m.pLast&&m.pLast.prefill_tps_med,sub:m=>m.pLast?`TTFT ${fmt(m.pLast.ttft_med_s,2)} s`:""},
+  {key:"ttft",label:()=>"TTFT p95（最大并发）",unit:"s",dir:-1,digits:2,val:m=>m.cLast&&m.cLast.ttft_p95_s,sub:m=>m.cLast?`并发 ${m.cLast.conc}`:""},
+  {key:"succ",label:()=>"请求成功率",unit:"%",dir:1,val:m=>m.succ,sub:()=>"并发测试阶段"},
+];
+const CMP_EXTRA=[
+  {key:"itl",label:()=>"ITL p50 · 英文",unit:"ms",dir:-1,val:m=>m.en&&m.en.itl_p50_ms_med},
+  {key:"burst",label:()=>"Burst · 中文",unit:"tok/chunk",dir:1,digits:2,val:m=>m.zh&&m.zh.spec_burst_med},
+  {key:"ttftmax",label:m=>`TTFT @${m.pLast?m.pLast.label:"最大长度"}`,unit:"s",dir:-1,digits:2,val:m=>m.pLast&&m.pLast.ttft_med_s},
+  {key:"p50",label:()=>"矩阵单流输出 P50",unit:"tok/s",dir:1,val:m=>m.s&&m.s.per_stream_decode_p50},
+];
+function safeVal(f,m){try{const v=f(m);return v==null||!isFinite(v)?null:v}catch(e){return null}}
+function deltaPill(va,vb,dir,{mode="pct",prefix=""}={}){
+  if(va==null||vb==null)return `<span class="delta flat">—</span>`;
+  const d=mode==="pp"?vb-va:(va?(vb-va)/Math.abs(va)*100:0);
+  const flat=Math.abs(d)<(mode==="pp"?.5:1);
+  const good=d*dir>0;
+  const cls=flat?"flat":(good?"up":"down");
+  const ic=flat?"minus":(d>0?"arrow-up":"arrow-down");
+  return `<span class="delta ${cls}" title="${dir<0?"越低越好":"越高越好"}">${icon(ic)}${prefix}${d>=0?"+":""}${fmt(d,1)}${mode==="pp"?" pp":"%"}</span>`;
+}
 
 function render(){
-  const a=RUNS[document.getElementById("runA").value];
-  const b=RUNS[document.getElementById("runB").value];
-  const has=!!a;
-  document.getElementById("empty").style.display=has?"none":"block";
-  document.getElementById("kpis").style.display=has?"grid":"none";
-  document.getElementById("panels").style.display=has?"grid":"none";
-  if(!has)return;
+  if(!RUNS_LOADED)return;
+  const a=RUNS[$("runA").value],b=RUNS[$("runB").value];
+  if(!a){
+    $("dashBody").hidden=true;
+    $("dashEmpty").innerHTML=emptyState("暂无运行记录","新建一次性能测试后，结果会显示在这里",
+      {action:`<button class="btn btn-primary" data-toggle="launcher">${icon("plus")}新建测试</button>`});
+    return;
+  }
+  $("dashEmpty").innerHTML="";$("dashBody").hidden=false;
   const ov=a.overrides||{};
-  document.getElementById("meta").innerHTML=[
-    `模型 <b>${a.model}</b>`,`模式 <b>${({quick:"快速",standard:"标准",full:"深度",custom:"自定义"})[a.suite]||a.suite}</b>`,`端点 ${a.url.replace(/https?:\/\//,"").slice(0,46)}`,
-    ov.conc_ladder?`并发 ${ov.conc_ladder.join(",")}`:"",ov.matrix_conc?`阶梯×${ov.matrix_conc}路`:"",
-    ov.lens?`长度 ${ov.lens.map(k=>k+"K").join(",")}`:"",
-    (a.framework&&a.framework.name)?`框架 <b>${a.framework.name}${a.framework.version?" "+a.framework.version:""}</b>`:"",
-    a.tag?`标签 ${a.tag}`:"",`开始 ${a.started_utc.slice(0,19).replace("T"," ")} UTC`
-  ].filter(Boolean).map(s=>`<span class="badge">${s}</span>`).join("");
-  renderKPIs(a);
+  $("meta").innerHTML=[
+    ["模型",a.model],["套件",SUITE_NAME[a.suite]||a.suite],["端点",(a.url||"").replace(/https?:\/\//,"").replace(/\/v1\/chat\/completions$/,"")],
+    ov.conc_ladder&&["并发梯度",ov.conc_ladder.join(", ")],ov.matrix_conc&&["矩阵并发",ov.matrix_conc],
+    ov.lens&&["输入长度",ov.lens.map(k=>k+"K").join(", ")],
+    a.framework&&a.framework.name&&["框架",a.framework.name+(a.framework.version?" "+a.framework.version:"")],
+    a.tag&&["标签",a.tag],["开始",timeText(a.started_utc)+" UTC"],
+    a.status&&a.status!=="done"&&["状态",{running:"运行中",failed:"失败",interrupted:"已中断"}[a.status]||a.status],
+  ].filter(Boolean).map(([k,v])=>`<span class="badge${k==="状态"?" is-warning":""}">${esc(k)} <b>${esc(v)}</b></span>`).join("");
+  renderKPIs(a,b);
   pcTable(a,b);
   drawPrefill(a,b,"cPrefill","lPre");
   concChart(a,b,"cConc","lConc");
   decodeTable(a,b);
   metricsChart(a);
 }
-function prefillSeries(r){
-  const p=phase(r,"prefill");if(!p)return null;
-  return {name:"x",color:C.acc,pts:p.points.map(x=>({tok:x.in_tokens,tps:x.prefill_tps_med,ttft:x.ttft_med_s,label:x.label}))};
+function renderKPIs(a,b){
+  const ma=perfCtx(a),mb=b?perfCtx(b):null;
+  $("kpis").innerHTML=PERF_METRICS.map(k=>{
+    const va=safeVal(k.val,ma),vb=mb?safeVal(k.val,mb):null;
+    const value=va==null?"—":(k.unit==="%"?fmt(va,k.digits??1):(k.digits===0?fmtInt(va):fmt(va,k.digits??1)));
+    return `<div class="kpi"><div class="kpi-head"><span class="kpi-label" title="${esc(k.label(ma))}">${esc(k.label(ma))}</span>${mb?deltaPill(va,vb,k.dir,{prefix:"B "}):""}</div>
+      <div class="kpi-value num">${value}${va!=null?`<small>${k.unit}</small>`:""}</div>
+      <div class="kpi-sub">${esc(safeSub(k,ma))}</div></div>`;
+  }).join("");
 }
-function renderKPIs(a){
-  const dp=phase(a,"decode"),pp=phase(a,"prefill"),cp=phase(a,"concurrency"),pcp=phase(a,"prefill_conc");
-  const zh=dp&&dp.cases.find(c=>c.lang==="zh"),en=dp&&dp.cases.find(c=>c.lang==="en");
-  const peak=cp?Math.max(...cp.points.map(x=>x.agg_tps)):null;
-  const pLast=pp&&pp.points.length?pp.points[pp.points.length-1]:null;
-  const pcs=pcp&&pcp.summary;
-  const kpis=[
-    {lab:"中文单流解码",val:zh?fmt(zh.decode_tps_med):"—",sub:zh?`${zh.out_tokens} tokens · burst ${zh.spec_burst_med}`:"",cls:"a"},
-    {lab:"英文单流解码",val:en?fmt(en.decode_tps_med):"—",sub:en?`ITL p50 ${fmt(en.itl_p50_ms_med)} ms`:"",cls:"a"},
-    {lab:"峰值聚合吞吐",val:peak?fmt(peak):"—",sub:peak?`@并发${cp.points.find(x=>x.agg_tps===peak).conc}`:"",cls:"b"},
-    {lab:"阶梯并发×4 prefill",val:pcs?fmt(pcs.prefill_avg,0):"—",sub:pcs?`范围 ${fmt(pcs.prefill_min,0)}–${fmt(pcs.prefill_max,0)}`:"",cls:"b"},
-    {lab:"阶梯并发×4 输出",val:pcs?fmt(pcs.decode_avg):"—",sub:pcs?`单流 P50 ${fmt(pcs.per_stream_decode_p50)} / P95 ${fmt(pcs.per_stream_decode_p95)}`:"",cls:"w"},
-    {lab:pLast?`Prefill@${pLast.label}(单流)`:"Prefill",val:pLast?fmt(pLast.prefill_tps_med,0):"—",sub:pLast?`TTFT ${fmt(pLast.ttft_med_s,2)}s`:"",cls:"w"},
-    {lab:"TTFT p95 @最高并发",val:(cp&&cp.points.length)?fmt(cp.points[cp.points.length-1].ttft_p95_s,2)+"s":"—",sub:cp?`并发 ${cp.points[cp.points.length-1].conc}`:"",cls:"w"},
-    {lab:"成功率",val:(cp&&cp.points.length)?fmt(100*cp.points.reduce((s,x)=>s+x.ok,0)/cp.points.reduce((s,x)=>s+x.ok+x.fail,0))+"%":"—",sub:"并发阶梯全程",cls:"w"},
-  ];
-  document.getElementById("kpis").innerHTML=kpis.map(k=>
-    `<div class="card kpi ${k.cls}"><div class="lab">${k.lab}</div><div class="val">${k.val}</div><div class="sub">${k.sub||""}</div></div>`).join("");
+function safeSub(k,m){try{return k.sub?k.sub(m):""}catch(e){return""}}
+function abCell(va,vb,f,hasB){
+  return `${f(va)}${hasB?`<span class="sub">B ${f(vb)}</span>`:""}`;
 }
 function pcTable(a,b){
   const pa=phase(a,"prefill_conc"),pb=b?phase(b,"prefill_conc"):null;
-  const el=document.getElementById("pcTbl");
-  if(!pa){el.innerHTML='<div class="muted" style="padding:8px 2px">该运行无此阶段（旧版本结果，重新跑一次即有）</div>';return}
+  const el=$("pcTbl");
+  if(!pa){el.innerHTML=emptyState("该运行不包含此阶段数据","旧版本生成的结果，重新运行即可获得",{inline:true});return}
   const two=!!pb;
-  let html=`<div class="tblwrap"><table><thead><tr><th>长度${two?"（A / B）":""} ▸点击行展开单流明细</th><th>TTFT ms</th><th>ITL 均 ms</th><th>聚合 prefill t/s</th><th>聚合输出 t/s</th><th>成功</th></tr></thead><tbody>`;
+  let html=`<div class="table-wrap"><table class="table"><thead><tr><th>输入长度</th><th>TTFT 均值 (ms)</th><th>ITL 均值 (ms)</th><th>聚合 Prefill (tok/s)</th><th>聚合输出 (tok/s)</th><th>成功</th></tr></thead><tbody>`;
   pa.points.forEach(p=>{
-    const q=two?(pb&&pb.points.find(x=>x.in_tokens===p.in_tokens)):null;
-    const det=(x,who)=>x?`${who} 单流 prefill：${x.stream_prefill_tps.map(v=>fmt(v,0)).join(" / ")} t/s　·　单流输出：${x.stream_decode_tps.map(v=>fmt(v)).join(" / ")} t/s`:"";
-    html+=`<tr class="datarow" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'table-row':'none'"><td>${p.label} (${p.in_tokens.toLocaleString()})</td>
-      <td>${fmt(p.ttft_avg_ms,0)}${q?` / ${fmt(q.ttft_avg_ms,0)}`:""}</td>
-      <td>${fmt(p.itl_avg_ms)}${q?` / ${fmt(q.itl_avg_ms)}`:""}</td>
-      <td>${fmt(p.prefill_tps_agg,0)}${q?` / ${fmt(q.prefill_tps_agg,0)}`:""}</td>
-      <td>${fmt(p.decode_tps_agg)}${q?` / ${fmt(q.decode_tps_agg)}`:""}</td>
-      <td>${p.ok}/${p.ok+p.fail}${q?` / ${q.ok}/${q.ok+q.fail}`:""}</td></tr>
-      <tr class="detail" style="display:none"><td colspan="6">${det(p,"A")}${q?"<br>"+det(q,"B"):""}</td></tr>`;
+    const q=two?pb.points.find(x=>x.label===p.label)||null:null;
+    const has=two;
+    const det=(x,who)=>x?`<b>${who}</b> 单流 Prefill：${x.stream_prefill_tps.map(v=>fmtInt(v)).join(" / ")} tok/s　单流输出：${x.stream_decode_tps.map(v=>fmt(v)).join(" / ")} tok/s`:"";
+    html+=`<tr class="expandable" data-expand aria-expanded="false"><td>${icon("chevron-right","icon-sm")}${esc(p.label)}<span class="sub">${fmtInt(p.in_tokens)} tokens</span></td>
+      <td>${abCell(p.ttft_avg_ms,q&&q.ttft_avg_ms,v=>fmtInt(v),has)}</td>
+      <td>${abCell(p.itl_avg_ms,q&&q.itl_avg_ms,v=>fmt(v),has)}</td>
+      <td>${abCell(p.prefill_tps_agg,q&&q.prefill_tps_agg,v=>fmtInt(v),has)}</td>
+      <td>${abCell(p.decode_tps_agg,q&&q.decode_tps_agg,v=>fmt(v),has)}</td>
+      <td>${p.ok} / ${p.ok+p.fail}${has?`<span class="sub">B ${q?q.ok+" / "+(q.ok+q.fail):"—"}</span>`:""}</td></tr>
+      <tr class="detail" hidden><td colspan="6">${det(p,"A")}${q?"<br>"+det(q,"B"):""}</td></tr>`;
   });
-  html+="</tbody></table></div>";
-  const sumRow=(s,who)=>{
-    if(!s)return "";
-    return `<tr><td>${who}</td>
-      <td>prefill：${fmt(s.prefill_min,0)} – ${fmt(s.prefill_max,0)}，均 <b>${fmt(s.prefill_avg,0)}</b></td>
-      <td>输出：${fmt(s.decode_min,0)} – ${fmt(s.decode_max,0)}，均 <b>${fmt(s.decode_avg,0)}</b></td></tr>`;
-  };
-  const pctRow=(s,who)=>{
-    if(!s)return "";
-    return `<tr><td>${who} 单流分位数</td>
-      <td>P50 ${fmt(s.per_stream_prefill_p50,0)} · P90 ${fmt(s.per_stream_prefill_p90,0)} · P95 ${fmt(s.per_stream_prefill_p95,0)}</td>
-      <td>P50 ${fmt(s.per_stream_decode_p50)} · P90 ${fmt(s.per_stream_decode_p90)} · P95 ${fmt(s.per_stream_decode_p95)}</td></tr>`;
-  };
-  html+=`<table style="margin-top:10px"><thead><tr><th>汇总</th><th>prefill t/s</th><th>输出 t/s</th></tr></thead><tbody>`+
-    sumRow(pa.summary,"A 范围/平均")+(two?sumRow(pb.summary,"B 范围/平均"):"")+
-    pctRow(pa.summary,"A")+(two?pctRow(pb.summary,"B"):"")+
-    `</tbody></table>`;
+  html+=`</tbody></table></div>`;
+  const rows=[[pa.summary,"A"],two&&[pb.summary,"B"]].filter(x=>x&&x[0]);
+  if(rows.length){
+    html+=`<div class="table-caption">汇总</div><div class="table-wrap"><table class="table"><thead><tr><th>运行</th><th>Prefill 范围 / 均值 (tok/s)</th><th>输出范围 / 均值 (tok/s)</th><th>单流 Prefill P50 / P90 / P95</th><th>单流输出 P50 / P90 / P95</th></tr></thead><tbody>`+
+      rows.map(([s,who])=>`<tr><td><span class="run-tag ${who.toLowerCase()}">${who}</span></td>
+        <td>${fmtInt(s.prefill_min)} – ${fmtInt(s.prefill_max)} / <b>${fmtInt(s.prefill_avg)}</b></td>
+        <td>${fmt(s.decode_min)} – ${fmt(s.decode_max)} / <b>${fmt(s.decode_avg)}</b></td>
+        <td>${fmtInt(s.per_stream_prefill_p50)} / ${fmtInt(s.per_stream_prefill_p90)} / ${fmtInt(s.per_stream_prefill_p95)}</td>
+        <td>${fmt(s.per_stream_decode_p50)} / ${fmt(s.per_stream_decode_p90)} / ${fmt(s.per_stream_decode_p95)}</td></tr>`).join("")+
+      `</tbody></table></div>`;
+  }
   el.innerHTML=html;
 }
-
-/* ---------------- 图表 ---------------- */
-const TIP=document.getElementById("tip");
-function bindTips(cv){
-  const show=e=>{
-    const r=cv.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
-    let best=null,bd=520;
-    (cv._hit||[]).forEach(p=>{const d=(p.x-mx)**2+(p.y-my)**2;if(d<bd){bd=d;best=p}});
-    if(best){
-      TIP.innerHTML=best.html;TIP.style.display="block";
-      const tw=TIP.offsetWidth||160,th=TIP.offsetHeight||50;
-      /* 锚定数据点本身(视口坐标), 不跟随鼠标 */
-      let px=r.left+best.x, py=r.top+best.y;
-      let x=px+12,y=py-th-8;
-      if(x+tw>innerWidth-6)x=px-tw-12;
-      if(y<4)y=py+12;
-      TIP.style.left=x+"px";TIP.style.top=y+"px";
-      /* 高亮当前数据点 */
-      if(cv._marker!==undefined){const g=cv.getContext("2d");g.save();g.setTransform(1,0,0,1,0,0);}
-    }else TIP.style.display="none";
-  };
-  cv.onmousemove=show;
-  cv.onclick=show;
-  cv.onmouseleave=()=>TIP.style.display="none";
+function decodeStats(c){
+  if(!c)return null;
+  const runs=c.runs||[];
+  const m=k=>median(runs.map(r=>r[k]));
+  return{out:c.out_tokens,tps:c.decode_tps_med,best:c.decode_tps_best,tpot:m("tpot_ms"),p50:c.itl_p50_ms_med,p95:m("itl_p95_ms"),p99:m("itl_p99_ms"),jit:m("itl_jitter_ms"),burst:c.spec_burst_med};
 }
-function setup(cv){
-  /* 高度随容器宽度自适应(宽高比约 0.38, 200-460 区间); 派生自 clientWidth, 无反馈循环 */
-  const dpr=window.devicePixelRatio||1;
-  const w=Math.max(cv.clientWidth,60);
-  const h=Math.round(Math.min(460,Math.max(200,w*0.38)));
-  cv.width=Math.round(w*dpr);cv.height=Math.round(h*dpr);
-  const g=cv.getContext("2d");g.setTransform(dpr,0,0,dpr,0,0);
-  g.clearRect(0,0,w,h);return {g,w,h};
-}
-function line2(cv,seriesList,opt){
-  /* 类别轴折线: 每档一个等距刻度, 标签为档名; 大数字千分位 */
-  const {g,w,h}=setup(cv);cv._hit=[];if(!seriesList[0]){g.fillText("无数据",w/2,h/2);return}
-  const pad={l:52,r:20,t:12,b:36};
-  const cats=seriesList.filter(s=>s).flatMap(s=>s.pts.map(p=>p.label));
-  const seen=new Set(),labels=[];cats.forEach(c=>{if(!seen.has(c)){seen.add(c);labels.push(c)}});
-  const n=labels.length;
-  const all=seriesList.filter(s=>s).flatMap(s=>s.pts);
-  const ymax=Math.max(...all.map(p=>p[opt.yKey]))*1.15||10;
-  const X=i=>n>1?pad.l+(w-pad.l-pad.r)*i/(n-1):(pad.l+w-pad.r)/2;
-  const Y=v=>pad.t+(h-pad.t-pad.b)*(1-v/ymax);
-  const fmtn=v=>Math.round(v).toLocaleString();
-  g.strokeStyle=C.grid;g.fillStyle=C.muted;g.font="10px system-ui";g.lineWidth=1;
-  for(let i=0;i<=4;i++){const y=pad.t+(h-pad.t-pad.b)*i/4;
-    g.beginPath();g.moveTo(pad.l,y);g.lineTo(w-pad.r,y);g.stroke();
-    g.fillText(fmtn(ymax-(ymax)*i/4),6,y+3);}
-  labels.forEach((lab,i)=>{
-    g.textAlign=i===0?"left":(i===n-1?"right":"center");
-    g.fillText(String(lab),X(i),h-18);g.textAlign="left";});
-  g.textAlign="center";g.fillText(opt.xLabel,(pad.l+w-pad.r)/2,h-3);g.textAlign="left";
-  g.save();g.translate(11,(pad.t+h-pad.b)/2);g.rotate(-Math.PI/2);g.textAlign="center";g.fillText(opt.yLabel,0,0);g.restore();
-  seriesList.filter(s=>s).forEach(s=>{
-    g.strokeStyle=s.color;g.lineWidth=2;g.beginPath();let started=false;
-    s.pts.forEach(p=>{const x=X(labels.indexOf(p.label)),y=Y(p[opt.yKey]);
-      started?g.lineTo(x,y):g.moveTo(x,y);started=true;});
-    g.stroke();
-    cv._hit=[];
-    s.pts.forEach(p=>{const x=X(labels.indexOf(p.label)),y=Y(p[opt.yKey]);
-      g.fillStyle=s.color;g.beginPath();g.arc(x,y,3,0,7);g.fill();
-      cv._hit.push({x,y,html:`<b>${p.label}</b> · ${Math.round(p.tok).toLocaleString()} tok<br>${opt.yLabel}：<b style="color:${s.color}">${Math.round(p[opt.yKey]).toLocaleString()}</b>${p.ttft?`<br>TTFT：${fmt(p.ttft,2)}s`:""}`});});
-  });
-  bindTips(cv);
-}
-function drawPrefill(a,b,cvId,lgId){
-  const sA=prefillSeries(a);if(sA)sA.color=C.acc;
-  const sB=b?prefillSeries(b):null;if(sB)sB.color=C.acc2;
-  line2(document.getElementById(cvId),[VIS.pre.a&&sA,VIS.pre.b&&sB].filter(Boolean),
-    {xKey:"tok",yKey:"tps",xLabel:"上下文档位",yLabel:"prefill t/s"});
-  document.getElementById(lgId).innerHTML=
-    (sA?`<span class="${VIS.pre.a?"":"off"}" data-t="pre.a"><i style="background:${C.acc}"></i>A 单流 prefill t/s</span>`:"")+
-    (sB?`<span class="${VIS.pre.b?"":"off"}" data-t="pre.b"><i style="background:${C.acc2}"></i>B 单流 prefill t/s</span>`:"")+
-    `<span style="opacity:.6">点击图例显隐 · 悬停看数值</span>`;
-  bindLegend(lgId);
-}
-function concChart(a,b,cvId,lgId){
-  const cv=document.getElementById(cvId),{g,w,h}=setup(cv);
-  const pa=phase(a,"concurrency"),pb=b?phase(b,"concurrency"):null;
-  if(!pa){g.fillText("无数据",w/2,h/2);return}
-  const pad={l:44,r:44,t:12,b:36};
-  const pts=pa.points,xmax=pts[pts.length-1].conc;
-  const ymax=Math.max(...pts.map(p=>Math.max(p.agg_tps,p.per_stream_tps_med||0)),
-    ...(pb?pb.points.map(p=>Math.max(p.agg_tps,p.per_stream_tps_med||0)):[]))*1.15||10;
-  const tmax=Math.max(...pts.map(p=>p.ttft_p95_s||0),...(pb?pb.points.map(p=>p.ttft_p95_s||0):[0]))*1.15||1;
-  const nPts=pts.length,X=i=>nPts>1?pad.l+(w-pad.l-pad.r)*i/(nPts-1):(pad.l+w-pad.r)/2,
-        Xi=c=>X(pts.findIndex(p=>p.conc===c)),
-        Y=v=>pad.t+(h-pad.t-pad.b)*(1-v/ymax),Y2=v=>pad.t+(h-pad.t-pad.b)*(1-v/tmax);
-  g.strokeStyle=C.grid;g.fillStyle=C.muted;g.font="10px system-ui";
-  for(let i=0;i<=4;i++){const y=pad.t+(h-pad.t-pad.b)*i/4;g.beginPath();g.moveTo(pad.l,y);g.lineTo(w-pad.r,y);g.stroke();
-    g.fillText(Math.round(ymax-(ymax)*i/4).toLocaleString(),6,y+3);
-    g.textAlign="right";g.fillStyle=C.warn;g.fillText(fmt(tmax-(tmax)*i/4,2)+"s",w-6,y+3);g.textAlign="left";g.fillStyle=C.muted;}
-  pts.forEach((p,i)=>{g.textAlign=i===0?"left":(i===nPts-1?"right":"center");
-    g.fillText(String(p.conc),Xi(p.conc),h-18);g.textAlign="left";});
-  g.textAlign="center";g.fillText("并发数",(pad.l+w-pad.r)/2,h-3);g.textAlign="left";
-  g.save();g.translate(11,(pad.t+h-pad.b)/2);g.rotate(-Math.PI/2);g.textAlign="center";g.fillText("tok/s",0,0);g.restore();
-  g.save();g.translate(w-3,(pad.t+h-pad.b)/2);g.rotate(Math.PI/2);g.textAlign="center";g.fillStyle=C.warn;g.fillText("TTFT p95 (s)",0,0);g.restore();g.fillStyle=C.muted;
-  const drawSet=(p,color,aggCol)=>{if(!p)return;
-    g.strokeStyle=color;g.lineWidth=2;g.beginPath();
-    p.points.forEach((q,i)=>{const x=Xi(q.conc),y=Y(q.agg_tps);i?g.lineTo(x,y):g.moveTo(x,y)});g.stroke();
-    g.strokeStyle=aggCol;g.setLineDash([5,4]);g.lineWidth=1.5;g.beginPath();
-    p.points.forEach((q,i)=>{const y=Y(q.per_stream_tps_med||0);i?g.lineTo(Xi(q.conc),y):g.moveTo(Xi(q.conc),y)});g.stroke();g.setLineDash([]);};
-  drawSet(VIS.conc.a&&pa, C.acc,"#2a6fb8");drawSet(VIS.conc.b&&pb,C.acc2,"#1f9e7a");
-  cv._hit=[];
-  const regHits=(p,base)=>{if(!p)return;
-    p.points.forEach(q=>{
-      const x=Xi(q.conc);
-      cv._hit.push({x,y:Y(q.agg_tps),html:`<b>并发 ${q.conc}</b>（${base}）<br>聚合：<b style="color:${base==="A"?C.acc:C.acc2}">${Math.round(q.agg_tps).toLocaleString()} t/s</b><br>单流：${fmt(q.per_stream_tps_med)} t/s<br>TTFT p50：${fmt(q.ttft_p50_s,2)}s · p95：${fmt(q.ttft_p95_s,2)}s<br>成功：${q.ok}/${q.ok+q.fail}`});
-    });};
-  regHits(VIS.conc.a&&pa,"A");regHits(VIS.conc.b&&pb,"B");
-  if(VIS.conc.t){
-    g.strokeStyle=C.warn;g.lineWidth=1.5;g.setLineDash([2,3]);g.beginPath();
-    pts.forEach((q,i)=>{const y=Y2(q.ttft_p95_s||0);i?g.lineTo(Xi(q.conc),y):g.moveTo(Xi(q.conc),y)});g.stroke();g.setLineDash([]);
-    pts.forEach(q=>{if(q.ttft_p95_s==null)return;
-      cv._hit.push({x:Xi(q.conc),y:Y2(q.ttft_p95_s),html:`<b>并发 ${q.conc}</b><br>TTFT p95：<b style="color:${C.warn}">${fmt(q.ttft_p95_s,2)}s</b>`});});
+function decodeTable(a,b){
+  const da=phase(a,"decode"),db=b?phase(b,"decode"):null;
+  if(!da){$("decodeTbl").innerHTML=emptyState("该运行不包含此阶段数据","",{inline:true});return}
+  const cols=[["tps","解码速度 (tok/s)",1],["best","最佳 (tok/s)",1],["tpot","TPOT (ms)",2],["p50","ITL p50 (ms)",1],["p95","ITL p95 (ms)",1],["p99","ITL p99 (ms)",1],["jit","抖动 (ms)",1],["burst","Burst",2]];
+  let html=`<div class="table-wrap"><table class="table"><thead><tr><th>场景</th>${cols.map(c=>`<th>${c[1]}</th>`).join("")}</tr></thead><tbody>`;
+  for(const lang of ["zh","en"]){
+    const sa=decodeStats(da.cases.find(c=>c.lang===lang)),sb=db?decodeStats(db.cases.find(c=>c.lang===lang)):null;
+    if(!sa)continue;
+    html+=`<tr><td>${lang==="zh"?"中文":"英文"}<span class="sub">${sa.out} tokens / 次</span></td>`+
+      cols.map(([k,,d])=>`<td>${abCell(sa[k],sb&&sb[k],v=>fmt(v,d),!!db)}</td>`).join("")+`</tr>`;
   }
-  document.getElementById(lgId).innerHTML=
-    `<span class="${VIS.conc.a?"":"off"}" data-t="conc.a"><i style="background:${C.acc}"></i>A 聚合 t/s</span><span class="${VIS.conc.a?"":"off"}" data-t="conc.a"><i style="background:#2a6fb8"></i>A 单流 t/s</span>`+
-    (pb?`<span class="${VIS.conc.b?"":"off"}" data-t="conc.b"><i style="background:${C.acc2}"></i>B 聚合 t/s</span><span class="${VIS.conc.b?"":"off"}" data-t="conc.b"><i style="background:#1f9e7a"></i>B 单流 t/s</span>`:"")+
-    `<span class="${VIS.conc.t?"":"off"}" data-t="conc.t"><i style="background:${C.warn}"></i>TTFT p95 (s)</span>`+
-    `<span style="opacity:.6">点击图例显隐</span>`;
-  bindLegend(lgId);
-  bindTips(cv);
+  $("decodeTbl").innerHTML=html+`</tbody></table></div>`;
+}
+
+/* ============================================================
+   运行对比
+   ============================================================ */
+function swapCmp(){const a=$("cmpA").value,b=$("cmpB").value;if(!b)return;$("cmpA").value=b;$("cmpB").value=a;renderCmp()}
+function runCard(r,tag){
+  const fw=r.framework&&r.framework.name?`${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:"框架未标注";
+  return `<div class="card cmp-run"><span class="run-tag ${tag.toLowerCase()}">${tag}</span><div style="min-width:0">
+    <div class="cmp-run-name">${esc(r.model||"?")}</div>
+    <div class="cmp-run-meta">${esc([fw,SUITE_NAME[r.suite]||r.suite,r.tag,timeText(r.started_utc)+" UTC"].filter(Boolean).join(" · "))}</div></div></div>`;
 }
 function renderCmp(){
-  const a=RUNS[document.getElementById("cmpA").value];
-  const b=RUNS[document.getElementById("cmpB").value];
-  const el=document.getElementById("cmpBody");
-  if(!a){el.innerHTML='<div id="empty">暂无结果，先在总览页发起测试</div>';return}
-  if(!b){el.innerHTML='<div class="muted" style="padding:34px 0;font-size:13px">选择运行 B（如 1.6.3 vs 1.6.5、两种量化、两台引擎）后显示全维度对比</div>';return}
-  const get=(r,fn)=>{try{return fn(r)}catch(e){return null}};
-  const lastPre=r=>{const ps=phase(r,"prefill").points;return ps[ps.length-1]};
-  const dA=phase(a,"decode"),dB=phase(b,"decode");
-  const pA=phase(a,"prefill_conc"),pB=phase(b,"prefill_conc");
-  const z=x=>x&&x.cases.find(c=>c.lang==="zh"),e=x=>x&&x.cases.find(c=>c.lang==="en");
-  const pL=lastPre(a);
-  const METRICS=[
-    ["中文单流解码 t/s",get(a,r=>z(dA).decode_tps_med),get(b,r=>z(dB).decode_tps_med),1],
-    ["英文单流解码 t/s",get(a,r=>e(dA).decode_tps_med),get(b,r=>e(dB).decode_tps_med),1],
-    ["ITL p50 ms（英文）",get(a,r=>e(dA).itl_p50_ms_med),get(b,r=>e(dB).itl_p50_ms_med),-1],
-    ["投机 burst（中文）",get(a,r=>z(dA).spec_burst_med),get(b,r=>z(dB).spec_burst_med),1],
-    ["峰值聚合 t/s",get(a,r=>Math.max(...phase(r,"concurrency").points.map(p=>p.agg_tps))),
-                   get(b,r=>Math.max(...phase(r,"concurrency").points.map(p=>p.agg_tps))),1],
-    ["Prefill@max t/s",get(a,r=>lastPre(r).prefill_tps_med),get(b,r=>lastPre(r).prefill_tps_med),1],
-    ["TTFT@max s",get(a,r=>lastPre(r).ttft_med_s),get(b,r=>lastPre(r).ttft_med_s),-1],
-    ["阶梯×并发 prefill 均",get(a,r=>phase(r,"prefill_conc").summary.prefill_avg),get(b,r=>phase(r,"prefill_conc").summary.prefill_avg),1],
-    ["阶梯×并发 输出均",get(a,r=>phase(r,"prefill_conc").summary.decode_avg),get(b,r=>phase(r,"prefill_conc").summary.decode_avg),1],
-    ["单流输出 P50 t/s",get(a,r=>phase(r,"prefill_conc").summary.per_stream_decode_p50),get(b,r=>phase(r,"prefill_conc").summary.per_stream_decode_p50),1],
-  ];
-  const card=(nm,va,vb,dir)=>{
-    if(va==null||vb==null)return `<div class="cmpcard"><div class="nm">${nm}</div><div class="vs muted">—</div><div class="dl na">无数据</div></div>`;
-    const d=(vb-va)/va*100,good=d*dir>=0,abs=Math.abs(d);
-    const cl=abs<1?"na":(good?"up":"down");
-    const arrow=abs<1?"≈":(d>0?"▲":"▼");
-    return `<div class="cmpcard" style="${abs>=5&&cl!=="na"?"border-color:"+(good?"var(--acc2)":"var(--err)"):''}">
-      <div class="nm">${nm}</div>
-      <div class="vs"><span>${fmt(va)}</span><span class="muted" style="font-size:12px;font-weight:400">→</span><span class="b2">${fmt(vb)}</span></div>
-      <div class="dl ${cl}">${arrow} ${(d>=0?"+":"")+fmt(d)}%</div></div>`;
-  };
-  const fA=(a.framework&&a.framework.name)?`${a.framework.name} ${a.framework.version||""}`.trim():null;
-  const fB=(b.framework&&b.framework.name)?`${b.framework.name} ${b.framework.version||""}`.trim():null;
-  const fline=(fA||fB)?`<div class="muted" style="margin:6px 2px 2px;font-size:12.5px">同一模型 <b>${a.model}</b> 跨后端对比：A = <b style="color:var(--acc)">${fA||"未标注"}</b>　vs　B = <b style="color:var(--acc2)">${fB||"未标注"}</b></div>`:"";
-  let html=fline+'<div class="cmpcards">'+METRICS.map(m=>card(...m)).join("")+"</div>";
-  html+=`<div class="grid panels">
-    <div class="panel"><h3>Prefill 阶梯对比</h3><div class="desc">蓝=A 绿=B · 悬停看数值 · 点图例显隐</div><canvas id="cCmpPrefill"></canvas><div class="legend" id="lCmpPre"></div></div>
-    <div class="panel"><h3>并发阶梯对比</h3><div class="desc">聚合/单流/TTFT p95 双运行叠加</div><canvas id="cCmpConc"></canvas><div class="legend" id="lCmpConc"></div></div>
-    <div class="panel" style="grid-column:1/-1"><h3>矩阵逐档对比</h3><div class="desc">同长度档 A vs B 的 prefill / 输出吞吐与逐档变化</div><div id="cmpMatrix"></div></div>
-    <div class="panel" style="grid-column:1/-1"><h3>指标差异明细</h3><div class="desc">全部关键指标 A → B 变化（绿=提升，红=退步；TTFT/ITL 反色）</div><div id="diffTbl"></div></div>
-  </div>`;
-  el.innerHTML=html;
+  if(!RUNS_LOADED)return;
+  const a=RUNS[$("cmpA").value],b=RUNS[$("cmpB").value];
+  const el=$("cmpBody");
+  if(!a){el.innerHTML=emptyState("暂无运行记录","先在性能基准页完成至少两次运行");return}
+  if(!b){el.innerHTML=runCardsOnly(a)+emptyState("选择运行 B 以查看对比","例如不同框架版本、不同量化方案或不同推理引擎",{iconName:"compare"});return}
+  const ma=perfCtx(a),mb=perfCtx(b);
+  const cards=[...PERF_METRICS,...CMP_EXTRA].map(k=>{
+    const va=safeVal(k.val,ma),vb=safeVal(k.val,mb),d=k.digits??1;
+    const f=v=>v==null?"—":(d===0?fmtInt(v):fmt(v,d));
+    return `<div class="kpi"><div class="kpi-head"><span class="kpi-label" title="${esc(k.label(ma))}">${esc(k.label(ma))}</span>${deltaPill(va,vb,k.dir)}</div>
+      <div class="cmp-values num"><span>${f(va)}</span><span class="arrow">→</span><span>${f(vb)}</span><small class="faint" style="font-size:12px;font-weight:400">${k.unit}</small></div></div>`;
+  }).join("");
+  el.innerHTML=`<div class="cmp-runs">${runCard(a,"A")}${runCard(b,"B")}</div>
+    <div class="kpi-grid">${cards}</div>
+    <div class="grid-2">
+      <div class="panel"><div class="panel-head"><div><h3 class="panel-title">Prefill 吞吐对比</h3><p class="panel-desc">单流 Prefill 速度随输入长度的变化</p></div></div>
+        <div class="panel-body"><canvas class="chart" id="cCmpPrefill"></canvas><div class="legend" id="lCmpPre"></div></div></div>
+      <div class="panel"><div class="panel-head"><div><h3 class="panel-title">并发扩展性对比</h3><p class="panel-desc">聚合吞吐、单流吞吐与 TTFT p95</p></div></div>
+        <div class="panel-body"><canvas class="chart" id="cCmpConc"></canvas><div class="legend" id="lCmpConc"></div></div></div>
+      <div class="panel span-all"><div class="panel-head"><div><h3 class="panel-title">按输入长度对比</h3><p class="panel-desc">输入长度 × 并发矩阵中同档位的聚合吞吐</p></div></div>
+        <div class="panel-body" id="cmpMatrix"></div></div>
+      <div class="panel span-all"><div class="panel-head"><div><h3 class="panel-title">指标差异</h3><p class="panel-desc">颜色按指标优劣标注，延迟类指标越低越好</p></div></div>
+        <div class="panel-body" id="diffTbl"></div></div>
+    </div>`;
   drawPrefill(a,b,"cCmpPrefill","lCmpPre");
   concChart(a,b,"cCmpConc","lCmpConc");
-  let mx='<table><tr><th>长度</th><th>A prefill</th><th>B prefill</th><th>Δ prefill</th><th>A 输出</th><th>B 输出</th><th>Δ 输出</th></tr>';
-  (pA?pA.points:[]).forEach(p=>{
-    const q=pB?pB.points.reduce((bst,x)=>Math.abs(x.in_tokens-p.in_tokens)<Math.abs(bst.in_tokens-p.in_tokens)?x:bst,pB.points[0]):null;
-    const far=q&&Math.abs(q.in_tokens-p.in_tokens)/p.in_tokens>0.3;
-    const dl=(x,y)=>{if(x==null||y==null)return '<td class="same">—</td>';
-      if(far)return `<td class="same" title="B 档为 ${q.label}，与 A ${p.label} 差异大">不同档</td>`;
-      const d=(y-x)/x*100;
-      return `<td class="${d>=0?"up":"down"}">${d>=0?"+":""}${fmt(d)}%</td>`;};
-    mx+=`<tr><td>${p.label} (${p.in_tokens.toLocaleString()})</td>
-      <td>${fmt(p.prefill_tps_agg,0)}</td><td>${q?fmt(q.prefill_tps_agg,0):"—"}</td>${dl(p.prefill_tps_agg,q&&q.prefill_tps_agg)}
-      <td>${fmt(p.decode_tps_agg)}</td><td>${q?fmt(q.decode_tps_agg):"—"}</td>${dl(p.decode_tps_agg,q&&q.decode_tps_agg)}</tr>`;
-  });
-  document.getElementById("cmpMatrix").innerHTML=mx+"</table>";
+  cmpMatrix(a,b);
   diffTable(a,b);
 }
-
-function decodeTable(a,b){
-  const rows=[];
-  const da=phase(a,"decode"),db=b?phase(b,"decode"):null;
-  for(const lang of ["zh","en"]){
-    const ca=da&&da.cases.find(c=>c.lang===lang),cb=db&&db.cases.find(c=>c.lang===lang);
-    const cell=(x,k,d=1)=>x==null?"—":fmt(x[k],d);
-    rows.push(`<tr><td>${lang==="zh"?"中文":"英文"}${ca?` · ${ca.out_tokens} tok`:""}</td>
-      <td>${cell(ca,"decode_tps_med")}${cb?` / ${cell(cb,"decode_tps_med")}`:""}</td>
-      <td>${cell(ca,"itl_p50_ms_med")}${cb?` / ${cell(cb,"itl_p50_ms_med")}`:""}</td>
-      <td>${cell(ca,"decode_tps_best")}${cb?` / ${cell(cb,"decode_tps_best")}`:""}</td>
-      <td>${cell(ca,"spec_burst_med",2)}${cb?` / ${cell(cb,"spec_burst_med",2)}`:""}</td></tr>`);
-  }
-  const perRun=(da&&da.cases[0]&&da.cases[0].runs[0])||null;
-  let extra="";
-  if(perRun){
-    extra=`<tr><td>明细（A·中文 run1）</td><td>${fmt(perRun.decode_tps)}</td><td>${fmt(perRun.itl_p50_ms)}</td>
-    <td>p95 ${fmt(perRun.itl_p95_ms)} / p99 ${fmt(perRun.itl_p99_ms)} ms · 抖动 ${fmt(perRun.itl_jitter_ms)} ms</td>
-    <td>TPOT ${fmt(perRun.tpot_ms)} ms</td></tr>`;
-  }
-  document.getElementById("decodeTbl").innerHTML=`<table>
-    <tr><th>场景${b?"（A / B）":""}</th><th>解码 t/s</th><th>ITL p50 ms</th><th>最佳 t/s</th><th>投机 burst</th></tr>
-    ${rows.join("")}${extra}</table>`;
+function runCardsOnly(a){return `<div class="cmp-runs">${runCard(a,"A")}</div>`}
+function cmpMatrix(a,b){
+  const pA=phase(a,"prefill_conc"),pB=phase(b,"prefill_conc");
+  if(!pA||!pB){$("cmpMatrix").innerHTML=emptyState("两次运行需都包含输入长度 × 并发矩阵阶段","",{inline:true});return}
+  let t=`<div class="table-wrap"><table class="table"><thead><tr><th>输入长度</th><th>A Prefill</th><th>B Prefill</th><th>变化</th><th>A 输出</th><th>B 输出</th><th>变化</th></tr></thead><tbody>`;
+  pA.points.forEach(p=>{
+    const q=pB.points.reduce((best,x)=>Math.abs(x.in_tokens-p.in_tokens)<Math.abs(best.in_tokens-p.in_tokens)?x:best,pB.points[0]);
+    const far=q&&Math.abs(q.in_tokens-p.in_tokens)/p.in_tokens>.3;
+    const dl=(x,y)=>far?`<td class="na" title="B 最接近的档位为 ${esc(q.label)}">档位不匹配</td>`:`<td>${deltaPill(x,y,1)}</td>`;
+    t+=`<tr><td>${esc(p.label)}<span class="sub">${fmtInt(p.in_tokens)} tokens</span></td>
+      <td>${fmtInt(p.prefill_tps_agg)}</td><td>${far?"—":fmtInt(q.prefill_tps_agg)}</td>${dl(p.prefill_tps_agg,q.prefill_tps_agg)}
+      <td>${fmt(p.decode_tps_agg)}</td><td>${far?"—":fmt(q.decode_tps_agg)}</td>${dl(p.decode_tps_agg,q.decode_tps_agg)}</tr>`;
+  });
+  $("cmpMatrix").innerHTML=t+`</tbody></table></div>`;
 }
 function diffTable(a,b){
-  const el=document.getElementById("diffTbl");
-  if(!b){el.innerHTML='<div class="muted" style="padding:12px 4px">选择 B 运行后显示对比（例如 1.6.3 vs 1.6.5 镜像、不同量化、不同引擎）</div>';return}
-  const get=(r,fn)=>{try{return fn(r)}catch(e){return null}};
-  const lastPre=r=>{const ps=phase(r,"prefill").points;return ps[ps.length-1]};
-  const pL=a?lastPre(a):null;
-  const items=[
-    ["中文单流 t/s",get(a,r=>phase(r,"decode").cases.find(c=>c.lang==="zh").decode_tps_med),
-                   get(b,r=>phase(r,"decode").cases.find(c=>c.lang==="zh").decode_tps_med)],
-    ["英文单流 t/s",get(a,r=>phase(r,"decode").cases.find(c=>c.lang==="en").decode_tps_med),
-                   get(b,r=>phase(r,"decode").cases.find(c=>c.lang==="en").decode_tps_med)],
-    ["峰值聚合 t/s",get(a,r=>Math.max(...phase(r,"concurrency").points.map(p=>p.agg_tps))),
-                   get(b,r=>Math.max(...phase(r,"concurrency").points.map(p=>p.agg_tps)))],
-    ["阶梯并发×4 prefill 均",get(a,r=>phase(r,"prefill_conc").summary.prefill_avg),
-                            get(b,r=>phase(r,"prefill_conc").summary.prefill_avg)],
-    ["阶梯并发×4 输出均",get(a,r=>phase(r,"prefill_conc").summary.decode_avg),
-                        get(b,r=>phase(r,"prefill_conc").summary.decode_avg)],
-    ["单流输出 P50",get(a,r=>phase(r,"prefill_conc").summary.per_stream_decode_p50),
-                  get(b,r=>phase(r,"prefill_conc").summary.per_stream_decode_p50)],
-    [`Prefill@${pL?pL.label:"max"} t/s`,get(a,r=>lastPre(r).prefill_tps_med),get(b,r=>lastPre(r).prefill_tps_med)],
-    [`TTFT@${pL?pL.label:"max"} s`,get(a,r=>lastPre(r).ttft_med_s),get(b,r=>lastPre(r).ttft_med_s)],
-  ];
-  el.innerHTML=`<table><tr><th>指标</th><th>${label(a).slice(0,40)}</th><th>${label(b).slice(0,40)}</th><th>Δ</th><th>幅度</th></tr>`+
-    items.map(([n,va,vb])=>{
-      if(va==null||vb==null)return `<tr><td>${n}</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>`;
-      const d=vb-va,pctv=va?100*d/va:null,good=d>=0;
-      return `<tr><td>${n}</td><td>${fmt(va)}</td><td>${fmt(vb)}</td>
-      <td class="${good?"up":"down"}">${d>=0?"+":""}${fmt(d)}</td>
-      <td class="${good?"up":"down"}">${pctv!=null?(d>=0?"+":"")+fmt(pctv)+"%":"—"}</td></tr>`;
-    }).join("")+"</table>";
-}
-function metricsChart(a){
-  const s=a.metrics_samples||[];
-  const panel=document.getElementById("metricsPanel");
-  if(!s.length){panel.style.display="none";return}
-  panel.style.display="block";
-  const cv=document.getElementById("cMetrics"),{g,w,h}=setup(cv);
-  const pad={l:44,r:14,t:10,b:22},t0=s[0].t,tmax=s[s.length-1].t-t0||1;
-  const series=[["gpu_cache_usage",C.acc,"KV 显存占用 %"],["prefix_cache_hit",C.acc2,"前缀缓存命中 %"]];
-  g.strokeStyle=C.grid;g.fillStyle=C.muted;g.font="10px system-ui";
-  for(let i=0;i<=4;i++){const y=pad.t+(h-pad.t-pad.b)*i/4;g.beginPath();g.moveTo(pad.l,y);g.lineTo(w-pad.r,y);g.stroke();
-    g.fillText(fmt(100-25*i,0),6,y+3);}
-  const norm=(k,v)=>{if(v==null)return null;
-    if(k==="gpu_cache_usage")return v<=1.05?v*100:v;      /* vLLM 0-1 比例 */
-    return v;};                                             /* 命中率已是百分数 */
-  series.forEach(([k,col])=>{
-    g.strokeStyle=col;g.lineWidth=1.6;g.beginPath();let st=false;
-    s.forEach(m=>{const v=norm(k,m[k]);if(v==null)return;const x=pad.l+(w-pad.l-pad.r)*(m.t-t0)/tmax,
-      y=pad.t+(h-pad.t-pad.b)*(1-v/100);st?g.lineTo(x,y):g.moveTo(x,y);st=true;});
-    g.stroke();});
-  cv._hit=[];
-  series.forEach(([k,col,n])=>{
-    s.forEach((m,i)=>{const v=norm(k,m[k]);if(v==null||i%2)return;const x=pad.l+(w-pad.l-pad.r)*(m.t-t0)/tmax,
-      y=pad.t+(h-pad.t-pad.b)*(1-v/100);
-      cv._hit.push({x,y,html:`t+${Math.round(m.t-t0)}s<br>${n}：<b style="color:${col}">${fmt(v)}%</b><br>运行 ${fmt(m.requests_running,0)} · 排队 ${fmt(m.requests_waiting,0)}`});});
+  const ma=perfCtx(a),mb=perfCtx(b);
+  let t=`<div class="table-wrap"><table class="table"><thead><tr><th>指标</th><th>方向</th><th><span class="run-tag a">A</span></th><th><span class="run-tag b">B</span></th><th>差值</th><th>变化</th></tr></thead><tbody>`;
+  [...PERF_METRICS,...CMP_EXTRA].forEach(k=>{
+    const va=safeVal(k.val,ma),vb=safeVal(k.val,mb),dg=k.digits??1;
+    if(va==null&&vb==null)return;
+    const d=va!=null&&vb!=null?vb-va:null;
+    const cls=d==null||Math.abs(d)<1e-9?"na":(d*k.dir>0?"up":"down");
+    t+=`<tr><td>${esc(k.label(ma))}<span class="sub">${esc(k.unit)}</span></td><td class="faint">${k.dir<0?"越低越好":"越高越好"}</td>
+      <td>${fmt(va,dg)}</td><td>${fmt(vb,dg)}</td><td class="${cls}">${d==null?"—":(d>=0?"+":"")+fmt(d,dg)}</td><td>${deltaPill(va,vb,k.dir)}</td></tr>`;
   });
-  bindTips(cv);
-  g.fillText("t (s)",(pad.l+w-pad.r)/2,h-4);
-  let lg=panel.querySelector(".legend");
-  if(!lg){lg=document.createElement("div");lg.className="legend";panel.appendChild(lg);}
-  lg.innerHTML=series.map(([k,c,n])=>`<span><i style="background:${c}"></i>${n}</span>`).join("");
+  $("diffTbl").innerHTML=t+`</tbody></table></div>`;
 }
-function showView(v){
-  document.querySelectorAll(".nav").forEach(b=>b.classList.toggle("active",b.dataset.v===v));
-  document.querySelectorAll(".view").forEach(s=>s.classList.toggle("on",s.id==="view"+v[0].toUpperCase()+v.slice(1)));
-  if(v==="cmp")renderCmp();
-  if(v==="iq"){loadBanks();loadIqResults();}
-  if(v==="gen"){renderTaskChips();chipChange();loadGenResults();}
-}
-function renderAll(){render();if(document.getElementById("viewCmp").classList.contains("on"))renderCmp();}
-let rzT;/* ================= 智力测试 ================= */
-let IQ_RUNS={}, IQ_BANKS=[], iqPoll=null;
+</script>
+<script>
+/* ============================================================
+   能力评测
+   ============================================================ */
+let IQ_RUNS={},IQ_BANKS=[],IQ_LOADED=false,iqPoll=null;
+const IQ_CMP=new Set();
+const iqLog=LogBox("iqLog");
+bindFormMemory("llm-bench-pro-iq-form",["iqBase","iqModel","iqConc","iqTag","iqTier","iqProxy"]);
 
 async function loadBanks(){
   try{
-    IQ_BANKS=await(await fetch("/api/banks")).json();
-    const sel=document.getElementById("iqBank");
-    const keep=sel.value;
-    sel.innerHTML=IQ_BANKS.map(b=>`<option value="${b.bank_id}">${b.bank_id} · ${b.total}题 · ${b.created_utc.slice(0,10)}</option>`).join("");
+    IQ_BANKS=await getJSON("/api/banks");
+    const sel=$("iqBank"),keep=sel.value;
+    sel.innerHTML=IQ_BANKS.map(b=>`<option value="${esc(b.bank_id)}">${esc(b.bank_id)} · ${b.total} 题 · ${esc((b.created_utc||"").slice(0,10))}</option>`).join("");
     if(keep&&IQ_BANKS.find(b=>b.bank_id===keep))sel.value=keep;
-    else if(!sel.value&&IQ_BANKS[0])sel.value=IQ_BANKS[0].bank_id;
     bankInfo();
-  }catch(e){document.getElementById("iqBankInfo").textContent="题库加载失败: "+e.message;}
+  }catch(e){$("iqBankInfo").textContent="题集列表加载失败："+e.message}
 }
 function bankInfo(){
-  const b=IQ_BANKS.find(x=>x.bank_id===document.getElementById("iqBank").value);
-  if(!b)return;
-  document.getElementById("iqBankInfo").innerHTML=
-    `✓ ${b.total} 题 · ${(b.subjects||[]).map(s=>`${s.name} ${s.n}`).join(" · ")}`;
+  const b=IQ_BANKS.find(x=>x.bank_id===$("iqBank").value);
+  $("iqBankInfo").textContent=b?`${b.total} 题：`+(b.subjects||[]).map(s=>`${s.name} ${s.n}`).join("、"):"暂无题集，请在“题集管理”中更新";
 }
 async function bankUpdate(){
-  const btn=document.getElementById("iqBtnBank"),out=document.getElementById("iqBankInfo");
-  btn.disabled=true;out.textContent="拉取官方题集（MMLU全57科+GSM8K+MATH500+ARC+HellaSwag+C-Eval+IFEval）中…限速保护下约 3-5 分钟，请勿关闭页面";
+  const btn=$("iqBtnBank");setBusy(btn,true);
+  msg("iqMsg","info","正在下载题集（MMLU、GSM8K、MATH-500、ARC、HellaSwag、C-Eval、IFEval），预计 3–5 分钟，请保持页面打开");
   try{
-    const r=await fetch("/api/bank-update",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({proxy:document.getElementById("iqProxy")?.value||""})});
-    const d=await r.json();
-    if(!d.ok){out.innerHTML=`<span style="color:var(--err)">更新失败：${d.error}</span>`+(d.hint?`<br><span style="color:var(--warn)">${d.hint}</span>`:"");return}
-    out.innerHTML=`✓ 新题集 <b>${d.bank_id}</b> · ${d.total} 题 · ${(d.subjects||[]).map(s=>`${s.name} ${s.n}`).join(" · ")}`;
-    loadBanks();
-  }catch(e){out.innerHTML=`<span style="color:var(--err)">请求失败：${e.message}</span>`}
-  finally{btn.disabled=false}
+    const d=await postJSON("/api/bank-update",{proxy:$("iqProxy").value||""});
+    if(!d.ok){msg("iqMsg","error","题集更新失败："+d.error+(d.hint?"\n"+d.hint:""));return}
+    msg("iqMsg","success",`题集已更新：${d.bank_id} · ${d.total} 题`);
+    await loadBanks();$("iqBank").value=d.bank_id;bankInfo();
+  }finally{setBusy(btn,false)}
 }
-function tierChange(){document.getElementById("iqBankInfo").textContent=""}
 async function iqStart(){
-  const model=document.getElementById("iqModel").value.trim();
-  if(!model){document.getElementById("iqBankInfo").innerHTML='<span style="color:var(--err)">请填写模型名</span>';return}
-  const body={base:document.getElementById("iqBase").value,api_key:document.getElementById("iqKey").value,
-    model,bank_id:document.getElementById("iqBank").value,conc:document.getElementById("iqConc").value,
-    tag:document.getElementById("iqTag").value,limit:document.getElementById("iqTier").value||null,
-    thinking:document.getElementById("iqThink").checked};
-  const r=await fetch("/api/iq-start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  const d=await r.json();
-  if(!d.ok){document.getElementById("iqBankInfo").innerHTML=`<span style="color:var(--err)">${d.error}</span>`;return}
-  document.getElementById("iqBtnStart").disabled=true;
-  const ro=document.getElementById("iqOut");ro.style.display="block";ro.textContent="已启动…\n";
-  iqPoll=setInterval(async()=>{
-    try{
-      const s=await(await fetch("/api/iq-status")).json();
-      const lines=(s.log||[]).map(x=>x.msg);
-      ro.textContent=lines.slice(-14).join("\n")+(s.running?"\n…":"");
-      ro.scrollTop=ro.scrollHeight;
-      if(!s.running){
-        clearInterval(iqPoll);iqPoll=null;
-        document.getElementById("iqBtnStart").disabled=false;
-        if(s.error)ro.textContent+="\n✗ "+s.error;
-        else ro.textContent+="\n✓ 完成";
-        loadIqResults(true);
-      }
-    }catch(e){}
-  },2000);
+  const model=$("iqModel").value.trim();
+  if(!model){msg("iqMsg","error","请填写模型名称");$("iqModel").focus();return}
+  if(!$("iqBank").value){msg("iqMsg","error","请先选择或更新题集");return}
+  const d=await postJSON("/api/iq-start",{base:$("iqBase").value,api_key:$("iqKey").value,model,bank_id:$("iqBank").value,
+    conc:$("iqConc").value,tag:$("iqTag").value,limit:$("iqTier").value||null,thinking:$("iqThink").checked});
+  if(!d.ok){msg("iqMsg","error",d.error);return}
+  msg("iqMsg","",null);
+  watchIq("运行中 · "+model);
+}
+function watchIq(title){
+  $("iqBtnStart").disabled=true;iqLog.start(title);
+  clearInterval(iqPoll);
+  iqPoll=pollStatus("/api/iq-status",iqLog,{onDone:()=>{$("iqBtnStart").disabled=false;loadIqResults(true)}});
+}
+function runFw(r){return r.framework&&r.framework.name?`${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:""}
+function iqLabel(r){
+  const acc=r.overall&&r.overall.acc!=null?r.overall.acc+"%":"未完成";
+  return [r.model||"?",runFw(r),r.thinking?"思考":"非思考",acc,shortTime(r.started_utc)].filter(Boolean).join(" · ");
 }
 async function loadIqResults(focusNew){
   try{
-    const list=await(await fetch("/api/iq-results")).json();
+    const list=await getJSON("/api/iq-results");
     const prev=new Set(Object.keys(IQ_RUNS));
-    IQ_RUNS={};list.forEach(r=>IQ_RUNS[r.run_id]=r);
+    IQ_RUNS={};list.forEach(r=>IQ_RUNS[r.run_id]=r);IQ_LOADED=true;
     const names=Object.keys(IQ_RUNS).sort().reverse();
-    const sel=document.getElementById("iqCmpSel");
-    const keep=sel.value;
-    sel.innerHTML=names.map(n=>`<option value="${n}" ${n===keep?"selected":""}>${iqLabel(IQ_RUNS[n])}</option>`).join("");
-    renderIq(focusNew?names.find(n=>!prev.has(n)):null);
-  }catch(e){}
+    const fresh=focusNew?names.find(n=>!prev.has(n)):null;
+    const keep=fresh||(IQ_RUNS[$("iqMainSel").value]?$("iqMainSel").value:names[0]);
+    $("iqMainSel").innerHTML=names.map(n=>`<option value="${esc(n)}" ${n===keep?"selected":""}>${esc(iqLabel(IQ_RUNS[n]))}</option>`).join("");
+    [...IQ_CMP].forEach(id=>{if(!IQ_RUNS[id])IQ_CMP.delete(id)});
+    if(!names.length)toggleLauncher("iqLauncher",true);
+    renderIq();
+  }catch(e){$("iqResult").innerHTML=emptyState("无法加载评测结果",e.message,{iconName:"alert"})}
 }
-function iqLabel(r){
-  const fw=r.framework&&r.framework.name?` ${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:"";
-  return `${(r.model||"?").slice(0,26)}${fw} ${r.thinking?"🧠思考":"⚡直答"} · ${((r.overall&&r.overall.acc)||"—")}% · ${r.bank_id.slice(3,13)} · ${r.started_utc.slice(5,16).replace("T"," ")}`;
+function renderIqCmpList(mainId){
+  const names=Object.keys(IQ_RUNS).sort().reverse().filter(n=>n!==mainId);
+  IQ_CMP.delete(mainId);
+  $("iqCmpList").innerHTML=names.length?names.map(n=>`<label class="option-row"><input type="checkbox" value="${esc(n)}" ${IQ_CMP.has(n)?"checked":""}>
+    <span class="grow">${esc(iqLabel(IQ_RUNS[n]))}</span></label>`).join(""):`<div class="option-row faint">没有其他运行</div>`;
+  $("iqCmpLabel").textContent=IQ_CMP.size?`对比运行（${IQ_CMP.size}）`:"对比运行";
 }
-const IQ_COLORS=["#4da3ff","#37d4a0","#ffb454","#ff6b7a","#b48cff","#4dd8e6"];
-function renderIq(focusRunId){
-  const el=document.getElementById("iqResult");
-  const names=Object.keys(IQ_RUNS).sort().reverse();
-  const mainId=focusRunId||names[0];
-  const a=IQ_RUNS[mainId];
-  const sel=document.getElementById("iqCmpSel");
-  const cmpIds=[...sel.selectedOptions].map(o=>o.value).filter(v=>v&&IQ_RUNS[v]&&v!==mainId);
-  const cmps=cmpIds.map((id,i)=>({r:IQ_RUNS[id],color:IQ_COLORS[(i+1)%IQ_COLORS.length],label:String.fromCharCode(66+i)}));
-  if(!a){el.innerHTML='<div class="muted" style="padding:26px 2px">暂无智力测试结果——上方发起第一次测试</div>';return}
-  const ov=a.overall||{};
-  const shortName=r=>{const fw=r.framework&&r.framework.name?`${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:"";return `${(r.model||"?").slice(0,20)}${fw?" "+fw:""}`};
-  const cardOf=(r,color,tag,base)=>{
-    const o=r.overall||{};
-    let delta="";
-    if(base){const d=(o.acc??0)-(base.acc??0);
-      delta=`<div class="dl ${d>=0?"up":"down"}" style="margin-top:6px">${d>=0?"▲":"▼"} ${d>=0?"+":""}${fmt(d,1)}pp</div>`}
-    return `<div class="card" style="flex:1 1 175px;text-align:center;${tag?"":"border-color:var(--acc)"}">
-      <div class="muted" style="font-size:11px">${tag||"主运行 A"} · ${shortName(r).slice(0,26)}</div>
-      <div style="font-size:34px;font-weight:800;color:${color};font-variant-numeric:tabular-nums">${o.acc??"—"}</div>
-      <div class="muted" style="font-size:11px">CI ${o.ci_lo}–${o.ci_hi}% · ${o.correct}/${o.n}</div>${delta}</div>`;
-  };
-  let html=`<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">`+
-    cardOf(a,"#4da3ff","")+
-    cmps.map(c=>cardOf(c.r,c.color,c.label,ov)).join("")+`</div>`;
-  const mismatch=cmps.filter(c=>c.r.bank_id!==a.bank_id);
-  if(mismatch.length)html+=`<div class="card" style="border-color:var(--warn);margin-bottom:12px;font-size:12.5px">⚠️ 题集版本不一致：${mismatch.map(c=>c.label+"="+c.r.bank_id).join("、")} 与主运行 ${a.bank_id} 分数不可直接比较</div>`;
-  html+=`<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:stretch">
-    <div class="card" style="flex:0 0 330px"><canvas id="iqRadar" height="230" style="width:100%"></canvas></div>
-    <div class="card" style="flex:1 1 380px"><h3 style="font-size:13.5px;margin-bottom:6px">逐科目成绩（${cmps.length+1} 次运行，绿=最优）</h3><div id="iqSubjTbl"></div></div>
-  </div>`;
+$("iqCmpList").addEventListener("change",e=>{
+  if(e.target.type!=="checkbox")return;
+  e.target.checked?IQ_CMP.add(e.target.value):IQ_CMP.delete(e.target.value);
+  renderIq();
+});
+function renderIq(){
+  if(!IQ_LOADED)return;
+  const el=$("iqResult");
+  const mainId=$("iqMainSel").value,a=IQ_RUNS[mainId];
+  renderIqCmpList(mainId);
+  if(!a){el.innerHTML=emptyState("暂无评测结果","新建一次能力评测后，成绩会显示在这里",
+    {action:`<button class="btn btn-primary" data-toggle="iqLauncher">${icon("plus")}新建评测</button>`});return}
+  const series=[{r:a,color:C.series[0],tag:"A"},...[...IQ_CMP].filter(id=>IQ_RUNS[id]).slice(0,5).map((id,i)=>({r:IQ_RUNS[id],color:C.series[i+1],tag:String.fromCharCode(66+i)}))];
+  const base=a.overall||{};
+  let html=`<div class="score-cards">`+series.map(s=>{
+    const o=s.r.overall||{};
+    return `<div class="kpi"><div class="kpi-head"><span class="kpi-label" style="display:flex;align-items:center;gap:6px">
+        <span class="run-tag" style="background:${s.color}">${s.tag}</span>${esc((s.r.model||"?")+(runFw(s.r)?" · "+runFw(s.r):""))}</span>
+        ${s.tag!=="A"?deltaPill(base.acc,o.acc,1,{mode:"pp"}):""}</div>
+      <div class="kpi-value num">${o.acc!=null?fmt(o.acc,1):"—"}<small>%</small></div>
+      <div class="kpi-sub">${o.n?`95% CI ${fmt(o.ci_lo,1)}–${fmt(o.ci_hi,1)}% · ${o.correct}/${o.n} · ${s.r.thinking?"思考":"非思考"}`:"运行未完成"}</div></div>`;
+  }).join("")+`</div>`;
+  const mismatch=series.slice(1).filter(s=>s.r.bank_id!==a.bank_id);
+  if(mismatch.length)html+=`<div class="alert is-warning">${icon("alert")}<span>题集版本不一致：${mismatch.map(s=>esc(s.tag+"（"+s.r.bank_id+"）")).join("、")} 与 A（${esc(a.bank_id)}）使用了不同题集，分数不具可比性</span></div>`;
+  html+=`<div class="iq-layout">
+    <div class="panel"><div class="panel-head"><div><h3 class="panel-title">能力分布</h3><p class="panel-desc">前 8 个科目的准确率</p></div></div>
+      <div class="panel-body"><canvas class="chart" id="iqRadar"></canvas><div class="legend" id="iqRadarLg"></div></div></div>
+    <div class="panel"><div class="panel-head"><div><h3 class="panel-title">分科准确率</h3><p class="panel-desc">${series.length>1?"加粗为各科最高分":"括号内为 95% 置信区间"}</p></div></div>
+      <div class="panel-body" id="iqSubjTbl"></div></div></div>`;
   el.innerHTML=html;
-  const series=[{r:a,color:"#4da3ff",label:"A"},...cmps];
-  let t=`<div class="tblwrap"><table><thead><tr><th>科目</th>${series.map(s=>`<th style="color:${s.color}">${s.label}</th>`).join("")}</tr></thead><tbody>`;
+  let t=`<div class="table-wrap" style="max-height:560px"><table class="table"><thead><tr><th>科目</th><th>题数</th>${series.map(s=>`<th><span class="run-tag" style="background:${s.color}">${s.tag}</span></th>`).join("")}</tr></thead><tbody>`;
   (a.subjects||[]).forEach(sub=>{
-    const vals=series.map(s=>{const x=(s.r.subjects||[]).find(y=>y.id===sub.id);return x?x.acc:null});
-    const valid=vals.filter(v=>v!=null);
-    const best=valid.length?Math.max(...valid):null;
-    t+=`<tr><td>${sub.name}</td>`+series.map((s,i)=>
-      vals[i]==null?'<td class="same">—</td>':
-      `<td class="${cmps.length&&vals[i]===best?"up":""}" style="${vals[i]===best?"font-weight:700":""}">${vals[i]}%</td>`).join("")+`</tr>`;
+    const vals=series.map(s=>{const x=(s.r.subjects||[]).find(y=>y.id===sub.id);return x||null});
+    const accs=vals.map(v=>v&&v.acc).filter(v=>v!=null);
+    const best=accs.length>1?Math.max(...accs):null;
+    t+=`<tr><td>${esc(sub.name)}</td><td class="faint">${sub.n}</td>`+vals.map(v=>v==null?`<td class="na">—</td>`:
+      `<td class="${best!=null&&v.acc===best?"best":""}">${fmt(v.acc,1)}%${series.length===1?`<span class="sub">${fmt(v.ci_lo,1)}–${fmt(v.ci_hi,1)}</span>`:""}</td>`).join("")+`</tr>`;
   });
-  const bestAll=Math.max(...series.map(s=>(s.r.overall&&s.r.overall.acc)||0));
-  t+=`<tr style="border-top:2px solid var(--line)"><td><b>总体</b></td>`+series.map(s=>
-    `<td style="font-weight:700;color:${(s.r.overall&&s.r.overall.acc)===bestAll?"var(--acc2)":"inherit"}">${(s.r.overall&&s.r.overall.acc)??"—"}%</td>`).join("")+`</tr>`;
-  t+="</tbody></table></div>";
-  document.getElementById("iqSubjTbl").innerHTML=t;
+  const overall=series.map(s=>s.r.overall&&s.r.overall.acc);
+  const bestAll=series.length>1?Math.max(...overall.filter(v=>v!=null)):null;
+  t+=`<tr class="total"><td>总体</td><td class="faint">${base.n??"—"}</td>`+overall.map(v=>`<td class="${bestAll!=null&&v===bestAll?"best":""}">${v!=null?fmt(v,1)+"%":"—"}</td>`).join("")+`</tr></tbody></table></div>`;
+  $("iqSubjTbl").innerHTML=t;
   drawRadar(series);
 }
 function drawRadar(series){
-  const cv=document.getElementById("iqRadar");if(!cv)return;
-  const {g,w,h}=setup(cv);
-  const subs=(series[0].r.subjects||[]).slice(0,8);
-  const n=subs.length;if(!n){g.fillText("无数据",w/2,h/2);return}
-  const cx=w/2,cy=h/2+4,R=Math.min(w,h)/2-36;
-  const ang=i=>-Math.PI/2+2*Math.PI*i/n;
+  const cv=$("iqRadar");if(!cv||!cv.clientWidth)return;
+  const {g,w,h}=setupCanvas(cv,.9,260,380);
+  const subs=(series[0].r.subjects||[]).slice(0,8),n=subs.length;
+  $("iqRadarLg").innerHTML=series.map(s=>legendBtn("",s.color,`${s.tag} · ${s.r.overall&&s.r.overall.acc!=null?s.r.overall.acc+"%":"—"}`)).join("");
+  if(n<3){noData(g,w,h,"科目不足 3 个，无法绘制");return}
+  const cx=w/2,cy=h/2,R=Math.min(w/2-70,h/2-30),ang=i=>-Math.PI/2+2*Math.PI*i/n;
+  const pt=(i,r)=>[cx+r*Math.cos(ang(i)),cy+r*Math.sin(ang(i))];
+  g.lineWidth=1;
+  for(let ring=1;ring<=4;ring++){
+    g.strokeStyle=ring===4?C.axis:C.grid;g.beginPath();
+    for(let i=0;i<=n;i++){const [x,y]=pt(i%n,R*ring/4);i?g.lineTo(x,y):g.moveTo(x,y)}
+    g.stroke();
+    g.fillStyle=C.text;g.textAlign="left";g.fillText(String(ring*25),cx+3,cy-R*ring/4+7);
+  }
   g.strokeStyle=C.grid;
-  for(let ring=1;ring<=4;ring++){g.beginPath();
-    for(let i=0;i<=n;i++){const r=R*ring/4;i?g.lineTo(cx+r*Math.cos(ang(i%n)),cy+r*Math.sin(ang(i%n))):g.moveTo(cx+r*Math.cos(ang(i%n)),cy+r*Math.sin(ang(i%n)))}
-    g.stroke()}
-  for(let i=0;i<n;i++){g.beginPath();g.moveTo(cx,cy);g.lineTo(cx+R*Math.cos(ang(i)),cy+R*Math.sin(ang(i)));g.stroke()}
-  g.fillStyle=C.muted;g.font="10px system-ui";
-  subs.forEach((s,i)=>{const x=cx+(R+16)*Math.cos(ang(i)),y=cy+(R+16)*Math.sin(ang(i));
-    g.textAlign=Math.abs(Math.cos(ang(i)))<.3?"center":(Math.cos(ang(i))>0?"left":"right");
-    g.fillText(s.id.replace("mmlu_","").slice(0,11),x,y+3)});
+  for(let i=0;i<n;i++){const [x,y]=pt(i,R);g.beginPath();g.moveTo(cx,cy);g.lineTo(x,y);g.stroke()}
+  g.fillStyle=C.text2;
+  subs.forEach((s,i)=>{const [x,y]=pt(i,R+14);const c=Math.cos(ang(i));
+    g.textAlign=Math.abs(c)<.3?"center":(c>0?"left":"right");
+    let name=String(s.name||s.id).replace(/（官方）|\(官方\)|\(中文\)|（中文）/g,"").trim();
+    const maxW=Math.abs(c)<.3?w-8:(c>0?w-x-4:x-4);  /* 按可用宽度截断, 避免超出画布 */
+    while(name.length>2&&g.measureText(name).width>maxW)name=name.slice(0,-2)+"…";
+    g.fillText(name,x,y)});
   g.textAlign="left";
   series.forEach(s=>{
     const ss=s.r.subjects||[];
-    g.beginPath();
-    subs.forEach((sub,i)=>{const m=ss.find(x=>x.id===sub.id);const v=m?Math.max(0,Math.min(100,m.acc||0)):0;
-      const r=R*v/100;i?g.lineTo(cx+r*Math.cos(ang(i)),cy+r*Math.sin(ang(i))):g.moveTo(cx+r*Math.cos(ang(i)),cy+r*Math.sin(ang(i)))});
-    g.closePath();g.strokeStyle=s.color;g.lineWidth=2;g.stroke();
-    g.fillStyle=s.color+"26";g.fill();
+    const pts=subs.map((sub,i)=>{const m=ss.find(x=>x.id===sub.id);const v=m?Math.max(0,Math.min(100,m.acc||0)):0;const [x,y]=pt(i,R*v/100);return{x,y,v,name:sub.name}});
+    g.beginPath();pts.forEach((p,i)=>i?g.lineTo(p.x,p.y):g.moveTo(p.x,p.y));g.closePath();
+    g.fillStyle=withAlpha(s.color,.12);g.fill();g.strokeStyle=s.color;g.lineWidth=2;g.stroke();
+    dots(g,pts,s.color,2.5);
+    pts.forEach(p=>cv._hit.push({x:p.x,y:p.y,html:tt(p.name,[[s.color,s.tag,fmt(p.v,1)+"%"]])}));
   });
-  let lg=cv.parentElement.querySelector(".legend");
-  if(!lg){lg=document.createElement("div");lg.className="legend";cv.parentElement.appendChild(lg);}
-  lg.innerHTML=series.map(s=>`<span><i style="background:${s.color}"></i>${s.label} ${(s.r.overall&&s.r.overall.acc)??"—"}%</span>`).join("");
+  bindTips(cv);
 }
 
-/* ================= 生成效果测试 ================= */
-let GEN_RUNS={}, genPoll=null;
-const GEN_LS="llm-bench-pro-gen-judge";
-const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-(function restoreJudge(){try{const k=JSON.parse(localStorage.getItem(GEN_LS)||"{}");
-  ["genJudgeBase","genJudgeModel"].forEach(id=>{const el=document.getElementById(id);if(el&&k[id])el.value=k[id]})}catch(e){}})();
-["genJudgeBase","genJudgeModel"].forEach(id=>document.getElementById(id).addEventListener("input",()=>{
-  const k={};["genJudgeBase","genJudgeModel"].forEach(i=>k[i]=document.getElementById(i).value);
-  try{localStorage.setItem(GEN_LS,JSON.stringify(k))}catch(e){}}));
-function judgeBody(){return{judge_base:document.getElementById("genJudgeBase").value.trim(),
-  judge_model:document.getElementById("genJudgeModel").value.trim(),judge_key:document.getElementById("genJudgeKey").value}}
-function genMsg(text,isErr){document.getElementById("genInfo").innerHTML=isErr?`<span style="color:var(--err)">${esc(text)}</span>`:esc(text)}
-
-async function genStart(){
-  const model=document.getElementById("genModel").value.trim();
-  if(!model){genMsg("请填写模型名称",true);return}
-  const tasks=selectedTasks();
-  if(!tasks.length){genMsg("请至少选择 1 道题目",true);return}
-  const jb=judgeBody();
-  if(!!jb.judge_base!==!!jb.judge_model){genMsg("视觉评审需同时填写端点和评审模型，或都留空",true);return}
-  const body={base:document.getElementById("genBase").value,api_key:document.getElementById("genKey").value,
-    model,conc:document.getElementById("genConc").value,tag:document.getElementById("genTag").value,tasks,
-    thinking:document.getElementById("genThink").checked,...jb};
-  const r=await fetch("/api/gen-start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  const d=await r.json();
-  if(!d.ok){genMsg(d.error,true);return}
-  genMsg(evalMethodText(d.eval));
-  genWatch(`运行已开始：${tasks.length} 题${tasks.length>8?"，单题约 1–4 分钟":""}`);
-}
-async function genReeval(){
-  const runId=document.getElementById("genMainSel").value;
-  if(!runId){genMsg("没有可评测的运行",true);return}
-  const jb=judgeBody();
-  if(!!jb.judge_base!==!!jb.judge_model){genMsg("视觉评审需同时填写端点和评审模型，或都留空",true);return}
-  const r=await fetch("/api/gen-eval",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_id:runId,...jb})});
-  const d=await r.json();
-  if(!d.ok){genMsg(d.error,true);return}
-  genMsg(evalMethodText(d.eval));
-  genWatch("重新评测已开始："+runId,runId);
-}
-function genWatch(first,keepRun){
-  ["genBtnStart","genBtnEval"].forEach(id=>document.getElementById(id).disabled=true);
-  const ro=document.getElementById("genOut");ro.style.display="block";ro.textContent=first+"\n";
-  clearInterval(genPoll);
-  genPoll=setInterval(async()=>{
-    try{
-      const s=await(await fetch("/api/gen-status")).json();
-      ro.textContent=(s.log||[]).map(x=>x.msg).slice(-14).join("\n")+(s.running?"\n…":"");
-      ro.scrollTop=ro.scrollHeight;
-      if(!s.running){
-        clearInterval(genPoll);genPoll=null;
-        ["genBtnStart","genBtnEval"].forEach(id=>document.getElementById(id).disabled=false);
-        ro.textContent+=s.error?("\n失败："+s.error):"\n已完成";
-        loadGenResults(keepRun?null:true,keepRun);
-      }
-    }catch(e){}
-  },3000);
-}
-function evalMethodText(ev){
-  if(!ev)return"";
-  const m=ev.method==="browser"?"无头浏览器运行检测":"源码检查（未找到 Chrome/Edge，结果仅供参考）";
-  return "评测方式："+m+(ev.judge_model?" + 视觉评审（"+ev.judge_model+"）":"，未配置视觉评审");
-}
-async function loadGenResults(focusNew,keepRun){
-  try{
-    const list=await(await fetch("/api/gen-results")).json();
-    const prev=new Set(Object.keys(GEN_RUNS));
-    GEN_RUNS={};list.forEach(r=>GEN_RUNS[r.run_id]=r);
-    const names=Object.keys(GEN_RUNS).sort().reverse();
-    const main=document.getElementById("genMainSel"),cmp=document.getElementById("genCmpSel");
-    const fresh=focusNew?names.find(n=>!prev.has(n)):null;
-    const keepMain=keepRun||fresh||(GEN_RUNS[main.value]?main.value:names[0]);
-    const keepCmp=cmp.value;
-    main.innerHTML=names.map(n=>`<option value="${esc(n)}" ${n===keepMain?"selected":""}>${esc(genLabel(GEN_RUNS[n]))}</option>`).join("");
-    cmp.innerHTML=`<option value="">不对比</option>`+names.map(n=>`<option value="${esc(n)}" ${n===keepCmp?"selected":""}>${esc(genLabel(GEN_RUNS[n]))}</option>`).join("");
-    renderGen();
-  }catch(e){}
-}
-function avgOf(xs){const v=xs.filter(x=>typeof x==="number");return v.length?v.reduce((a,b)=>a+b,0)/v.length:null}
-function genStats(r){
-  const ok=(r.items||[]).filter(x=>!x.error);
-  const v2=(r.eval&&r.eval.eval_version)||ok.some(x=>x.eval);
-  return{ok,v2,
-    exec:v2?avgOf(ok.map(x=>x.exec_score)):null,
-    judge:avgOf(ok.map(x=>x.judge_score)),
-    stars:avgOf(ok.map(x=>x.stars||null))};
-}
-function genLabel(r){
-  const s=genStats(r);
-  const fw=r.framework&&r.framework.name?` ${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:"";
-  const parts=[`${(r.model||"?").slice(0,22)}${fw}`,r.thinking?"思考":"非思考",`完成 ${s.ok.length}/${(r.items||[]).length}`];
-  if(s.exec!=null)parts.push(`检测 ${s.exec.toFixed(0)}%`);
-  if(s.judge!=null)parts.push(`评审 ${s.judge.toFixed(0)}`);
-  if(s.stars!=null)parts.push(`人工 ${s.stars.toFixed(1)}`);
-  if(!s.v2)parts.push("旧口径");
-  return parts.join(" · ")+" · "+(r.started_utc||"").slice(5,16).replace("T"," ");
-}
-function kpiCard(label,value,sub){
-  return `<div class="card" style="flex:1 1 170px"><div class="muted" style="font-size:12px">${label}</div>
-    <div style="font-size:26px;font-weight:600;margin-top:6px;font-variant-numeric:tabular-nums">${value}</div>
-    <div class="muted" style="font-size:11.5px;margin-top:4px">${sub||"&nbsp;"}</div></div>`;
-}
-function scoreColor(p){return p==null?"var(--muted)":p>=80?"var(--acc2)":p>=50?"var(--warn)":"var(--err)"}
-function renderGen(){
-  const el=document.getElementById("genResult");
-  const a=GEN_RUNS[document.getElementById("genMainSel").value];
-  const b=GEN_RUNS[document.getElementById("genCmpSel").value];
-  if(!a){el.innerHTML='<div class="muted" style="padding:26px 2px">暂无生成结果</div>';return}
-  const s=genStats(a);
-  const ev=a.eval||{};
-  let html=`<div class="muted" style="font-size:12px;margin-bottom:10px">${s.v2?esc(evalMethodText(ev))+(ev.browser?"（"+esc(ev.browser)+"）":""):
-    '<span style="color:var(--warn)">该运行为旧版评测口径（源码关键词匹配），分数不可信，建议点击“重新评测”</span>'}</div>`;
-  html+=`<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
-    ${kpiCard("已完成",`${s.ok.length}<span class="muted" style="font-size:14px"> / ${(a.items||[]).length}</span>`,"生成失败或思考耗尽不计入")}
-    ${kpiCard("运行检测通过率",s.exec==null?"—":s.exec.toFixed(1)+"%","加载、报错、白屏、动画、交互脚本")}
-    ${kpiCard("视觉评审均分",s.judge==null?"—":s.judge.toFixed(1),ev.judge_model?"评审模型 "+esc(ev.judge_model):"未配置评审模型")}
-    ${kpiCard("人工评分均值",s.stars==null?"—":s.stars.toFixed(1),"点击作品卡片上的星级评分")}
-  </div>`;
-  html+=`<div class="grid panels" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">`;
-  (a.items||[]).forEach(it=>{
-    if(it.error){
-      html+=`<div class="panel"><h3 style="cursor:default">${esc(it.name)}</h3>
-        <div class="desc" style="color:var(--err)">生成失败：${esc(it.error)}</div></div>`;
-      return;
-    }
-    const e=it.eval, checks=e?e.checks:[];
-    const fails=checks.filter(c=>!c.pass);
-    const j=e&&e.judge;
-    const bar=checks.map(c=>`<i title="${esc((c.pass?"通过：":"未通过：")+c.label+(c.detail?"\n"+c.detail:""))}" style="display:inline-block;width:14px;height:6px;border-radius:2px;margin-right:3px;background:${c.pass?"var(--acc2)":"var(--err)"}"></i>`).join("");
-    html+=`<div class="panel">
-      <h3 style="cursor:default;display:flex;justify-content:space-between;gap:8px"><span>${esc(it.name)}</span>
-        <span style="font-size:12px;font-weight:500;color:${scoreColor(j&&j.score)}">${j&&j.score!=null?"评审 "+j.score.toFixed(0):j&&j.error?"评审失败":""}</span></h3>
-      <div class="desc">${esc((it.tags||[]).join(" · "))} · ${it.lines} 行${it.continuations?" · 续写 "+it.continuations+" 轮":""}</div>
-      ${e?`<div style="margin-top:8px;display:flex;align-items:center;gap:8px"><span style="white-space:nowrap">${bar}</span>
-        <span style="font-size:12px;color:${scoreColor(it.exec_score)}">运行检测 ${it.pass}/${it.total}</span></div>
-        ${fails.length?`<div style="margin-top:6px;font-size:12px;color:var(--muted);line-height:1.6">${fails.slice(0,3).map(c=>"未通过："+esc(c.label)).join("<br>")}${fails.length>3?"<br>…":""}</div>`:""}`
-        :`<div class="desc" style="margin-top:6px;color:var(--warn)">未评测（旧版结果）</div>`}
-      <div style="display:flex;gap:8px;align-items:center;margin-top:10px">
-        <button onclick="previewWork('${esc(it.file)}','${esc(it.name)}')">预览</button>
-        ${e?`<button onclick="genDetail('${esc(a.run_id)}','${esc(it.id)}')">检测详情</button>`:""}
-        ${b?`<button onclick="previewCompare('${esc(it.id)}','${esc(it.name)}')">并排对比</button>`:""}
-        <span style="margin-left:auto;white-space:nowrap">${starsHtml(a.run_id,it.id,it.stars)}</span>
-      </div>
-    </div>`;
-  });
-  html+="</div>";
-  el.innerHTML=html;
-}
-function starsHtml(runId,itemId,n){
-  n=n||0;
-  return [1,2,3,4,5].map(i=>`<span role="button" tabindex="0" aria-label="${i} 分" title="${i} 分（再次点击取消）"
-    style="cursor:pointer;font-size:17px;color:${i<=n?"var(--warn)":"var(--muted)"};padding:0 1px"
-    onclick="rateStars('${esc(runId)}','${esc(itemId)}',${i})">${i<=n?"★":"☆"}</span>`).join("");
-}
-function rateStars(runId,itemId,n){
-  const r=GEN_RUNS[runId];const it=r&&(r.items||[]).find(x=>x.id===itemId);
-  if(!it||!n)return;
-  it.stars=(it.stars===n)?null:n;
-  fetch("/api/gen-rate",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({run_id:runId,item_id:itemId,stars:it.stars})})
-    .then(x=>x.json()).then(d=>{if(!d.ok)genMsg("评分保存失败："+d.error,true)}).catch(()=>genMsg("评分保存失败：无法连接服务",true));
-  renderGen();
-}
-function genDetail(runId,itemId){
-  const r=GEN_RUNS[runId];const it=r&&(r.items||[]).find(x=>x.id===itemId);
-  if(!it||!it.eval)return;
-  const e=it.eval, dir=it.file.replace(/[^/]+$/,"")+e.shots_dir+"/";
-  const j=e.judge;
-  let h=`<div style="display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:16px;height:100%;overflow:auto">
-    <div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px">
-        ${(e.shots||[]).map(s=>`<figure style="margin:0"><img src="/${esc(dir+s.file)}" loading="lazy" style="width:100%;border:1px solid var(--line);border-radius:6px;background:#fff">
-          <figcaption class="muted" style="font-size:11.5px;margin-top:3px">${esc(s.caption)}</figcaption></figure>`).join("")||'<div class="muted">无截图（源码检查模式）</div>'}
-      </div>
-    </div>
-    <div style="font-size:12.5px;line-height:1.6">
-      <h4 style="margin:0 0 6px;font-size:13px">运行检测 ${it.pass}/${it.total}（${e.method==="browser"?"无头浏览器":"源码检查"}）</h4>
-      <table style="width:100%;border-collapse:collapse;text-align:left">${e.checks.map(c=>`<tr style="border-bottom:1px solid var(--line)">
-        <td style="text-align:left;padding:5px 6px 5px 0;vertical-align:top;color:${c.pass?"var(--acc2)":"var(--err)"};white-space:nowrap">${c.pass?"通过":"未通过"}</td>
-        <td style="text-align:left;padding:5px 0">${esc(c.label)}${c.detail?`<div class="muted" style="font-size:11.5px">${esc(c.detail)}</div>`:""}</td></tr>`).join("")}</table>
-      ${(e.notes||[]).length?`<div class="muted" style="margin-top:6px">${e.notes.map(esc).join("<br>")}</div>`:""}
-      <h4 style="margin:14px 0 6px;font-size:13px">视觉评审${j&&j.model?"（"+esc(j.model)+"）":""}</h4>
-      ${!j?'<div class="muted">未配置评审模型</div>':j.error?`<div style="color:var(--err)">${esc(j.error)}</div>`:
-        `<div style="font-size:20px;font-weight:600;color:${scoreColor(j.score)}">${j.score.toFixed(1)} <span class="muted" style="font-size:12px;font-weight:400">/ 100</span></div>
-        <div style="margin:4px 0 8px">${esc(j.summary)}</div>
-        <table style="width:100%;border-collapse:collapse;text-align:left">${j.items.map(x=>`<tr style="border-bottom:1px solid var(--line)">
-          <td style="text-align:left;padding:5px 8px 5px 0;vertical-align:top;white-space:nowrap;font-variant-numeric:tabular-nums;color:${scoreColor(x.score*10)}">${x.score}/10</td>
-          <td style="text-align:left;padding:5px 0">${esc(x.label)}<div class="muted" style="font-size:11.5px">${esc(x.reason)}</div></td></tr>`).join("")}</table>`}
-    </div></div>`;
-  openModal(h,it.name+" · 检测详情");
-}
-/* 沙箱预览 + 题目勾选 */
-const GEN_SANDBOX="allow-scripts allow-pointer-lock allow-forms"; /* 无 same-origin/top-nav/popups/modals: 生成的代码完全隔离, 无法触碰本测试页 */
+/* ============================================================
+   代码生成
+   ============================================================ */
+let GEN_RUNS={},GEN_LOADED=false,genPoll=null;
+const genLog=LogBox("genLog");
+bindFormMemory("llm-bench-pro-gen-form",["genBase","genModel","genConc","genTag"]);
+bindFormMemory("llm-bench-pro-gen-judge",["genJudgeBase","genJudgeModel"]);
+const TIER_NAME={普通:"基础",困难:"进阶",地狱:"高难",实战:"真实场景"};
+const tagName=t=>TIER_NAME[t]||t;
 const TASK_CATALOG=[
- {id:"pelican",name:"鹈鹕骑自行车",tier:"普通"},{id:"earth",name:"可拖拽3D地球",tier:"普通"},
+ {id:"pelican",name:"鹈鹕骑自行车",tier:"普通"},{id:"earth",name:"可拖拽 3D 地球",tier:"普通"},
  {id:"blackhole",name:"黑洞吸积盘",tier:"普通"},{id:"matrix",name:"矩阵字符雨",tier:"普通"},
  {id:"koi",name:"锦鲤池塘",tier:"普通"},{id:"fireworks",name:"点击烟花",tier:"普通"},
  {id:"solar",name:"太阳系模拟",tier:"普通"},{id:"landing",name:"产品落地页",tier:"普通"},
  {id:"dashboard",name:"数据看板",tier:"普通"},
  {id:"flappy",name:"Flappy Bird",tier:"困难"},{id:"tetris",name:"俄罗斯方块",tier:"困难"},
- {id:"breakout",name:"打砖块",tier:"困难"},{id:"ninja",name:"切水果忍者",tier:"困难"},
- {id:"platformer",name:"2D平台跳跃",tier:"困难"},{id:"snake",name:"贪吃蛇",tier:"困难"},
- {id:"fps",name:"3D第一人称迷宫",tier:"地狱"},{id:"cube3d",name:"可拧3D魔方",tier:"地狱"},
+ {id:"breakout",name:"打砖块",tier:"困难"},{id:"ninja",name:"切水果",tier:"困难"},
+ {id:"platformer",name:"2D 平台跳跃",tier:"困难"},{id:"snake",name:"贪吃蛇",tier:"困难"},
+ {id:"fps",name:"3D 第一人称迷宫",tier:"地狱"},{id:"cube3d",name:"3D 魔方",tier:"地狱"},
  {id:"pinball",name:"物理弹珠台",tier:"地狱"},{id:"fluid",name:"实时流体模拟",tier:"地狱"},
  {id:"eco",name:"生态进化模拟",tier:"地狱"},{id:"piano",name:"可弹奏钢琴",tier:"地狱"},
- {id:"sortviz",name:"排序算法可视化",tier:"地狱"},{id:"win95",name:"Win95桌面",tier:"地狱"},
- {id:"applecard",name:"Apple产品卡",tier:"实战"},{id:"stripe",name:"Stripe英雄区",tier:"实战"},
- {id:"iostodo",name:"iOS待办App",tier:"实战"},{id:"ecomdetail",name:"电商详情页",tier:"实战"},
- {id:"ioscalc",name:"iOS计算器",tier:"实战"},{id:"dock",name:"Mac Dock栏",tier:"实战"},
- {id:"terminal",name:"macOS终端",tier:"实战"},{id:"parallax",name:"3D视差卡",tier:"实战"},
- {id:"glasslogin",name:"玻璃登录页",tier:"实战"},{id:"feed",name:"社区信息流",tier:"实战"},
+ {id:"sortviz",name:"排序算法可视化",tier:"地狱"},{id:"win95",name:"Win95 桌面",tier:"地狱"},
+ {id:"applecard",name:"Apple 风格产品页",tier:"实战"},{id:"stripe",name:"Stripe 风格首屏",tier:"实战"},
+ {id:"iostodo",name:"iOS 待办应用",tier:"实战"},{id:"ecomdetail",name:"电商详情页",tier:"实战"},
+ {id:"ioscalc",name:"iOS 计算器",tier:"实战"},{id:"dock",name:"macOS Dock",tier:"实战"},
+ {id:"terminal",name:"macOS 终端",tier:"实战"},{id:"parallax",name:"3D 悬停卡片",tier:"实战"},
+ {id:"glasslogin",name:"玻璃拟态登录页",tier:"实战"},{id:"feed",name:"社区信息流",tier:"实战"},
 ];
-const TIER_COLOR={普通:"#4da3ff",困难:"#ffb454",地狱:"#ff6b7a",实战:"#37d4a0"};
 function renderTaskChips(){
-  const box=document.getElementById("genTasks");
-  if(!box)return;
-  const groups={};
-  TASK_CATALOG.forEach(t=>{(groups[t.tier]=groups[t.tier]||[]).push(t)});
-  let html=`<div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">
-    <span class="muted" style="font-size:11px">勾选要跑的题目（${TASK_CATALOG.length} 题）</span>
-    <button style="padding:3px 10px;font-size:11px" onclick="setAllTasks(true)">全选</button>
-    <button style="padding:3px 10px;font-size:11px" onclick="setAllTasks(false)">清空</button></div>`;
-  for(const[tier,list]of Object.entries(groups)){
-    html+=`<div style="margin:4px 0 8px"><span style="font-size:11px;color:${TIER_COLOR[tier]};font-weight:600">${tier}</span>
-      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:5px">`+
-      list.map(t=>`<label class="chip" style="border-color:${TIER_COLOR[tier]}55">
-        <input type="checkbox" value="${t.id}" checked onchange="chipChange()"><span>${t.name}</span></label>`).join("")+
-      `</div></div>`;
-  }
-  box.innerHTML=html;
+  const box=$("genTasks");
+  if(box.childElementCount)return;  /* 已渲染则保留勾选状态 */
+  const groups={};TASK_CATALOG.forEach(t=>(groups[t.tier]=groups[t.tier]||[]).push(t));
+  box.innerHTML=Object.entries(groups).map(([tier,list])=>`<div class="task-group" data-tier="${esc(tier)}">
+    <div class="task-group-head"><span class="task-group-name">${esc(tagName(tier))}</span><span class="task-group-count"></span>
+      <button type="button" class="btn btn-ghost btn-sm" data-group-toggle>全选</button></div>
+    <div class="chips">${list.map(t=>`<label class="chip"><input type="checkbox" value="${esc(t.id)}" checked>${icon("check")}<span>${esc(t.name)}</span></label>`).join("")}</div></div>`).join("");
+  chipChange();
 }
-function selectedTasks(){return[...document.querySelectorAll('#genTasks input:checked')].map(x=>x.value)}
-function setAllTasks(on){document.querySelectorAll('#genTasks input').forEach(x=>x.checked=on);chipChange()}
-function chipChange(){
-  const n=selectedTasks().length;
-  document.getElementById("genTaskCount").textContent=n?`已选 ${n} 题`:"未选任何题目";
-}
-function previewWork(file,name){
-  openModal(`<iframe sandbox="${GEN_SANDBOX}" src="/${file}" style="width:100%;height:100%;border:0;background:#fff"></iframe>`,name+" · 沙箱隔离预览");
-}
-function previewCompare(taskId,name){
-  const a=GEN_RUNS[Object.keys(GEN_RUNS).sort().reverse()[0]];
-  const b=GEN_RUNS[document.getElementById("genCmpSel").value];
-  const ia=(a.items||[]).find(x=>x.id===taskId),ib=(b&&b.items||[]).find(x=>x.id===taskId);
-  openModal(`<div style="display:flex;height:100%;gap:6px">
-    <div style="flex:1;display:flex;flex-direction:column"><div class="muted" style="padding:4px">A · ${(a.model||"").slice(0,18)}</div>
-      <iframe sandbox="${GEN_SANDBOX}" src="/${ia.file}" style="flex:1;border:1px solid var(--line);background:#fff"></iframe></div>
-    <div style="flex:1;display:flex;flex-direction:column"><div class="muted" style="padding:4px">B · ${(b.model||"").slice(0,18)}</div>
-      <iframe sandbox="${GEN_SANDBOX}" src="/${ib?ib.file:""}" style="flex:1;border:1px solid var(--line);background:#fff"></iframe></div>
-  </div>`,name+" · A/B 并排（沙箱隔离）");
-}
-
-function openModal(inner,title){
-  let m=document.getElementById("genModal");
-  if(!m){m=document.createElement("div");m.id="genModal";
-    m.style.cssText="position:fixed;inset:0;background:#000c;z-index:200;display:none;padding:30px";
-    m.innerHTML=`<div style="background:var(--panel);border:1px solid var(--line);border-radius:14px;height:100%;display:flex;flex-direction:column">
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line)">
-        <b id="genModalTitle"></b><button onclick="document.getElementById('genModal').style.display='none'">关闭 ✕</button></div>
-      <div id="genModalBody" style="flex:1;padding:10px"></div></div>`;
-    document.body.appendChild(m);}
-  document.getElementById("genModalTitle").textContent=title||"预览";
-  document.getElementById("genModalBody").innerHTML=inner;
-  m.style.display="block";
-}
-
-window.addEventListener("resize",()=>{clearTimeout(rzT);rzT=setTimeout(renderAll,150)});
-/* 面板折叠: 点击标题显示/关闭 */
-document.querySelectorAll(".panel").forEach(p=>{
-  const body=document.createElement("div");body.className="pbody";
-  while(p.lastElementChild&&p.lastElementChild.tagName!=="H3")body.prepend(p.lastElementChild);
-  if(body.childElementCount)p.appendChild(body);
-  const h=p.querySelector("h3");if(h)h.onclick=()=>p.classList.toggle("closed");
+$("genTasks").addEventListener("change",chipChange);
+$("genTasks").addEventListener("click",e=>{
+  const b=e.target.closest("[data-group-toggle]");if(!b)return;
+  const boxes=[...b.closest(".task-group").querySelectorAll("input")];
+  const all=boxes.every(x=>x.checked);boxes.forEach(x=>x.checked=!all);chipChange();
 });
+function selectedTasks(){return[...document.querySelectorAll("#genTasks input:checked")].map(x=>x.value)}
+function chipChange(){
+  document.querySelectorAll("#genTasks .task-group").forEach(gp=>{
+    const boxes=[...gp.querySelectorAll("input")],n=boxes.filter(x=>x.checked).length;
+    gp.querySelector(".task-group-count").textContent=`${n} / ${boxes.length}`;
+    gp.querySelector("[data-group-toggle]").textContent=n===boxes.length?"清空":"全选";
+  });
+  $("genTaskCount").textContent=`已选 ${selectedTasks().length} / ${TASK_CATALOG.length}`;
+}
+function judgeBody(){return{judge_base:$("genJudgeBase").value.trim(),judge_model:$("genJudgeModel").value.trim(),judge_key:$("genJudgeKey").value}}
+function judgeValid(jb){if(!!jb.judge_base!==!!jb.judge_model){msg("genInfo","error","视觉评审需要同时填写评审模型地址和评审模型，或都留空");return false}return true}
+function evalMethodText(ev){
+  if(!ev)return"";
+  const m=ev.method==="browser"?"无头浏览器运行检测":"源码检查（未找到 Chrome/Edge，结果仅供参考）";
+  return "评测方式："+m+(ev.judge_model?" + 视觉评审（"+ev.judge_model+"）":"，未配置视觉评审");
+}
+async function genStart(){
+  const model=$("genModel").value.trim();
+  if(!model){msg("genInfo","error","请填写模型名称");$("genModel").focus();return}
+  const tasks=selectedTasks();
+  if(!tasks.length){msg("genInfo","error","请至少选择 1 道题目");return}
+  const jb=judgeBody();if(!judgeValid(jb))return;
+  const d=await postJSON("/api/gen-start",{base:$("genBase").value,api_key:$("genKey").value,model,conc:$("genConc").value,
+    tag:$("genTag").value,tasks,thinking:$("genThink").checked,...jb});
+  if(!d.ok){msg("genInfo","error",d.error);return}
+  msg("genInfo","info",evalMethodText(d.eval));
+  watchGen(`运行中 · ${model} · ${tasks.length} 题`);
+}
+async function genReeval(){
+  const runId=$("genMainSel").value;
+  if(!runId){toast("没有可重新评测的运行","warning");return}
+  const jb=judgeBody();
+  if(!!jb.judge_base!==!!jb.judge_model){toggleLauncher("genLauncher",true);judgeValid(jb);return}
+  const d=await postJSON("/api/gen-eval",{run_id:runId,...jb});
+  if(!d.ok){toast(d.error,"error");return}
+  toggleLauncher("genLauncher",true);
+  msg("genInfo","info",evalMethodText(d.eval));
+  watchGen("重新评测 · "+(GEN_RUNS[runId]?genLabel(GEN_RUNS[runId]):runId),runId);
+  $("genLog").scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+function watchGen(title,keepRun){
+  $("genBtnStart").disabled=true;$("genBtnEval").disabled=true;
+  genLog.start(title);
+  clearInterval(genPoll);
+  genPoll=pollStatus("/api/gen-status",genLog,{interval:3000,onDone:()=>{
+    $("genBtnStart").disabled=false;$("genBtnEval").disabled=false;
+    loadGenResults(!keepRun,keepRun);
+  }});
+}
+async function loadGenResults(focusNew,keepRun){
+  try{
+    const list=await getJSON("/api/gen-results");
+    const prev=new Set(Object.keys(GEN_RUNS));
+    GEN_RUNS={};list.forEach(r=>GEN_RUNS[r.run_id]=r);GEN_LOADED=true;
+    const names=Object.keys(GEN_RUNS).sort().reverse();
+    const fresh=focusNew?names.find(n=>!prev.has(n)):null;
+    const main=$("genMainSel"),cmp=$("genCmpSel");
+    const keepMain=keepRun||fresh||(GEN_RUNS[main.value]?main.value:names[0]);
+    const keepCmp=GEN_RUNS[cmp.value]?cmp.value:"";
+    const opts=k=>names.map(n=>`<option value="${esc(n)}" ${n===k?"selected":""}>${esc(genLabel(GEN_RUNS[n]))}</option>`).join("");
+    main.innerHTML=opts(keepMain);
+    cmp.innerHTML=`<option value="">不对比</option>`+opts(keepCmp);
+    if(!names.length)toggleLauncher("genLauncher",true);
+    renderGen();
+  }catch(e){$("genResult").innerHTML=emptyState("无法加载生成结果",e.message,{iconName:"alert"})}
+}
+function avgOf(xs){const v=xs.filter(x=>typeof x==="number"&&isFinite(x));return v.length?v.reduce((p,q)=>p+q,0)/v.length:null}
+function genStats(r){
+  const ok=(r.items||[]).filter(x=>!x.error);
+  const v2=!!((r.eval&&r.eval.eval_version)||ok.some(x=>x.eval));
+  return{ok,v2,exec:v2?avgOf(ok.map(x=>x.exec_score)):null,judge:avgOf(ok.map(x=>x.judge_score)),stars:avgOf(ok.map(x=>x.stars||null))};
+}
+function genLabel(r){
+  const s=genStats(r);
+  const parts=[r.model||"?",runFw(r),r.thinking?"思考":"非思考",`完成 ${s.ok.length}/${(r.items||[]).length}`];
+  if(s.exec!=null)parts.push(`检测 ${s.exec.toFixed(0)}%`);
+  if(s.judge!=null)parts.push(`评审 ${s.judge.toFixed(0)}`);
+  if(s.stars!=null)parts.push(`人工 ${s.stars.toFixed(1)}`);
+  if(!s.v2)parts.push("旧版评测");
+  parts.push(shortTime(r.started_utc));
+  return parts.filter(Boolean).join(" · ");
+}
+function scoreCls(p){return p==null?"":p>=80?"good":p>=50?"mid":"bad"}
+function kpiBox(labelText,value,unit,sub){
+  return `<div class="kpi"><div class="kpi-head"><span class="kpi-label">${esc(labelText)}</span></div>
+    <div class="kpi-value num">${value}${unit?`<small>${unit}</small>`:""}</div><div class="kpi-sub">${esc(sub||"")}</div></div>`;
+}
+function renderGen(){
+  if(!GEN_LOADED)return;
+  const el=$("genResult");
+  const a=GEN_RUNS[$("genMainSel").value],b=GEN_RUNS[$("genCmpSel").value];
+  if(!a){el.innerHTML=emptyState("暂无生成结果","新建一次生成任务后，作品与检测结果会显示在这里",
+    {action:`<button class="btn btn-primary" data-toggle="genLauncher">${icon("plus")}新建任务</button>`});return}
+  const s=genStats(a),ev=a.eval||{};
+  let html=s.v2?`<div class="meta-list"><span class="badge">评测方式 <b>${ev.method==="browser"?"无头浏览器运行检测":"源码检查"}</b></span>
+      ${ev.browser?`<span class="badge">浏览器 <b>${esc(ev.browser)}</b></span>`:""}
+      <span class="badge">视觉评审 <b>${ev.judge_model?esc(ev.judge_model):"未配置"}</b></span>
+      ${a.tag?`<span class="badge">标签 <b>${esc(a.tag)}</b></span>`:""}<span class="badge">开始 <b>${esc(timeText(a.started_utc))} UTC</b></span></div>`
+    :`<div class="alert is-warning">${icon("alert")}<span>该运行使用旧版评测（源码关键词匹配），分数不可信。点击右上方“重新评测”即可按新口径检测，人工评分会保留。</span></div>`;
+  html+=`<div class="kpi-grid">
+    ${kpiBox("已完成作品",`${s.ok.length}<small> / ${(a.items||[]).length}</small>`,"","生成失败的题目不计入")}
+    ${kpiBox("运行检测通过率",s.exec==null?"—":fmt(s.exec,1),s.exec==null?"":"%","加载、报错、白屏、动画与交互脚本")}
+    ${kpiBox("视觉评审均分",s.judge==null?"—":fmt(s.judge,1),s.judge==null?"":"/ 100",ev.judge_model?"评审模型 "+ev.judge_model:"未配置评审模型")}
+    ${kpiBox("人工评分均值",s.stars==null?"—":fmt(s.stars,1),s.stars==null?"":"/ 5","在作品卡片上评分")}
+  </div><div class="work-grid">`;
+  (a.items||[]).forEach(it=>{
+    const tags=esc((it.tags||[]).map(tagName).join(" · "));
+    if(it.error){
+      html+=`<div class="work"><div class="work-head"><span class="work-name">${esc(it.name)}</span><span class="badge is-danger">生成失败</span></div>
+        <div class="work-meta">${tags}</div><div class="work-fails">${esc(it.error)}</div></div>`;
+      return;
+    }
+    const e=it.eval,checks=e?e.checks:[],fails=checks.filter(c=>!c.pass),j=e&&e.judge;
+    const judgeBadge=j&&j.score!=null?`<span class="score ${scoreCls(j.score)}">评审 ${fmt(j.score,0)}</span>`:(j&&j.error?`<span class="badge is-danger">评审失败</span>`:"");
+    html+=`<div class="work">
+      <div class="work-head"><span class="work-name">${esc(it.name)}</span>${judgeBadge}</div>
+      <div class="work-meta">${tags} · ${it.lines} 行${it.continuations?` · 续写 ${it.continuations} 轮`:""}</div>
+      ${e?`<div class="row" style="gap:10px"><span class="checkbar">${checks.map(c=>`<i class="${c.pass?"":"fail"}" title="${esc((c.pass?"通过：":"未通过：")+c.label+(c.detail?"\n"+c.detail:""))}"></i>`).join("")}</span>
+          <span class="score ${scoreCls(it.exec_score)}">运行检测 ${it.pass}/${it.total}</span></div>
+        ${fails.length?`<div class="work-fails">${fails.slice(0,3).map(c=>`<div>${icon("x-circle","icon-sm")} ${esc(c.label)}</div>`).join("")}${fails.length>3?`<div class="faint">另有 ${fails.length-3} 项未通过</div>`:""}</div>`:""}`
+        :`<div class="work-fails faint">未评测（旧版结果）</div>`}
+      <div class="work-actions">
+        <button class="btn btn-secondary btn-sm" data-gen="preview" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}">${icon("eye")}预览</button>
+        ${e?`<button class="btn btn-ghost btn-sm" data-gen="detail" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}">${icon("image")}检测详情</button>`:""}
+        ${b?`<button class="btn btn-ghost btn-sm" data-gen="compare" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}">${icon("columns")}并排对比</button>`:""}
+        <span class="stars" role="group" aria-label="人工评分">${[1,2,3,4,5].map(i=>`<button type="button" class="star ${i<=(it.stars||0)?"on":""}" data-rate="${i}" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}" aria-label="${i} 分" aria-pressed="${i===it.stars}">${icon("star")}</button>`).join("")}</span>
+      </div></div>`;
+  });
+  el.innerHTML=html+`</div>`;
+}
+$("genResult").addEventListener("click",e=>{
+  const rate=e.target.closest("[data-rate]");
+  if(rate){rateStars(rate.dataset.run,rate.dataset.item,+rate.dataset.rate);return}
+  const act=e.target.closest("[data-gen]");if(!act)return;
+  const r=GEN_RUNS[act.dataset.run],it=r&&(r.items||[]).find(x=>x.id===act.dataset.item);if(!it)return;
+  if(act.dataset.gen==="preview")previewWork(it);
+  else if(act.dataset.gen==="detail")genDetail(it);
+  else if(act.dataset.gen==="compare")previewCompare(it);
+});
+function rateStars(runId,itemId,n){
+  const r=GEN_RUNS[runId],it=r&&(r.items||[]).find(x=>x.id===itemId);
+  if(!it||!n)return;
+  const prev=it.stars;
+  it.stars=it.stars===n?null:n;
+  renderGen();
+  postJSON("/api/gen-rate",{run_id:runId,item_id:itemId,stars:it.stars}).then(d=>{
+    if(!d.ok){it.stars=prev;renderGen();toast("评分保存失败："+d.error,"error")}
+  });
+}
+const GEN_SANDBOX="allow-scripts allow-pointer-lock allow-forms"; /* 无 same-origin/top-navigation/popups/modals: 作品代码无法访问本页与接口 */
+const SANDBOX_BADGE=`<span class="badge" title="作品运行在无同源权限的沙箱 iframe 中，无法访问本页面与后端接口">沙箱隔离</span>`;
+function previewWork(it){
+  Modal.open(it.name,`<iframe class="frame" sandbox="${GEN_SANDBOX}" src="/${esc(it.file)}" title="${esc(it.name)}"></iframe>`,{badges:SANDBOX_BADGE,flush:true});
+}
+function previewCompare(it){
+  const a=GEN_RUNS[$("genMainSel").value],b=GEN_RUNS[$("genCmpSel").value];
+  const ib=b&&(b.items||[]).find(x=>x.id===it.id&&!x.error);
+  const side=(r,x,tag)=>`<div><div class="split-head"><span class="run-tag ${tag.toLowerCase()}">${tag}</span>${esc(genLabel(r))}</div>
+    ${x?`<iframe class="frame" style="flex:1" sandbox="${GEN_SANDBOX}" src="/${esc(x.file)}" title="${tag}"></iframe>`:emptyState("该运行没有此题的作品","",{inline:true})}</div>`;
+  Modal.open(it.name+" · 并排对比",`<div class="split">${side(a,it,"A")}${side(b,ib,"B")}</div>`,{badges:SANDBOX_BADGE,flush:true});
+}
+function genDetail(it){
+  const e=it.eval;if(!e)return;
+  const dir=it.file.replace(/[^/]+$/,"")+e.shots_dir+"/";
+  const j=e.judge;
+  const checkRows=e.checks.map(c=>`<tr><td style="width:64px"><span class="badge ${c.pass?"is-success":"is-danger"}">${c.pass?"通过":"未通过"}</span></td>
+    <td class="text-left">${esc(c.label)}${c.detail?`<span class="sub">${esc(c.detail)}</span>`:""}</td></tr>`).join("");
+  let judgeHtml;
+  if(!j)judgeHtml=`<p class="faint">未配置评审模型。在“新建任务”中填写评审模型后点击“重新评测”。</p>`;
+  else if(j.error)judgeHtml=`<div class="alert is-warning">${icon("alert")}<span>${esc(j.error)}</span></div>`;
+  else judgeHtml=`<div class="row" style="align-items:baseline"><span class="score-big num ${"score "+scoreCls(j.score)}">${fmt(j.score,1)}</span><span class="faint">/ 100 · ${esc(j.model||"")}</span></div>
+    ${j.summary?`<p class="muted" style="margin:6px 0 10px">${esc(j.summary)}</p>`:""}
+    <div class="table-wrap" style="max-height:none"><table class="table"><tbody>${j.items.map(x=>`<tr>
+      <td style="width:56px"><span class="score ${scoreCls(x.score*10)}">${x.score} / 10</span></td>
+      <td class="text-left">${esc(x.label)}<span class="sub">${esc(x.reason)}</span></td></tr>`).join("")}</tbody></table></div>`;
+  Modal.open(it.name+" · 检测详情",`<div class="detail-layout">
+    <div><div class="shot-grid">${(e.shots||[]).map(s=>`<figure class="shot"><img src="/${esc(dir+s.file)}" alt="${esc(s.caption)}" loading="lazy"><figcaption>${esc(s.caption)}</figcaption></figure>`).join("")||emptyState("无截图","源码检查模式不产生截图",{inline:true})}</div></div>
+    <div>
+      <section class="detail-section"><h4>运行检测 ${it.pass} / ${it.total}<span class="faint" style="font-weight:400"> · ${e.method==="browser"?"无头浏览器":"源码检查"}</span></h4>
+        <div class="table-wrap" style="max-height:none"><table class="table"><tbody>${checkRows}</tbody></table></div>
+        ${(e.notes||[]).length?`<p class="faint small" style="margin-top:6px">${e.notes.map(esc).join("<br>")}</p>`:""}</section>
+      <section class="detail-section"><h4>视觉评审</h4>${judgeHtml}</section>
+    </div></div>`,{badges:`<span class="badge">运行检测 ${it.pass}/${it.total}</span>`});
+}
+
+/* ============================================================
+   启动
+   ============================================================ */
+async function resumeRunning(){
+  const jobs=[
+    ["/api/status","launcher",()=>watchPerf("运行中（页面刷新后继续跟踪）")],
+    ["/api/iq-status","iqLauncher",()=>watchIq("运行中（页面刷新后继续跟踪）")],
+    ["/api/gen-status","genLauncher",()=>watchGen("运行中（页面刷新后继续跟踪）")],
+  ];
+  for(const [url,launcher,watch] of jobs){
+    try{const s=await getJSON(url);if(s.running){toggleLauncher(launcher,true);watch()}}catch(e){}
+  }
+}
+let rzT;
+window.addEventListener("resize",()=>{clearTimeout(rzT);rzT=setTimeout(redrawVisible,150)});
+matchMedia("(prefers-color-scheme: light)").addEventListener("change",e=>{
+  try{if(localStorage.getItem("llm-bench-pro-theme"))return}catch(err){}
+  applyTheme(e.matches?"light":"dark",false);
+});
+applyTheme(document.documentElement.dataset.theme||"dark",false);
+showView((location.hash||"#dash").slice(1));
 refresh();
+resumeRunning();
 </script>
 </body>
 </html>
