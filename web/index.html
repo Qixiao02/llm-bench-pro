@@ -303,6 +303,35 @@ canvas.chart{display:block;width:100%;cursor:crosshair}
 .split>div{display:flex;flex-direction:column;min-width:0;background:var(--surface-1)}
 .split-head{display:flex;align-items:center;gap:var(--sp-2);height:36px;padding:0 var(--sp-3);font-size:var(--fs-12);color:var(--text-2);border-bottom:1px solid var(--border);white-space:nowrap;overflow:hidden}
 
+/* 自定义下拉 */
+.cselect{position:relative;display:inline-flex;min-width:0;max-width:100%;vertical-align:middle}
+.field .cselect{display:flex;width:100%}
+.cselect-native{position:absolute!important;inset:0;width:100%!important;height:100%!important;opacity:0;pointer-events:none;z-index:-1}
+.cselect-trigger{display:flex;align-items:center;text-align:left;white-space:nowrap}
+.field .cselect-trigger{width:100%}
+.cselect-value{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.cselect-value.is-placeholder{color:var(--text-3)}
+.cselect-trigger:hover:not(:disabled){border-color:var(--text-3)}
+.cselect-trigger[aria-expanded="true"]{border-color:var(--primary-fg);box-shadow:0 0 0 3px var(--primary-soft)}
+.cselect-trigger:disabled{opacity:.6;cursor:not-allowed}
+.cselect-panel{position:fixed;z-index:var(--z-pop);display:flex;flex-direction:column;max-width:min(600px,calc(100vw - 16px));
+  background:var(--surface-1);border:1px solid var(--border-strong);border-radius:var(--r-md);box-shadow:var(--shadow-pop);overflow:hidden;outline:none}
+.cselect-search-wrap{display:flex;align-items:center;gap:8px;height:38px;padding:0 10px;border-bottom:1px solid var(--border);color:var(--text-3);flex:none}
+.cselect-search{flex:1;min-width:0;height:100%;padding:0;border:0;background:transparent;outline:none;font-size:var(--fs-13);color:var(--text-1)}
+.cselect-search::placeholder{color:var(--text-3)}
+.cselect-list{max-height:320px;overflow:auto;padding:4px}
+.cselect-option{display:flex;align-items:flex-start;gap:6px;padding:7px 10px 7px 6px;border-radius:var(--r-xs);cursor:pointer;color:var(--text-1);font-size:var(--fs-13);line-height:1.4}
+.cselect-option.is-active{background:var(--surface-3)}
+.cselect-option.is-selected .cselect-main{color:var(--primary-fg);font-weight:500}
+.cselect-option.is-disabled{opacity:.45;cursor:not-allowed}
+.cselect-check{display:grid;place-items:center;width:18px;height:19px;flex:none;color:var(--primary-fg)}
+.cselect-check .icon{width:14px;height:14px;stroke-width:2.25}
+.cselect-text{display:flex;flex-direction:column;min-width:0}
+.cselect-main,.cselect-sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cselect-sub{margin-top:1px;font-size:var(--fs-12);color:var(--text-3)}
+.cselect-empty{padding:14px;text-align:center;color:var(--text-3);font-size:var(--fs-12)}
+[data-theme="light"] .cselect-option.is-active{background:var(--surface-3)}
+
 /* 下拉多选 */
 .dropdown{position:relative}
 .dropdown>summary{list-style:none}
@@ -385,7 +414,7 @@ canvas.chart{display:block;width:100%;cursor:crosshair}
   .main{padding:var(--sp-4)}
   .form-grid{grid-template-columns:minmax(0,1fr)}.field.span-2{grid-column:auto}
   .cmp-runs,.split{grid-template-columns:minmax(0,1fr)}
-  .tb-field{flex:1 1 100%}.tb-field .select{flex:1;min-width:0;max-width:none}
+  .tb-field{flex:1 1 100%}.tb-field .select{flex:1;min-width:0;max-width:none}.tb-field .cselect{flex:1 1 auto}
   .page-head{align-items:center}
   .kpi-grid,.score-cards{grid-template-columns:repeat(2,minmax(0,1fr))}
   .kpi{padding:var(--sp-3)}.kpi-value{font-size:22px}
@@ -424,6 +453,7 @@ canvas.chart{display:block;width:100%;cursor:crosshair}
   <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></symbol>
   <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
   <symbol id="i-file-down" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M12 18v-6"/><path d="m9 15 3 3 3-3"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
   <symbol id="i-scan-check" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="m8 12 3 3 5-6"/></symbol>
   <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
   <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M2 14h4"/><path d="M10 8h4"/><path d="M18 16h4"/></symbol>
@@ -818,6 +848,165 @@ document.addEventListener("keydown",e=>{
     else if(!e.shiftKey&&document.activeElement===f[f.length-1]){e.preventDefault();f[0].focus()}
   }
 });
+
+/* ============================================================
+   自定义下拉 (原生 <select> 与 datalist 的弹出列表由系统绘制, 无法跟随主题)
+   - 原生 <select> 保留并隐藏, 继续承载 value / change, 现有逻辑零改动
+   - 程序赋值 .value / .selectedIndex、重写 options 均自动同步显示
+   - 选项多于 8 个时带搜索; 键盘 ↑↓ Home End Enter Esc
+   ============================================================ */
+const CSelect=(()=>{
+  const panel=document.createElement("div");
+  panel.className="cselect-panel";panel.hidden=true;panel.tabIndex=-1;
+  panel.innerHTML=`<div class="cselect-search-wrap" hidden>${icon("search","icon-sm")}<input class="cselect-search" placeholder="搜索" aria-label="搜索选项" autocomplete="off"></div>
+    <div class="cselect-list" role="listbox"></div>`;
+  document.body.appendChild(panel);
+  const searchWrap=panel.querySelector(".cselect-search-wrap"),search=panel.querySelector(".cselect-search"),listEl=panel.querySelector(".cselect-list");
+  let cur=null;  /* {kind:"select"|"combo", el, anchor, items:[{value,text,disabled,selected}], view:[idx], active} */
+
+  function splitText(t){const p=String(t).split(" · ");return p.length>2?[p[0],p.slice(1).join(" · ")]:[t,""]}
+  function itemsOf(c){
+    if(c.kind==="select")return[...c.el.options].map((o,i)=>({value:o.value,text:o.textContent,disabled:o.disabled,selected:i===c.el.selectedIndex}));
+    const dl=c.dl;const v=c.el.value;
+    return dl?[...dl.options].map(o=>({value:o.value,text:o.value,sub:o.label||o.textContent,disabled:false,selected:o.value===v})):[];
+  }
+  function build(){
+    const c=cur;c.items=itemsOf(c);
+    const q=(c.kind==="combo"?(c.filter?c.el.value:""):search.value).trim().toLowerCase();
+    c.view=c.items.map((x,i)=>i).filter(i=>!q||(c.items[i].text+" "+(c.items[i].sub||"")).toLowerCase().includes(q));
+    if(!c.view.includes(c.active))c.active=c.view.find(i=>c.items[i].selected)??c.view.find(i=>!c.items[i].disabled)??-1;
+    listEl.innerHTML=c.view.length?c.view.map(i=>{
+      const it=c.items[i];const [main,sub]=it.sub!=null?[it.text,it.sub]:splitText(it.text);
+      return `<div class="cselect-option${it.selected?" is-selected":""}${i===c.active?" is-active":""}${it.disabled?" is-disabled":""}" role="option" id="cso-${i}" data-i="${i}" aria-selected="${it.selected}">
+        <span class="cselect-check">${it.selected?icon("check"):""}</span>
+        <span class="cselect-text"><span class="cselect-main">${esc(main||"（空）")}</span>${sub?`<span class="cselect-sub">${esc(sub)}</span>`:""}</span></div>`;
+    }).join(""):`<div class="cselect-empty">${c.items.length?"无匹配项":"暂无选项"}</div>`;
+    if(c.kind==="select")c.anchor.setAttribute("aria-activedescendant",c.active>=0?"cso-"+c.active:"");
+  }
+  function position(){
+    const r=cur.anchor.getBoundingClientRect();
+    panel.style.minWidth=Math.max(r.width,200)+"px";
+    panel.style.left="0px";panel.style.top="0px";
+    const w=panel.offsetWidth,h=panel.offsetHeight;
+    panel.style.left=Math.max(8,Math.min(r.left,innerWidth-w-8))+"px";
+    const below=innerHeight-r.bottom-8,above=r.top-8;
+    panel.style.top=(below<h&&above>below?Math.max(8,r.top-4-h):r.bottom+4)+"px";
+  }
+  function scrollActive(){const a=listEl.querySelector(".is-active");if(a)a.scrollIntoView({block:"nearest"})}
+  function openFor(c){
+    close(false);cur=c;
+    const many=c.kind==="select"&&c.el.options.length>8;
+    searchWrap.hidden=!many;search.value="";
+    c.anchor.setAttribute("aria-expanded","true");
+    build();panel.hidden=false;position();scrollActive();
+    if(many)search.focus();
+  }
+  function close(refocus){
+    if(!cur)return;
+    const c=cur;cur=null;panel.hidden=true;
+    c.anchor.setAttribute("aria-expanded","false");
+    if(refocus)c.anchor.focus();
+  }
+  function choose(i){
+    const c=cur;if(!c||i<0)return;const it=c.items[i];if(!it||it.disabled)return;
+    if(c.kind==="select"){
+      const changed=c.el.selectedIndex!==i;
+      c.el.selectedIndex=i;close(true);
+      if(changed)c.el.dispatchEvent(new Event("change",{bubbles:true}));
+    }else{
+      c.el.value=it.value;close(false);
+      c.el.dispatchEvent(new Event("input",{bubbles:true}));c.el.dispatchEvent(new Event("change",{bubbles:true}));
+    }
+  }
+  function move(step){
+    const c=cur;if(!c||!c.view.length)return;
+    const enabled=c.view.filter(i=>!c.items[i].disabled);if(!enabled.length)return;
+    let pos=enabled.indexOf(c.active);
+    pos=step==="home"?0:step==="end"?enabled.length-1:(pos<0?0:Math.max(0,Math.min(enabled.length-1,pos+step)));
+    c.active=enabled[pos];
+    listEl.querySelectorAll(".cselect-option").forEach(o=>o.classList.toggle("is-active",+o.dataset.i===c.active));
+    if(c.kind==="select")c.anchor.setAttribute("aria-activedescendant","cso-"+c.active);
+    scrollActive();
+  }
+  function onKey(e){
+    if(!cur)return false;
+    const k=e.key;
+    if(k==="ArrowDown"){e.preventDefault();move(1)}
+    else if(k==="ArrowUp"){e.preventDefault();move(-1)}
+    else if(k==="Home"&&cur.kind==="select"){e.preventDefault();move("home")}
+    else if(k==="End"&&cur.kind==="select"){e.preventDefault();move("end")}
+    else if(k==="Enter"){e.preventDefault();choose(cur.active)}
+    else if(k==="Escape"){e.preventDefault();e.stopPropagation();close(true)}
+    else if(k==="Tab"){close(false)}
+    else return false;
+    return true;
+  }
+  panel.addEventListener("keydown",onKey);
+  search.addEventListener("input",()=>{if(cur){cur.active=-1;build();position()}});
+  listEl.addEventListener("mousemove",e=>{
+    const o=e.target.closest(".cselect-option");if(!o||!cur||+o.dataset.i===cur.active)return;
+    cur.active=+o.dataset.i;listEl.querySelectorAll(".cselect-option").forEach(x=>x.classList.toggle("is-active",x===o));
+  });
+  listEl.addEventListener("mousedown",e=>e.preventDefault());  /* 保持输入框焦点 */
+  listEl.addEventListener("click",e=>{const o=e.target.closest(".cselect-option");if(o)choose(+o.dataset.i)});
+  document.addEventListener("mousedown",e=>{if(cur&&!panel.contains(e.target)&&!cur.anchor.contains(e.target))close(false)},true);
+  window.addEventListener("resize",()=>close(false));
+  document.addEventListener("scroll",e=>{if(cur&&!panel.contains(e.target))position()},true);
+
+  function renderLabel(sel){
+    const cs=sel._cs;if(!cs)return;
+    const o=sel.options[sel.selectedIndex],txt=o?o.textContent:"";
+    cs.value.textContent=txt||"暂无选项";
+    cs.value.classList.toggle("is-placeholder",!txt);
+    cs.trigger.title=txt;
+    cs.trigger.disabled=sel.disabled;
+    if(cur&&cur.el===sel)build();
+  }
+  function enhance(sel){
+    if(sel._cs)return;
+    const wrap=document.createElement("span");wrap.className="cselect";
+    sel.parentNode.insertBefore(wrap,sel);wrap.appendChild(sel);
+    const trigger=document.createElement("button");
+    trigger.type="button";trigger.className=sel.className+" cselect-trigger";
+    trigger.setAttribute("aria-haspopup","listbox");trigger.setAttribute("aria-expanded","false");
+    const lbl=sel.getAttribute("aria-label")||(sel.id&&document.querySelector(`label[for="${sel.id}"]`)||{}).textContent;
+    if(lbl)trigger.setAttribute("aria-label",lbl.trim());
+    trigger.innerHTML=`<span class="cselect-value"></span>`;
+    wrap.appendChild(trigger);
+    sel.className="cselect-native";sel.tabIndex=-1;sel.setAttribute("aria-hidden","true");
+    sel._cs={trigger,value:trigger.firstChild};
+    if(sel.id)document.querySelectorAll(`label[for="${sel.id}"]`).forEach(l=>l.addEventListener("click",e=>{e.preventDefault();trigger.focus()}));
+    for(const prop of ["value","selectedIndex"]){  /* 程序赋值时同步显示 */
+      const d=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,prop);
+      Object.defineProperty(sel,prop,{configurable:true,get(){return d.get.call(this)},set(v){d.set.call(this,v);renderLabel(this)}});
+    }
+    new MutationObserver(()=>renderLabel(sel)).observe(sel,{childList:true,subtree:true,attributes:true,characterData:true});
+    sel.addEventListener("change",()=>renderLabel(sel));
+    trigger.addEventListener("click",()=>{if(cur&&cur.el===sel)close(true);else openFor({kind:"select",el:sel,anchor:trigger,active:sel.selectedIndex})});
+    trigger.addEventListener("keydown",e=>{
+      if(cur&&cur.el===sel){onKey(e);return}
+      if(["ArrowDown","ArrowUp","Enter"," "].includes(e.key)){e.preventDefault();openFor({kind:"select",el:sel,anchor:trigger,active:sel.selectedIndex})}
+    });
+    renderLabel(sel);
+  }
+  function combo(input){
+    const dl=$(input.getAttribute("list"));if(!dl)return;
+    input.removeAttribute("list");input.setAttribute("autocomplete","off");
+    input.setAttribute("role","combobox");input.setAttribute("aria-expanded","false");
+    const openCombo=filter=>{if(!dl.options.length)return;
+      if(cur&&cur.el===input){cur.filter=filter;build();position();return}
+      openFor({kind:"combo",el:input,anchor:input,dl,filter,active:-1})};
+    input.addEventListener("focus",()=>openCombo(false));
+    input.addEventListener("click",()=>openCombo(false));
+    input.addEventListener("input",e=>{if(e.isTrusted)openCombo(true)});
+    input.addEventListener("keydown",e=>{
+      if(cur&&cur.el===input){if(e.key==="Enter"&&cur.active<0){close(false);return}onKey(e);return}
+      if(e.key==="ArrowDown"){e.preventDefault();openCombo(false)}
+    });
+    input.addEventListener("blur",()=>setTimeout(()=>{if(cur&&cur.el===input&&!panel.contains(document.activeElement))close(false)},120));
+  }
+  return{enhance,combo,close};
+})();
 
 /* ============================================================
    运行日志 + 状态轮询
@@ -1705,6 +1894,8 @@ matchMedia("(prefers-color-scheme: light)").addEventListener("change",e=>{
   try{if(localStorage.getItem("llm-bench-pro-theme"))return}catch(err){}
   applyTheme(e.matches?"light":"dark",false);
 });
+document.querySelectorAll("select.select").forEach(CSelect.enhance);
+CSelect.combo($("fModel"));
 applyTheme(document.documentElement.dataset.theme||"dark",false);
 showView((location.hash||"#dash").slice(1));
 refresh();
