@@ -1586,8 +1586,10 @@ function renderIq(){
         <span class="run-tag" style="background:${s.color}">${s.tag}</span>${esc((s.r.model||"?")+(runFw(s.r)?" · "+runFw(s.r):""))}</span>
         ${s.tag!=="A"?deltaPill(base.acc,o.acc,1,{mode:"pp"}):""}</div>
       <div class="kpi-value num">${o.acc!=null?fmt(o.acc,1):"—"}<small>%</small></div>
-      <div class="kpi-sub">${o.n?`95% CI ${fmt(o.ci_lo,1)}–${fmt(o.ci_hi,1)}% · ${o.correct}/${o.n} · ${s.r.thinking?"思考":"非思考"}`:"运行未完成"}</div></div>`;
+      <div class="kpi-sub">${o.n?`95% CI ${fmt(o.ci_lo,1)}–${fmt(o.ci_hi,1)}% · ${o.correct}/${o.n} · ${s.r.thinking?"思考":"非思考"}`:"运行未完成"}</div>
+      ${iqIssues(s.r).length?`<div class="kpi-sub" style="color:var(--warning)">${esc(iqIssues(s.r).join(" · "))}</div>`:""}</div>`;
   }).join("")+`</div>`;
+  series.forEach(s=>{const w=iqVersionWarning(s.r);if(w)html+=`<div class="alert is-warning">${icon("alert")}<span><b>${s.tag}</b>：${esc(w)}</span></div>`});
   const mismatch=series.slice(1).filter(s=>s.r.bank_id!==a.bank_id);
   if(mismatch.length)html+=`<div class="alert is-warning">${icon("alert")}<span>题集版本不一致：${mismatch.map(s=>esc(s.tag+"（"+s.r.bank_id+"）")).join("、")} 与 A（${esc(a.bank_id)}）使用了不同题集，分数不具可比性</span></div>`;
   html+=`<div class="iq-layout">
@@ -1596,20 +1598,58 @@ function renderIq(){
     <div class="panel"><div class="panel-head"><div><h3 class="panel-title">分科准确率</h3><p class="panel-desc">${series.length>1?"加粗为各科最高分":"括号内为 95% 置信区间"}</p></div></div>
       <div class="panel-body" id="iqSubjTbl"></div></div></div>`;
   el.innerHTML=html;
-  let t=`<div class="table-wrap" style="max-height:560px"><table class="table"><thead><tr><th>科目</th><th>题数</th>${series.map(s=>`<th><span class="run-tag" style="background:${s.color}">${s.tag}</span></th>`).join("")}</tr></thead><tbody>`;
+  let t=`<div class="table-wrap" style="max-height:560px"><table class="table"><thead><tr><th>科目</th><th>题数</th>${series.map(s=>`<th><span class="run-tag" style="background:${s.color}">${s.tag}</span></th>`).join("")}<th>A 截断 / 失败</th><th></th></tr></thead><tbody>`;
   (a.subjects||[]).forEach(sub=>{
     const vals=series.map(s=>{const x=(s.r.subjects||[]).find(y=>y.id===sub.id);return x||null});
     const accs=vals.map(v=>v&&v.acc).filter(v=>v!=null);
     const best=accs.length>1?Math.max(...accs):null;
     t+=`<tr><td>${esc(sub.name)}</td><td class="faint">${sub.n}</td>`+vals.map(v=>v==null?`<td class="na">—</td>`:
-      `<td class="${best!=null&&v.acc===best?"best":""}">${fmt(v.acc,1)}%${series.length===1?`<span class="sub">${fmt(v.ci_lo,1)}–${fmt(v.ci_hi,1)}</span>`:""}</td>`).join("")+`</tr>`;
+      `<td class="${best!=null&&v.acc===best?"best":""}">${fmt(v.acc,1)}%${series.length===1?`<span class="sub">${fmt(v.ci_lo,1)}–${fmt(v.ci_hi,1)}</span>`:""}</td>`).join("")+
+      `<td class="${(sub.truncated||sub.errors)?"down":"faint"}">${sub.truncated==null?"—":`${sub.truncated} / ${sub.errors||0}`}</td>
+      <td>${sub.correct<sub.n?`<button class="btn btn-ghost btn-sm" data-iq-wrong="${esc(sub.id)}" data-run="${esc(a.run_id)}">错题 ${sub.n-sub.correct}</button>`:""}</td></tr>`;
   });
   const overall=series.map(s=>s.r.overall&&s.r.overall.acc);
   const bestAll=series.length>1?Math.max(...overall.filter(v=>v!=null)):null;
-  t+=`<tr class="total"><td>总体</td><td class="faint">${base.n??"—"}</td>`+overall.map(v=>`<td class="${bestAll!=null&&v===bestAll?"best":""}">${v!=null?fmt(v,1)+"%":"—"}</td>`).join("")+`</tr></tbody></table></div>`;
+  t+=`<tr class="total"><td>总体</td><td class="faint">${base.n??"—"}</td>`+overall.map(v=>`<td class="${bestAll!=null&&v===bestAll?"best":""}">${v!=null?fmt(v,1)+"%":"—"}</td>`).join("")+
+    `<td class="${(base.truncated||base.errors)?"down":"faint"}">${base.truncated==null?"—":`${base.truncated} / ${base.errors||0}`}</td><td></td></tr></tbody></table></div>`;
   $("iqSubjTbl").innerHTML=t;
   drawRadar(series);
 }
+function verLt(v,target){const a=String(v||"0").split(".").map(Number),b=target.split(".").map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==b[i])return (a[i]||0)<b[i]}return false}
+function iqVersionWarning(r){
+  if(verLt(r.iq_version,"1.1.0")&&r.thinking)return `该运行使用旧版评测程序（${r.iq_version}）：思考模式下选择题输出上限仅 8 token，思考被截断后全部计错，MATH-500 判分也有缺陷，分数不可信，请重新运行`;
+  if(verLt(r.iq_version,"1.1.0"))return `该运行使用旧版评测程序（${r.iq_version}）：MATH-500 判分有缺陷（恒判错），总分偏低，请重新运行`;
+  if(verLt(r.iq_version,"1.2.0")&&r.thinking)return `该运行使用 ${r.iq_version} 评测程序：思考模式输出上限较低，长思考题目可能被截断计错且未单独标记，建议重新运行`;
+  return "";
+}
+function iqIssues(r){
+  const o=r.overall||{},out=[];
+  if(o.truncated)out.push(`${o.truncated} 题达到输出上限被截断`);
+  if(o.errors)out.push(`${o.errors} 题请求失败`);
+  return out;
+}
+$("iqResult").addEventListener("click",async e=>{
+  const b=e.target.closest("[data-iq-wrong]");if(!b)return;
+  const sid=b.dataset.iqWrong,r=IQ_RUNS[b.dataset.run],sub=(r.subjects||[]).find(x=>x.id===sid);
+  setBusy(b,false);b.disabled=true;
+  try{
+    const d=await getJSON(`/api/iq-wrong?id=${encodeURIComponent(b.dataset.run)}&sid=${encodeURIComponent(sid)}`);
+    if(!d.ok){toast(d.error,"error");return}
+    const status=x=>x.err?`<span class="badge is-danger">请求失败</span>`:x.trunc?`<span class="badge is-warning">输出截断</span>`:`<span class="badge">答错</span>`;
+    const rows=d.rows.map(x=>`<tr>
+      <td>${x.idx+1}</td>
+      <td class="text-left" style="min-width:320px;max-width:560px;white-space:normal">${esc(x.q||"（题集文件缺失，无法显示题干）")}
+        ${x.choices?`<span class="sub">${x.choices.map((c,i)=>esc("ABCD"[i]+". "+String(c).slice(0,80))).join("　")}</span>`:""}</td>
+      <td class="text-left">${esc(x.answer!=null?String(x.answer):(x.checks?"规则校验":"—"))}</td>
+      <td class="text-left">${x.pred!=null?esc(x.pred):'<span class="faint">未提取到</span>'}</td>
+      <td class="text-left">${status(x)}${x.out!=null?`<span class="sub">输出 ${x.out} tokens${x.finish?" · "+esc(x.finish):""}</span>`:""}</td>
+      <td class="text-left mono" style="min-width:240px;max-width:420px;white-space:pre-wrap;font-size:12px">${esc(x.err||x.tail||"")}</td></tr>`).join("");
+    const legacy=verLt(d.iq_version,"1.2.0")?`<div class="alert is-info">${icon("info")}<span>该运行由 ${esc(d.iq_version)} 版评测程序生成，未记录模型答案与输出尾部，仅能看到题目与请求失败信息。</span></div>`:"";
+    Modal.open(`${sub?sub.name:sid} · 未答对 ${d.rows.length} 题`,legacy+(rows?`<div class="table-wrap" style="max-height:none"><table class="table"><thead><tr><th>#</th><th class="text-left">题目</th><th class="text-left">标准答案</th><th class="text-left">模型答案</th><th class="text-left">状态</th><th class="text-left">模型输出（末尾）</th></tr></thead><tbody>${rows}</tbody></table></div>`:emptyState("没有未答对的题目","",{inline:true})),
+      {badges:`<span class="badge">${esc(iqLabel(r))}</span>`});
+  }catch(err){toast("加载错题失败："+err.message,"error")}
+  finally{b.disabled=false}
+});
 function drawRadar(series){
   const cv=$("iqRadar");if(!cv||!cv.clientWidth)return;
   const {g,w,h}=setupCanvas(cv,.9,260,380);

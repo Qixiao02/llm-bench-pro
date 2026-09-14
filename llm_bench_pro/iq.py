@@ -20,15 +20,23 @@ try:
 except ImportError:
     import sinks  # server.py 以包目录为 sys.path 顶层导入
 
-IQ_VERSION = "1.1.0"  # 1.1: 修正 MATH-500 boxed 判分, 1.0 的 math500 分数无效
+# 1.1: 修正 MATH-500 boxed 判分(1.0 的 math500 分数无效)
+# 1.2: 思考模式输出预算 32K(超上下文自动减半)、截断(finish_reason=length)单独标记、选择题答案提取加固、
+#      记录模型答案与错题尾部; 1.x 思考模式选择题仅 8+8192 token, 长思考会被截断计错
+IQ_VERSION = "1.2.0"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
+THINK_MAX_TOKENS = 32768   # 思考模式 max_tokens 上限(思考与正文共享); 端点上下文不足时自动减半
+THINK_TIMEOUT = 1800
+PLAIN_TIMEOUT = 300
 
-
-_NO_TEMPLATE_KWARGS = set()  # 拒绝 chat_template_kwargs 的端点(400 后自动剔除重试)
+_NO_TEMPLATE_KWARGS = set()  # 明确拒绝 chat_template_kwargs 的端点
+_KWARGS_REJECT = re.compile(r"chat_template_kwargs|extra_forbidden|extra inputs|unrecognized request argument|unexpected keyword", re.I)
+_CONTEXT_REJECT = re.compile(r"max_tokens|max_completion_tokens|context length|context_length|maximum context|too long|exceed", re.I)
 
 
 def post_chat(url, payload, headers, timeout):
-    """POST chat/completions; 端点不认 chat_template_kwargs(400) 时剔除该字段重试并记住。"""
+    """POST chat/completions。仅当错误信息明确指向 chat_template_kwargs 时才剔除该字段重试并记住;
+    其他 4xx(如超上下文)原样抛出, 错误正文挂在异常的 detail 属性上。"""
     if url in _NO_TEMPLATE_KWARGS:
         payload = {k: v for k, v in payload.items() if k != "chat_template_kwargs"}
     body = json.dumps(payload).encode()
@@ -37,20 +45,52 @@ def post_chat(url, payload, headers, timeout):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
-        if e.code in (400, 422) and "chat_template_kwargs" in payload:
+        try:
+            e.detail = e.read().decode("utf-8", "replace")[:500]
+        except Exception:
+            e.detail = ""
+        if e.code in (400, 422) and "chat_template_kwargs" in payload and _KWARGS_REJECT.search(e.detail):
             _NO_TEMPLATE_KWARGS.add(url)
             return post_chat(url, payload, headers, timeout)
         raise
 
 
 def strip_think(text):
-    """剥离 <think>…</think>; 仅有 </think>(模板已预置开标签)时丢弃其前全部内容。"""
+    """剥离思考内容: 成对 <think>…</think> 删除; 仅有 </think>(模板预置开标签)时丢弃其前全部内容;
+    有 <think> 却未闭合(思考被截断)时视为没有正文。"""
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
     i = text.rfind("</think>")
-    return (text[i + len("</think>"):] if i >= 0 else text).strip()
+    if i >= 0:
+        text = text[i + len("</think>"):]
+    j = text.find("<think>")
+    if j >= 0:
+        text = text[:j]
+    return text.strip()
 
 
-def chat(url, payload, headers, timeout=300):
+def ask(url, model, prompt, max_tokens, thinking, headers):
+    """单题请求。返回 {content, finish, usage, reasoning_chars, max_tokens}。
+    思考模式把 max_tokens 提到 THINK_MAX_TOKENS, 若端点因上下文不足拒绝则逐次减半直至题目基础预算。"""
+    mt = max(max_tokens, THINK_MAX_TOKENS) if thinking else max_tokens
+    while True:
+        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": mt,
+                   "temperature": 0, "chat_template_kwargs": {"enable_thinking": bool(thinking)}}
+        try:
+            d = post_chat(url, payload, headers, THINK_TIMEOUT if thinking else PLAIN_TIMEOUT)
+        except urllib.error.HTTPError as e:
+            if e.code in (400, 413, 422) and mt // 2 >= max_tokens and _CONTEXT_REJECT.search(getattr(e, "detail", "")):
+                mt //= 2
+                continue
+            raise
+        ch = d["choices"][0]
+        msg = ch.get("message") or {}
+        raw = msg.get("content") or ""
+        reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
+        return {"content": strip_think(raw), "finish": ch.get("finish_reason") or "", "usage": d.get("usage") or {},
+                "reasoning_chars": len(reasoning) + (len(raw) - len(strip_think(raw))), "max_tokens": mt}
+
+
+def chat(url, payload, headers, timeout=PLAIN_TIMEOUT):
     d = post_chat(url, payload, headers, timeout)
     msg = d["choices"][0]["message"]
     return strip_think(msg.get("content") or ""), d.get("usage") or {}
@@ -101,14 +141,33 @@ def _strip_cmd_arg(s, cmd):
 
 
 def _norm_ans(s):
-    s = str(s).strip()
+    """答案规范化, 对齐 MATH 官方评测 strip_string: 去单位/美元/度/百分号/间距命令, 统一分数与根号写法。"""
+    s = str(s).strip().replace("\n", "")
+    s = s.replace("\\!", "").replace("\\,", "").replace("\\;", "").replace("\\ ", " ")
+    s = re.sub(r"\\[dt]frac", r"\\frac", s)
+    s = s.replace("\\left", "").replace("\\right", "")
+    s = s.replace("^{\\circ}", "").replace("^\\circ", "")
+    s = s.replace("\\$", "").replace("$", "")
+    s = re.sub(r"\\(?:text|mbox|mathrm)\{\s+[^{}]*\}\s*$", "", s)  # 末尾单位: 5.4 \text{ cents}
     for cmd in ("text", "textbf", "mathrm", "mbox"):
         s = _strip_cmd_arg(s, cmd)
-    s = re.sub(r"\\[dt]frac", r"\\frac", s)
+    s = s.replace("\\%", "").replace("%", "")
+    s = s.replace(" .", " 0.").replace("{.", "{0.")
+    if s.startswith("."):
+        s = "0" + s
+    parts = s.split("=")
+    if len(parts) == 2 and len(parts[0].strip()) <= 2:  # "x = 5" -> "5"
+        s = parts[1]
+    s = re.sub(r"\\sqrt(\w)", r"\\sqrt{\1}", s)
+    s = s.replace(" ", "")
     s = re.sub(r"\\frac(\d)(\d)", r"\\frac{\1}{\2}", s)
-    for tok in ("\\left", "\\right", "\\!", "\\,", "\\;", "\\ ", "$", "^\\circ", "^{\\circ}", "\\%", "%"):
-        s = s.replace(tok, "")
-    s = s.replace(" ", "").replace(",", "") if re.fullmatch(r"[\d,\s.\-]+", s) else s.replace(" ", "")
+    s = re.sub(r"\\frac(\d)\{", r"\\frac{\1}{", s)
+    s = re.sub(r"\\frac\{([^{}]+)\}(\d)", r"\\frac{\1}{\2}", s)
+    m = re.fullmatch(r"(-?\d+)/(\d+)", s)
+    if m:
+        s = "\\frac{%s}{%s}" % m.groups()
+    if re.fullmatch(r"-?[\d,]+(\.\d+)?", s):
+        s = s.replace(",", "")
     s = s.rstrip(".")
     if re.fullmatch(r"-?\d+\.0+", s):
         s = s.split(".")[0]
@@ -147,8 +206,51 @@ PROMPTS = {"mcq": prompt_mcq, "math": prompt_math, "math500": prompt_math500, "i
 # ---------------------------------------------------------------- 判分
 
 def judge_mcq(resp, item):
-    m = re.search(r"\b([A-D])\b", resp[:40])
-    return bool(m) and m.group(1) == item["answer"]
+    return extract_mcq(resp) == item["answer"]
+
+
+_MCQ_EXPLICIT = [
+    r"(?:最终答案|正确答案|答案|正确选项|应选|选择|选)\s*(?:是|为|应为|应该是|选)?\s*[:：]?\s*[*_【\[(（]*\s*([A-D])(?![A-Za-z])",
+    r"(?i)(?:final\s+)?answer\s*(?:is|:)?\s*[*_\[(]*\s*([A-D])(?![A-Za-z])",
+    r"\\boxed\{\s*\(?([A-D])\)?\s*\}",
+]
+
+
+def extract_mcq(resp):
+    """选择题答案提取: 整段仅一个字母 > 明确的“答案是X / answer is X / \\boxed{X}”(取最后一处) >
+    首行以字母加分隔符开头(如 “B. …” “(C)”)。英文句首冠词 “A careful …” 不会被误判。无法确定返回 None。"""
+    text = (resp or "").strip()
+    if not text:
+        return None
+    m = re.match(r"^[\s*_`'\"(（\[【]*([A-D])[\s*_`'\")）\]】.。:：、]*$", text)
+    if m:
+        return m.group(1)
+    for p in _MCQ_EXPLICIT:
+        found = re.findall(p, text)
+        if found:
+            return found[-1]
+    first = text.splitlines()[0].strip()
+    m = re.match(r"^[*_`(（\[【]*([A-D])(?:[*_`)）\]】]*[.。:：、)]|[*_`)）\]】]+(?:\s|$))", first)
+    return m.group(1) if m else None
+
+
+def extract_math(resp):
+    m = re.search(r"####\s*(-?[\d,]+\.?\d*)", resp or "")
+    if m:
+        return m.group(1).replace(",", "").rstrip(".")
+    nums = _nums(resp or "")
+    return nums[-1].replace(",", "").rstrip(".") if nums else None
+
+
+def extract_math500(resp):
+    cand = last_boxed(resp or "")
+    if cand is None:
+        last = [l for l in (resp or "").strip().splitlines() if l.strip()]
+        cand = re.split(r"[:：=]", last[-1])[-1] if last else None
+    return cand.strip() if cand else None
+
+
+EXTRACTORS = {"mcq": extract_mcq, "math": extract_math, "math500": extract_math500, "instruct": lambda r: None}
 
 
 def _nums(s):
@@ -254,7 +356,9 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
         sink.save(result)
 
     total_all = sum(min(len(s["items"]), limit_per_subject or 10**9) for s in subjects)
-    plog("== iq v%s | %s | bank=%s | %d 题 | conc=%d ==" % (IQ_VERSION, model, bank["bank_id"], total_all, conc))
+    result["max_tokens_policy"] = ("思考模式: 上限 %d(超上下文自动减半)" % THINK_MAX_TOKENS) if thinking else "非思考: 按题型基础预算"
+    plog("== iq v%s | %s | bank=%s | %d 题 | conc=%d | %s ==" % (IQ_VERSION, model, bank["bank_id"], total_all, conc,
+                                                            "思考模式(max_tokens≤%d)" % THINK_MAX_TOKENS if thinking else "非思考"))
     result["status"] = "running"
     save()
     try:
@@ -272,7 +376,9 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
                          "acc": round(tot_c / tot_n * 100, 1) if tot_n else 0,
                          "ci_lo": round(lo * 100, 1), "ci_hi": round(hi * 100, 1),
                          "in_tokens": sum(s["in_tokens"] for s in result["subjects"]),
-                         "out_tokens": sum(s["out_tokens"] for s in result["subjects"])}
+                         "out_tokens": sum(s["out_tokens"] for s in result["subjects"]),
+                         "truncated": sum(s.get("truncated", 0) for s in result["subjects"]),
+                         "errors": sum(s.get("errors", 0) for s in result["subjects"])}
     result["finished_utc"] = datetime.now(timezone.utc).isoformat()
     result["status"] = "done"
     save()
@@ -290,48 +396,50 @@ def _run_subjects(url, model, headers, subjects, limit_per_subject, conc, thinki
         items = sub["items"][:limit_per_subject] if limit_per_subject else sub["items"]
         stype = sub["type"]
         judge = JUDGES[stype]
+        extract = EXTRACTORS[stype]
         prompter = PROMPTS[stype]
-        correct = 0
-        in_tok = out_tok = 0
 
         def worker(idx_item):
             idx, item = idx_item
             prompt, mt = prompter(item)
-            if thinking:
-                mt += 8192  # 思考 token 与正文共享 max_tokens 预算
+            rec = {"sid": sub["id"], "idx": idx, "ok": False}
             try:
-                resp, usage = chat(url, {"model": model, "messages": [{"role": "user", "content": prompt}],
-                                          "max_tokens": mt, "temperature": 0,
-                                          "chat_template_kwargs": {"enable_thinking": bool(thinking)}}, headers)
-                ok = judge(resp, item)
+                r = ask(url, model, prompt, mt, thinking, headers)
             except Exception as e:
-                usage, ok, err = {}, False, str(e)[:100]
+                detail = getattr(e, "detail", "")
+                rec["err"] = ("%s: %s%s" % (type(e).__name__, str(e), (" | " + detail) if detail else ""))[:200]
             else:
-                err = None
+                content, usage = r["content"], r["usage"]
+                rec.update({"ok": bool(judge(content, item)), "in": usage.get("prompt_tokens", 0),
+                            "out": usage.get("completion_tokens", 0), "finish": r["finish"]})
+                pred = extract(content)
+                if pred is not None:
+                    rec["pred"] = str(pred)[:60]
+                if r["finish"] == "length":
+                    rec["trunc"] = True  # 达到输出上限: 通常是思考未结束, 计为错误但单独标记
+                if not rec["ok"]:
+                    rec["tail"] = content[-240:] if content else ("（无正文，思考 %d 字）" % r["reasoning_chars"])
             with lock:
                 done_count[0] += 1
                 if done_count[0] % 20 == 0 or done_count[0] == total_all:
                     plog("  进度 %d/%d" % (done_count[0], total_all))
-            if err:
-                return {"sid": sub["id"], "idx": idx, "ok": False, "err": err}
-            return {"sid": sub["id"], "idx": idx, "ok": ok,
-                    "in": usage.get("prompt_tokens", 0), "out": usage.get("completion_tokens", 0)}
+            return rec
 
         with ThreadPoolExecutor(max_workers=conc) as ex:
             results = list(ex.map(worker, enumerate(items)))
         result["items"].extend(results)
-        good = [r for r in results if r["ok"]]
-        errors = [r for r in results if r.get("err")]
-        correct = len(good)
-        in_tok = sum(r.get("in", 0) for r in results)
-        out_tok = sum(r.get("out", 0) for r in results)
+        correct = sum(1 for r in results if r["ok"])
+        n_err = sum(1 for r in results if r.get("err"))
+        n_trunc = sum(1 for r in results if r.get("trunc"))
         n = len(results)
         lo, hi = wilson(correct, n)
         result["subjects"].append({"id": sub["id"], "name": sub["name"], "type": stype,
                                    "n": n, "correct": correct, "acc": round(correct / n * 100, 1) if n else 0,
                                    "ci_lo": round(lo * 100, 1), "ci_hi": round(hi * 100, 1),
-                                   "in_tokens": in_tok, "out_tokens": out_tok})
-        plog("  [%s] %d/%d = %.1f%% (CI %.1f-%.1f)%s" %
+                                   "in_tokens": sum(r.get("in", 0) for r in results),
+                                   "out_tokens": sum(r.get("out", 0) for r in results),
+                                   "truncated": n_trunc, "errors": n_err})
+        plog("  [%s] %d/%d = %.1f%% (CI %.1f-%.1f)%s%s" %
              (sub["id"], correct, n, result["subjects"][-1]["acc"], lo * 100, hi * 100,
-              ("  错误%d" % len(errors)) if errors else ""))
+              ("  截断%d" % n_trunc) if n_trunc else "", ("  请求失败%d" % n_err) if n_err else ""))
         save()

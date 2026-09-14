@@ -55,6 +55,33 @@ def gen_status_line(msg):
         _gen_state["log"] = _gen_state["log"][-400:]
 
 
+def iq_wrong(run_id, sid, limit=300):
+    """某次能力评测某科目的未答对题目: 题干/选项/标准答案 + 模型答案/截断/错误/正文尾部。"""
+    if not run_id.startswith("iq_") or not _RUN_ID_RE.match(run_id):
+        return {"ok": False, "error": "非法 run_id"}
+    doc = store.get_run(run_id)
+    if not doc:
+        return {"ok": False, "error": "run 不存在"}
+    try:
+        bank = bankman.load_bank(doc.get("bank_id") or "")
+        sub_items = next((s["items"] for s in bank["subjects"] if s["id"] == sid), [])
+    except FileNotFoundError:
+        sub_items = []
+    rows = []
+    for it in doc.get("items", []):
+        if it.get("sid") != sid or it.get("ok"):
+            continue
+        q = sub_items[it["idx"]] if isinstance(it.get("idx"), int) and it["idx"] < len(sub_items) else {}
+        rows.append({"idx": it.get("idx"), "q": (q.get("q") or "")[:600], "choices": q.get("choices"),
+                     "answer": q.get("answer"), "checks": q.get("checks"), "pred": it.get("pred"),
+                     "trunc": bool(it.get("trunc")), "err": it.get("err"), "finish": it.get("finish"),
+                     "out": it.get("out"), "tail": it.get("tail")})
+        if len(rows) >= limit:
+            break
+    return {"ok": True, "run_id": run_id, "sid": sid, "iq_version": doc.get("iq_version"),
+            "bank_found": bool(sub_items), "rows": rows}
+
+
 def _judge_cfg(body):
     """请求体中的视觉评审配置 (judge_base/judge_model/judge_key); 未填返回 None。"""
     base, model = (body.get("judge_base") or "").strip(), (body.get("judge_model") or "").strip()
@@ -168,6 +195,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/iq-results":
             # 逐题 items 前端不读, 默认省略以减小体积; ?full=1 返回完整文档
             self._json(store.list_runs("iq", items=query.get("full") == ["1"]))
+        elif path == "/api/iq-wrong":
+            self._json(iq_wrong((query.get("id") or [""])[0], (query.get("sid") or [""])[0]))
         elif path == "/api/gen-results":
             self._json(store.list_runs("gen"))
         elif path in ("/api/run", "/api/export"):
