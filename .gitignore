@@ -1,6 +1,11 @@
 # 运行产物(不入库)
 results/
+results_export/
 works/
+data/
+*.db
+*.db-wal
+*.db-shm
 __pycache__/
 *.pyc
 .pytest_cache/

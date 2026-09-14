@@ -21,11 +21,13 @@ import bankman
 import bench
 import gen
 import iq
+import sinks
+import store
 
-RESULTS = os.path.join(ROOT, "results")
+RESULTS = os.path.join(ROOT, "results")  # 旧版 JSON 结果: 启动时自动导入库(仅新增)
 WORKS = os.path.join(ROOT, "works")
 UI = os.path.join(ROOT, "web", "index.html")
-_RUN_ID_RE = re.compile(r"^gen_[A-Za-z0-9_.-]+$")
+_RUN_ID_RE = re.compile(r"^(run|iq|gen)_[A-Za-z0-9_.-]+$")
 
 
 def safe_join(base, rel):
@@ -44,7 +46,6 @@ _state = {"running": False, "log": [], "error": None, "run_id": None, "started_a
 
 _gen_lock = threading.Lock()
 _gen_state = {"running": False, "log": [], "error": None, "run_id": None, "started_at": None}
-_rate_lock = threading.Lock()
 
 
 def gen_status_line(msg):
@@ -58,9 +59,10 @@ def run_gen_benchmark(url, model, api_key, task_ids, conc, tag, framework, fw_ve
     try:
         with _gen_lock:
             _gen_state["error"] = None
-        path = gen.run_gen(url, model, api_key, task_ids, conc, RESULTS, tag, framework, fw_version, thinking)
+        sink = sinks.SqliteSink()
+        gen.run_gen(url, model, api_key, task_ids, conc, RESULTS, tag, framework, fw_version, thinking, sink=sink)
         with _gen_lock:
-            _gen_state["run_id"] = os.path.basename(path).rsplit(".", 1)[0]
+            _gen_state["run_id"] = sink.run_id
     except Exception as e:
         with _gen_lock:
             _gen_state["error"] = "%s: %s" % (type(e).__name__, str(e)[:300])
@@ -87,10 +89,11 @@ def run_iq_benchmark(url, model, api_key, bank_id, conc, tag, framework, fw_vers
         with _iq_lock:
             _iq_state["error"] = None
         bank = bankman.load_bank(bank_id)
-        path = iq.run_iq(url, model, api_key, bank, conc, RESULTS, tag,
-                         framework, fw_version, subject_ids, limit, thinking)
+        sink = sinks.SqliteSink()
+        iq.run_iq(url, model, api_key, bank, conc, RESULTS, tag,
+                  framework, fw_version, subject_ids, limit, thinking, sink=sink)
         with _iq_lock:
-            _iq_state["run_id"] = os.path.basename(path).rsplit(".", 1)[0]
+            _iq_state["run_id"] = sink.run_id
     except Exception as e:
         with _iq_lock:
             _iq_state["error"] = "%s: %s" % (type(e).__name__, str(e)[:300])
@@ -113,11 +116,12 @@ def run_benchmark(url, model, api_key, suite, tag, metrics_url, conc_ladder=None
     try:
         with _state_lock:
             _state["error"] = None
-        path = bench.run_suite(url, model, api_key, suite, metrics_url, tag, RESULTS,
-                               conc_ladder=conc_ladder, matrix_conc=matrix_conc, lens=lens,
-                               framework=framework, fw_version=fw_version)
+        sink = sinks.SqliteSink()
+        bench.run_suite(url, model, api_key, suite, metrics_url, tag, RESULTS,
+                        conc_ladder=conc_ladder, matrix_conc=matrix_conc, lens=lens,
+                        framework=framework, fw_version=fw_version, sink=sink)
         with _state_lock:
-            _state["run_id"] = os.path.basename(path).rsplit(".", 1)[0]
+            _state["run_id"] = sink.run_id
     except Exception as e:
         with _state_lock:
             _state["error"] = "%s: %s" % (type(e).__name__, str(e)[:300])
@@ -130,24 +134,26 @@ def run_benchmark(url, model, api_key, suite, tag, metrics_url, conc_ladder=None
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
+        parts = urllib.parse.urlsplit(self.path)
+        path = urllib.parse.unquote(parts.path)
+        query = urllib.parse.parse_qs(parts.query)
         if path in ("/", "/index.html"):
             self._serve_file(UI, "text/html; charset=utf-8")
         elif path == "/api/results":
-            runs = []
-            if os.path.isdir(RESULTS):
-                for fn in sorted(os.listdir(RESULTS)):
-                    if not fn.endswith(".json"):
-                        continue
-                    try:
-                        with open(os.path.join(RESULTS, fn), encoding="utf-8") as f:
-                            obj = json.load(f)
-                        if obj.get("kind") not in ("iq", "gen"):  # 性能结果无 kind 字段
-                            runs.append(obj)
-                    except Exception:
-                        pass
-            runs.sort(key=lambda r: r.get("started_utc", ""), reverse=True)
-            self._body(json.dumps(runs, ensure_ascii=False).encode(), "application/json")
+            self._json(store.list_runs("perf"))
+        elif path == "/api/iq-results":
+            # 逐题 items 前端不读, 默认省略以减小体积; ?full=1 返回完整文档
+            self._json(store.list_runs("iq", items=query.get("full") == ["1"]))
+        elif path == "/api/gen-results":
+            self._json(store.list_runs("gen"))
+        elif path in ("/api/run", "/api/export"):
+            run_id = (query.get("id") or [""])[0]
+            doc = store.get_run(run_id) if _RUN_ID_RE.match(run_id) else None
+            if doc is None:
+                return self._json({"error": "run 不存在"}, 404)
+            data = json.dumps(doc, ensure_ascii=False, indent=1 if path == "/api/export" else None).encode()
+            extra = {"Content-Disposition": 'attachment; filename="%s.json"' % run_id} if path == "/api/export" else None
+            self._body(data, "application/json", headers=extra)
         elif path == "/api/status":
             with _state_lock:
                 payload = dict(_state)
@@ -160,19 +166,6 @@ class Handler(BaseHTTPRequestHandler):
             with _gen_lock:
                 payload = dict(_gen_state)
             self._body(json.dumps(payload, ensure_ascii=False).encode(), "application/json")
-        elif path == "/api/gen-results":
-            runs = []
-            if os.path.isdir(RESULTS):
-                for fn in sorted(os.listdir(RESULTS)):
-                    if not (fn.startswith("gen_") and fn.endswith(".json")):
-                        continue
-                    try:
-                        with open(os.path.join(RESULTS, fn), encoding="utf-8") as f:
-                            runs.append(json.load(f))
-                    except Exception:
-                        pass
-            runs.sort(key=lambda r: r.get("started_utc", ""), reverse=True)
-            self._body(json.dumps(runs, ensure_ascii=False).encode(), "application/json")
         elif path.startswith("/works/"):
             full = safe_join(WORKS, path[len("/works/"):])
             if full and full.lower().endswith(".html") and os.path.isfile(full):
@@ -181,19 +174,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "not found"}, 404)
         elif path == "/api/banks":
             self._body(json.dumps(bankman.list_banks(), ensure_ascii=False).encode(), "application/json")
-        elif path == "/api/iq-results":
-            runs = []
-            if os.path.isdir(RESULTS):
-                for fn in sorted(os.listdir(RESULTS)):
-                    if not (fn.startswith("iq_") and fn.endswith(".json")):
-                        continue
-                    try:
-                        with open(os.path.join(RESULTS, fn), encoding="utf-8") as f:
-                            runs.append(json.load(f))
-                    except Exception:
-                        pass
-            runs.sort(key=lambda r: r.get("started_utc", ""), reverse=True)
-            self._body(json.dumps(runs, ensure_ascii=False).encode(), "application/json")
         else:
             self._json({"error": "not found"}, 404)
 
@@ -375,24 +355,14 @@ class Handler(BaseHTTPRequestHandler):
     def api_gen_rate(self, body):
         run_id, item_id = body.get("run_id") or "", body.get("item_id")
         stars = body.get("stars")
-        if not isinstance(run_id, str) or not _RUN_ID_RE.match(run_id) or ".." in run_id:
+        if not isinstance(run_id, str) or not _RUN_ID_RE.match(run_id):
             return self._json({"ok": False, "error": "非法 run_id"}, 400)
-        if stars is not None and not (isinstance(stars, int) and 0 <= stars <= 5):
+        if stars is not None and not (isinstance(stars, int) and not isinstance(stars, bool) and 0 <= stars <= 5):
             return self._json({"ok": False, "error": "stars 应为 0-5 整数或 null"}, 400)
-        path = os.path.join(RESULTS, run_id + ".json")
-        if not os.path.isfile(path):
-            return self._json({"ok": False, "error": "run 不存在"}, 404)
         try:
-            with _rate_lock:  # 连续打星的并发读改写互斥; 运行中的 run 会被 gen 增量保存覆盖, 故拒绝
-                with open(path, encoding="utf-8") as f:
-                    r = json.load(f)
-                if "finished_utc" not in r and _gen_state["running"]:
-                    return self._json({"ok": False, "error": "该生成测试仍在运行，完成后再打星"}, 409)
-                for it in r.get("items", []):
-                    if it.get("id") == item_id:
-                        it["stars"] = stars
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump(r, f, ensure_ascii=False, indent=1)
+            # 单行 UPDATE: 运行中的生成测试也可打星, 后台增量写入从不触碰 stars
+            if not store.rate_gen_item(run_id, item_id, stars or None):
+                return self._json({"ok": False, "error": "run 或作品不存在"}, 404)
             return self._json({"ok": True})
         except Exception as e:
             return self._json({"ok": False, "error": str(e)[:200]}, 500)
@@ -404,11 +374,13 @@ class Handler(BaseHTTPRequestHandler):
         with open(path, "rb") as f:
             self._body(f.read(), ctype)
 
-    def _body(self, data, ctype, code=200):
+    def _body(self, data, ctype, code=200, headers=None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
 
@@ -421,8 +393,15 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     import sys
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 18080
-    os.makedirs(RESULTS, exist_ok=True)
-    print("llm-bench-pro UI => http://127.0.0.1:%d  (results: %s)" % (port, RESULTS))
+    db = store.default_db()
+    store.init(db)
+    imported = store.import_dir(RESULTS, only_new=True)
+    stale = store.mark_stale_runs()
+    print("llm-bench-pro UI => http://127.0.0.1:%d  (db: %s)" % (port, db))
+    if imported["inserted"] or imported["errors"] or stale:
+        print("  导入旧 JSON %d 个, 失败 %d 个, 标记中断 %d 个" % (imported["inserted"], len(imported["errors"]), stale))
+        for e in imported["errors"]:
+            print("  ✗", e)
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
 

@@ -15,6 +15,11 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
+try:
+    from . import sinks  # 包内导入
+except ImportError:
+    import sinks  # server.py 以包目录为 sys.path 顶层导入
+
 IQ_VERSION = "1.1.0"  # 1.1: 修正 MATH-500 boxed 判分, 1.0 的 math500 分数无效
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
 
@@ -226,10 +231,9 @@ def plog(msg):
 
 
 def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
-           framework=None, fw_version=None, subject_ids=None, limit_per_subject=None, thinking=False):
-    """跑完整智力测试, 返回结果文件路径。"""
+           framework=None, fw_version=None, subject_ids=None, limit_per_subject=None, thinking=False, sink=None):
+    """跑完整智力测试。sink 默认写 outdir/<run_id>.json; 返回落地位置。"""
     outdir = outdir or os.path.join(ROOT, "results")
-    os.makedirs(outdir, exist_ok=True)
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
     subjects = bank["subjects"]
     if subject_ids:
@@ -244,13 +248,10 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
               "thinking": bool(thinking),
               "started_utc": datetime.now(timezone.utc).isoformat(),
               "subjects": [], "items": []}
-    path = os.path.join(outdir, run_id + ".json")
+    sink = sink or sinks.JsonFileSink(outdir)
 
     def save():
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, path)  # 原子替换: 崩溃不留半截文件
+        sink.save(result)
 
     total_all = sum(min(len(s["items"]), limit_per_subject or 10**9) for s in subjects)
     plog("== iq v%s | %s | bank=%s | %d 题 | conc=%d ==" % (IQ_VERSION, model, bank["bank_id"], total_all, conc))
@@ -276,8 +277,8 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
     result["status"] = "done"
     save()
     plog("总体: %d/%d = %.1f%% (CI %.1f-%.1f) => %s" % (tot_c, tot_n, result["overall"]["acc"],
-                                                        lo * 100, hi * 100, path))
-    return path
+                                                        lo * 100, hi * 100, sink.location))
+    return sink.location
 
 
 def _run_subjects(url, model, headers, subjects, limit_per_subject, conc, thinking, total_all, result, save):

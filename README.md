@@ -31,17 +31,35 @@ llm-bench-pro/
 │   ├── bench.py            # 性能基准引擎(流式 TTFT/ITL/并发屏障同步)
 │   ├── iq.py               # 智力测试引擎(官方判分口径 + Wilson CI)
 │   ├── gen.py              # 生成测试引擎(33 题四档 + 特征检查)
-│   └── bankman.py          # 题库管理(多镜像拉取/版本化/限速退避)
+│   ├── bankman.py          # 题库管理(多镜像拉取/版本化/限速退避)
+│   ├── store.py            # SQLite 结果库(建表/增量写/读/导入导出)
+│   └── sinks.py            # 结果落地抽象: JSON 文件 / SQLite / 组合
 ├── web/
 │   └── index.html          # 单文件前端(暗色主题, 原生 canvas, 零依赖)
 ├── banks/                  # 题库版本资产(iq-<日期>-<hash>.json, 多版本共存)
-├── results/                # 运行结果(gitignore)
+├── data/llm_bench.db       # 运行结果库(gitignore, 可用 $LLM_BENCH_DB 改路径)
+├── results/                # 旧版/CLI 产出的 JSON 结果(gitignore, 服务启动时自动导入库)
 └── works/                  # 生成作品 HTML(gitignore)
+```
+
+## 结果存储
+
+- 服务端所有运行写入 SQLite(`data/llm_bench.db`, WAL 模式): 每个 phase / 科目 / 作品增量提交, 崩溃不丢已完成部分
+- 运行状态 `status`: running / done / failed / interrupted; 进程被杀的运行按心跳超时(5 分钟)自动判为 interrupted
+- 人工打星为单行更新, 生成测试运行中也可打星
+- 服务启动时自动导入 `results/` 中库里还没有的 JSON(旧数据零迁移成本)
+
+```bash
+python -m llm_bench_pro.store import            # 导入 results/*.json (幂等, --force 覆盖内容变化者)
+python -m llm_bench_pro.store check             # 校验库与 results/*.json 往返等价
+python -m llm_bench_pro.store export --out dir  # 导出为 JSON (--kind perf|iq|gen / --run RUN_ID)
+python -m llm_bench_pro.store stale             # 手动标记心跳超时的运行为 interrupted
 ```
 
 ## API 一览
 
 `GET /api/results|iq-results|gen-results|banks|status|iq-status|gen-status`
+`GET /api/run?id=<run_id>` 单个运行完整文档 · `GET /api/export?id=<run_id>` 下载 JSON · `/api/iq-results?full=1` 含逐题结果
 `POST /api/probe|start|iq-start|gen-start|bank-update|gen-rate`
 `GET /works/<run>/<task>.html` — 生成作品(供沙箱 iframe)
 
@@ -52,6 +70,8 @@ python -m llm_bench_pro.bench --url http://host:8011 --model NAME --suite standa
     --metrics-url http://host:8011/metrics --lens 1,2,4,8,16 --conc-ladder 1,2,4,8 \
     --framework 1Cat-vLLM --fw-version 1.6.5 --tag baseline
 ```
+
+默认输出 `results/<run_id>.json`(拷回本机 `results/` 后服务启动即自动入库); `--sink db` 直接写库, `--sink both` 两者都写, `--db PATH` 指定库。
 
 ## 测量口径
 

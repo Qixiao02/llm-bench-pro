@@ -26,6 +26,11 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
+try:
+    from . import sinks  # 包内导入: python -m llm_bench_pro.bench
+except ImportError:
+    import sinks  # server.py 以包目录为 sys.path 顶层导入
+
 BENCH_VERSION = "1.0.1"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
 
@@ -433,8 +438,8 @@ def detect_framework(base_url, headers):
 
 def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag="",
               outdir=None, custom=None, conc_ladder=None, matrix_conc=None, lens=None,
-              framework=None, fw_version=None):
-    """可编程入口: serve.py 与 CLI 共用。返回结果文件路径; 失败抛异常。"""
+              framework=None, fw_version=None, sink=None):
+    """可编程入口: server.py 与 CLI 共用。sink 默认写 outdir/<run_id>.json; 返回落地位置; 失败抛异常。"""
     outdir = outdir or os.path.join(ROOT, "results")
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
     if suite != "custom":
@@ -463,14 +468,10 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
               "env": probe_env(base_url, headers), "phases": [],
               "overrides": {"conc_ladder": conc_ladder or None, "matrix_conc": matrix_conc or None, "lens": lens or None},
               "framework": fw}
-    os.makedirs(outdir, exist_ok=True)
-    path = os.path.join(outdir, run_id + ".json")
+    sink = sink or sinks.JsonFileSink(outdir)
 
     def save():
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, path)  # 原子替换: 崩溃不留半截文件
+        sink.save(result)
 
     plog("== llm-bench-pro v%s | %s | suite=%s ==" % (BENCH_VERSION, model, suite))
     plog("warmup...")
@@ -509,8 +510,8 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
         result["metrics_samples"] = rec.close()
         result["finished_utc"] = datetime.now(timezone.utc).isoformat()
         save()
-    plog("done => %s" % path)
-    return path
+    plog("done => %s" % sink.location)
+    return sink.location
 
 
 def main():
@@ -528,6 +529,9 @@ def main():
     ap.add_argument("--lens", default=None, help="自定义长度阶梯(K), 逗号分隔, 如 1,2,4,8,16")
     ap.add_argument("--framework", default=None, help="后端框架名称, 如 1Cat-vLLM / vLLM / SGLang")
     ap.add_argument("--fw-version", default=None, help="框架版本号, 如 1.6.5-sm70main")
+    ap.add_argument("--sink", choices=["json", "db", "both"], default="json",
+                    help="结果落地: json=outdir 文件(默认) / db=SQLite 库 / both")
+    ap.add_argument("--db", default=None, help="SQLite 库路径 (默认 data/llm_bench.db 或 $LLM_BENCH_DB)")
     args = ap.parse_args()
     url = args.url if args.url.endswith("/chat/completions") else normalize_base(args.url) + "/v1/chat/completions"
     ladder = None
@@ -547,7 +551,8 @@ def main():
     try:
         run_suite(url, args.model, args.api_key, args.suite, args.metrics_url, args.tag, args.outdir, args.custom,
                   conc_ladder=ladder, matrix_conc=args.matrix_conc, lens=lens_list,
-                  framework=args.framework, fw_version=args.fw_version)
+                  framework=args.framework, fw_version=args.fw_version,
+                  sink=sinks.from_cli(args.sink, args.outdir, args.db))
     except SystemExit:
         raise
     except Exception as e:

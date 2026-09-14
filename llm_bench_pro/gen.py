@@ -14,9 +14,10 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 try:
-    from . import iq  # 包内导入: python -m llm_bench_pro.gen
+    from . import iq, sinks  # 包内导入: python -m llm_bench_pro.gen
 except ImportError:
     import iq  # server.py 以包目录为 sys.path 顶层导入
+    import sinks
 
 GEN_VERSION = "1.2.0"  # 1.2: 特征检查去重(闭合只计一次), features 标签与 checks 一一对应
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
@@ -210,9 +211,9 @@ def plog(msg):
 
 
 def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
-            framework=None, fw_version=None, thinking=False):
+            framework=None, fw_version=None, thinking=False, sink=None):
+    """跑生成测试。作品落 works/<run_id>/; 元数据经 sink (默认 outdir/<run_id>.json); 返回落地位置。"""
     outdir = outdir or os.path.join(ROOT, "results")
-    os.makedirs(outdir, exist_ok=True)
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
     tasks = [t for t in GEN_TASKS if not task_ids or t["id"] in task_ids]
 
@@ -227,13 +228,10 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
               "thinking": bool(thinking),
               "started_utc": datetime.now(timezone.utc).isoformat(),
               "works_dir": "works/" + run_id, "items": []}
-    path = os.path.join(outdir, run_id + ".json")
+    sink = sink or sinks.JsonFileSink(outdir)
 
     def save():
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, path)  # 原子替换: 崩溃不留半截文件
+        sink.save(result)
 
     plog("== gen v%s | %s | %d 题 | conc=%d ==" % (GEN_VERSION, model, len(tasks), conc))
 
@@ -265,8 +263,10 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
         checks.append(complete)
         checks += check_features(html, task["features"])
         fname = task["id"] + ".html"
-        with open(os.path.join(work_dir, fname), "w", encoding="utf-8") as f:
+        fpath = os.path.join(work_dir, fname)
+        with open(fpath + ".tmp", "w", encoding="utf-8") as f:
             f.write(html)
+        os.replace(fpath + ".tmp", fpath)
         item = {"id": task["id"], "name": task["name"], "tags": task["tags"],
                 "file": "works/%s/%s" % (run_id, fname), "chars": len(html),
                 "lines": html.count("\n") + 1,
@@ -293,5 +293,5 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
     finally:
         result["finished_utc"] = datetime.now(timezone.utc).isoformat()
         save()
-    plog("完成 => %s" % path)
-    return path
+    plog("完成 => %s" % sink.location)
+    return sink.location
