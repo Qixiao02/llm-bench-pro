@@ -14,6 +14,7 @@ import random
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
@@ -50,11 +51,17 @@ def _throttle(gap=2.2):
     _LAST_REQ[0] = _t.time()
 
 
+def _opener():
+    """按 _PROXY 构建 opener; 未设代理时沿用系统环境代理。"""
+    if _PROXY[0]:
+        return urllib.request.build_opener(urllib.request.ProxyHandler({"http": _PROXY[0], "https": _PROXY[0]}))
+    return urllib.request.build_opener()
+
+
 def _get(url, timeout=90):
     """限速 GET(间隔2.2s), 429/5xx 长退避重试, 可选走代理。"""
     import time as _t
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler(
-        {"http": _PROXY[0], "https": _PROXY[0]})) if _PROXY[0] else urllib.request.build_opener()
+    opener = _opener()
     for attempt in range(5):
         _throttle()
         try:
@@ -70,11 +77,12 @@ def _get(url, timeout=90):
 def fetch(repo, path, branch="master"):
     """多镜像回退拉取文本, 全部失败抛异常。"""
     last = None
+    opener = _opener()
     for tpl in MIRRORS:
         url = tpl.format(repo=repo, path=path, branch=branch)
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "llm-bench-pro/1.0"})
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with opener.open(req, timeout=60) as r:
                 data = r.read().decode("utf-8")
             if len(data) > 200 and ("404" not in data[:60]):
                 return data
@@ -290,7 +298,9 @@ def build(gsm8k_n=150, mmlu_per=8, arc_n=80, hellaswag_n=80, math500_n=80,
 
     manifest = "gsm8k:%d|mmlu4:%dx%d|math500:%d|arc:%d|hellaswag:%d|ceval:%dx%d|ifeval:%d|seed:%d" % (
         gsm8k_n, ok_subs, mmlu_per, math500_n, arc_n, hellaswag_n, len(CEVAL_SUBS), ceval_per, ifeval_n, seed)
-    h = hashlib.sha256(manifest.encode()).hexdigest()[:8]
+    # 版本号取题目内容哈希: 同内容同 id, 上游数据变动则 id 必变, 不会覆盖旧版本
+    content = json.dumps(subjects, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    h = hashlib.sha256((manifest + "\n" + content).encode()).hexdigest()[:8]
     bank = {
         "bank_id": "iq-%s-%s" % (time.strftime("%Y%m%d"), h),
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

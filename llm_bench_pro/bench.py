@@ -13,6 +13,7 @@ llm-bench-pro — LLM 推理专业基准测试引擎
 输出: results/run_<时间戳>_<模型>.json (增量保存, 崩溃安全)
 """
 import argparse
+import copy
 import json
 import os
 import re
@@ -25,7 +26,8 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-BENCH_VERSION = "1.0.0"
+BENCH_VERSION = "1.0.1"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
 
 _PROGRESS_CB = None
 
@@ -82,14 +84,15 @@ def stream_call(url, payload, headers, timeout=900):
                 ch = d.get("choices") or []
                 if ch:
                     delta = ch[0].get("delta") or {}
-                    if delta.get("content"):
+                    # 推理模型的思考 token 走 reasoning_content, 同样计入首 token 与解码时间戳
+                    if delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning"):
                         now = time.perf_counter()
                         chunks += 1
                         if ttft is None:
                             ttft = now - t0
                         stamps.append(now)
     if not stamps:
-        raise RuntimeError("empty stream (no content deltas)")
+        raise RuntimeError("empty stream (no content/reasoning deltas)")
     return {"ttft": ttft, "stamps": stamps, "wall": time.perf_counter() - t0,
             "usage": usage, "chunks": chunks}
 
@@ -201,12 +204,12 @@ def phase_prefill(url, headers, model, ladder, out_tok, rep):
         tps = [r["prefill_tps"] for r in runs if r["prefill_tps"]]
         points.append({
             "label": label, "in_tokens": runs[0]["in_tokens"],
-            "ttft_med_s": round(statistics.median(ttfts), 3),
-            "prefill_tps_med": round(statistics.median(tps), 1),
+            "ttft_med_s": round(statistics.median(ttfts), 3) if ttfts else None,
+            "prefill_tps_med": round(statistics.median(tps), 1) if tps else None,
             "runs": runs,
         })
         plog("  %-6s in=%-7d ttft=%6.2fs  prefill=%8.0f t/s" %
-              (label, points[-1]["in_tokens"], points[-1]["ttft_med_s"], points[-1]["prefill_tps_med"]))
+              (label, points[-1]["in_tokens"], points[-1]["ttft_med_s"] or 0, points[-1]["prefill_tps_med"] or 0))
     return {"id": "prefill", "name": "Prefill 阶梯", "points": points}
 
 
@@ -225,14 +228,14 @@ def phase_decode(url, headers, model, out_tok, rep):
         burst = [r["spec_burst"] for r in runs]
         cases.append({
             "lang": lang, "out_tokens": runs[0]["out_tokens"],
-            "decode_tps_med": round(statistics.median(tps), 1),
-            "decode_tps_best": round(max(tps), 1),
+            "decode_tps_med": round(statistics.median(tps), 1) if tps else None,
+            "decode_tps_best": round(max(tps), 1) if tps else None,
             "itl_p50_ms_med": round(statistics.median(itl50), 2) if itl50 else None,
             "spec_burst_med": round(statistics.median(burst), 2),
             "runs": runs,
         })
         plog("  %s  decode=%7.1f t/s  itl_p50=%6.1fms  burst=%.2f tok/chunk" %
-              (lang, cases[-1]["decode_tps_med"], cases[-1]["itl_p50_ms_med"] or 0, cases[-1]["spec_burst_med"]))
+              (lang, cases[-1]["decode_tps_med"] or 0, cases[-1]["itl_p50_ms_med"] or 0, cases[-1]["spec_burst_med"]))
     return {"id": "decode", "name": "单流解码", "cases": cases}
 
 
@@ -312,7 +315,7 @@ def phase_prefill_conc(url, headers, model, ladder, conc, out_tok):
             list(ex.map(worker, range(conc)))
         good = [r for r in results if "error" not in r]
         bad = len(results) - len(good)
-        if good:
+        if good and any(r["ttft_s"] for r in good):
             in_tot = sum(r["in_tokens"] for r in good)
             out_tot = sum(r["out_tokens"] for r in good)
             ttfts = [r["ttft_s"] for r in good if r["ttft_s"]]
@@ -432,9 +435,13 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
               outdir=None, custom=None, conc_ladder=None, matrix_conc=None, lens=None,
               framework=None, fw_version=None):
     """可编程入口: serve.py 与 CLI 共用。返回结果文件路径; 失败抛异常。"""
-    outdir = outdir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
+    outdir = outdir or os.path.join(ROOT, "results")
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
-    cfg = SUITES[suite] if suite != "custom" else json.load(open(custom, encoding="utf-8"))
+    if suite != "custom":
+        cfg = copy.deepcopy(SUITES[suite])  # 深拷贝: 下方覆盖项不得污染常驻进程里的全局套件
+    else:
+        with open(custom, encoding="utf-8") as f:
+            cfg = json.load(f)
     if conc_ladder:
         cfg["conc"] = list(conc_ladder)
     if matrix_conc and cfg.get("prefill_conc"):
@@ -460,16 +467,23 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
     path = os.path.join(outdir, run_id + ".json")
 
     def save():
-        with open(path, "w", encoding="utf-8") as f:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)  # 原子替换: 崩溃不留半截文件
 
     plog("== llm-bench-pro v%s | %s | suite=%s ==" % (BENCH_VERSION, model, suite))
     plog("warmup...")
-    stream_call(url, {"model": model, "messages": [{"role": "user", "content": "回复 OK"}],
-                      "max_tokens": 8, "temperature": 0}, headers, timeout=120)
+    try:
+        stream_call(url, {"model": model, "messages": [{"role": "user", "content": "回复 OK"}],
+                          "max_tokens": 16, "temperature": 0}, headers, timeout=120)
+    except RuntimeError as e:  # 空流不致命(如被截断); 连接类错误(URLError/HTTPError)照常抛出
+        plog("warmup warning: %s" % e)
 
     rec = MetricsRecorder(metrics_url, headers, bool(metrics_url))
+    result["status"] = "running"
     try:
+        save()
         plog("[phase] prefill")
         result["phases"].append(phase_prefill(url, headers, model, cfg["prefill"], 96, cfg["prefill_rep"])); save()
         pc = cfg.get("prefill_conc")
@@ -483,8 +497,14 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
         for ctx in cfg.get("longctx", []):
             plog("[phase] longctx %dK" % (ctx // 1024))
             result["phases"].append(phase_longctx(url, headers, model, ctx, 256)); save()
+        result["status"] = "done"
     except KeyboardInterrupt:
+        result["status"] = "interrupted"
         plog("interrupted - partial results kept")
+    except BaseException as e:
+        result["status"] = "failed"
+        result["error"] = "%s: %s" % (type(e).__name__, str(e)[:300])
+        raise
     finally:
         result["metrics_samples"] = rec.close()
         result["finished_utc"] = datetime.now(timezone.utc).isoformat()
@@ -501,7 +521,7 @@ def main():
     ap.add_argument("--suite", choices=list(SUITES) + ["custom"], default="standard")
     ap.add_argument("--metrics-url", default=None, help="vLLM /metrics 地址 (框架指标抓取)")
     ap.add_argument("--tag", default="", help="运行标签, 如 '1.6.5 vs 1.6.3'")
-    ap.add_argument("--outdir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "results"))
+    ap.add_argument("--outdir", default=os.path.join(ROOT, "results"), help="结果目录 (默认项目根 results/, 与 UI 一致)")
     ap.add_argument("--custom", default=None, help="自定义套件 JSON 文件 (suite=custom 时)")
     ap.add_argument("--conc-ladder", default=None, help="自定义并发阶梯, 逗号分隔, 如 1,2,4,8")
     ap.add_argument("--matrix-conc", type=int, default=None, help="提示词阶梯x并发的并发路数 (默认 4)")

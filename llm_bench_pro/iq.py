@@ -10,21 +10,45 @@ import os
 import re
 import threading
 import time
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-IQ_VERSION = "1.0.0"
+IQ_VERSION = "1.1.0"  # 1.1: 修正 MATH-500 boxed 判分, 1.0 的 math500 分数无效
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
 
 
-def chat(url, payload, headers, timeout=300):
+_NO_TEMPLATE_KWARGS = set()  # 拒绝 chat_template_kwargs 的端点(400 后自动剔除重试)
+
+
+def post_chat(url, payload, headers, timeout):
+    """POST chat/completions; 端点不认 chat_template_kwargs(400) 时剔除该字段重试并记住。"""
+    if url in _NO_TEMPLATE_KWARGS:
+        payload = {k: v for k, v in payload.items() if k != "chat_template_kwargs"}
     body = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **headers})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        d = json.loads(r.read())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        if e.code in (400, 422) and "chat_template_kwargs" in payload:
+            _NO_TEMPLATE_KWARGS.add(url)
+            return post_chat(url, payload, headers, timeout)
+        raise
+
+
+def strip_think(text):
+    """剥离 <think>…</think>; 仅有 </think>(模板已预置开标签)时丢弃其前全部内容。"""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+    i = text.rfind("</think>")
+    return (text[i + len("</think>"):] if i >= 0 else text).strip()
+
+
+def chat(url, payload, headers, timeout=300):
+    d = post_chat(url, payload, headers, timeout)
     msg = d["choices"][0]["message"]
-    return (msg.get("content") or "").strip(), d.get("usage") or {}
+    return strip_think(msg.get("content") or ""), d.get("usage") or {}
 
 
 # ---------------------------------------------------------------- 提示模板
@@ -43,31 +67,68 @@ def prompt_math(item):
 
 
 def prompt_math500(item):
-    tail = chr(10) + chr(10) + "请推理后给出最终答案，并把答案单独放在最后一行，格式：" + chr(92)*2 + "boxed{答案}"
+    tail = "\n\n请推理后给出最终答案，并把答案单独放在最后一行，格式：\\boxed{答案}"
     return item["q"] + tail, 900
 
 
+def last_boxed(resp):
+    """取最后一个 \\boxed{...} 的内容, 支持嵌套花括号; 无则返回 None。"""
+    i = resp.rfind("\\boxed")
+    if i < 0:
+        return None
+    j = resp.find("{", i)
+    if j < 0:
+        return None
+    depth = 0
+    for k in range(j, len(resp)):
+        if resp[k] == "{":
+            depth += 1
+        elif resp[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return resp[j + 1:k]
+    return None
+
+
+def _strip_cmd_arg(s, cmd):
+    """\\text{abc} -> abc (保留参数去掉命令)。"""
+    return re.sub(r"\\" + cmd + r"\{([^{}]*)\}", r"\1", s)
+
+
 def _norm_ans(s):
-    s = str(s).strip().replace("$", "").replace(",", "").replace(" ", "")
-    s = s.replace(chr(92)*2 + "dfrac", "").replace(chr(92)*2 + "frac", "")
-    s = s.replace(chr(92)*2 + "text", "").replace(chr(92)*2 + "left", "").replace(chr(92)*2 + "right", "")
-    if s.endswith(".0"):
-        s = s[:-2]
+    s = str(s).strip()
+    for cmd in ("text", "textbf", "mathrm", "mbox"):
+        s = _strip_cmd_arg(s, cmd)
+    s = re.sub(r"\\[dt]frac", r"\\frac", s)
+    s = re.sub(r"\\frac(\d)(\d)", r"\\frac{\1}{\2}", s)
+    for tok in ("\\left", "\\right", "\\!", "\\,", "\\;", "\\ ", "$", "^\\circ", "^{\\circ}", "\\%", "%"):
+        s = s.replace(tok, "")
+    s = s.replace(" ", "").replace(",", "") if re.fullmatch(r"[\d,\s.\-]+", s) else s.replace(" ", "")
+    s = s.rstrip(".")
+    if re.fullmatch(r"-?\d+\.0+", s):
+        s = s.split(".")[0]
     return s
 
 
+def _to_float(s):
+    m = re.fullmatch(r"(-?)\\frac\{(-?[\d.]+)\}\{(-?[\d.]+)\}", s)
+    if m:
+        v = float(m.group(2)) / float(m.group(3))
+        return -v if m.group(1) else v
+    return float(s)
+
+
 def judge_math500(resp, item):
-    bs = chr(92)
-    m = re.search(bs*2 + "boxed" + bs*2 + "{([^{}]+)" + bs*2 + "}", resp)
-    cand = m.group(1) if m else None
+    cand = last_boxed(resp)
     if cand is None:
         last = [l for l in resp.strip().splitlines() if l.strip()]
         cand = last[-1] if last else ""
+        cand = re.split(r"[:：=]", cand)[-1]  # "答案：3" -> "3"
     a, b = _norm_ans(cand), _norm_ans(item["answer"])
     if a == b:
         return True
     try:
-        return abs(float(a) - float(b)) < 1e-9
+        return abs(_to_float(a) - _to_float(b)) < 1e-9
     except (ValueError, ZeroDivisionError):
         return False
 
@@ -186,11 +247,41 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
     path = os.path.join(outdir, run_id + ".json")
 
     def save():
-        with open(path, "w", encoding="utf-8") as f:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)  # 原子替换: 崩溃不留半截文件
 
     total_all = sum(min(len(s["items"]), limit_per_subject or 10**9) for s in subjects)
     plog("== iq v%s | %s | bank=%s | %d 题 | conc=%d ==" % (IQ_VERSION, model, bank["bank_id"], total_all, conc))
+    result["status"] = "running"
+    save()
+    try:
+        _run_subjects(url, model, headers, subjects, limit_per_subject, conc, thinking, total_all, result, save)
+    except BaseException as e:
+        result["status"] = "interrupted" if isinstance(e, KeyboardInterrupt) else "failed"
+        result["error"] = "%s: %s" % (type(e).__name__, str(e)[:300])
+        result["finished_utc"] = datetime.now(timezone.utc).isoformat()
+        save()
+        raise
+    tot_c = sum(s["correct"] for s in result["subjects"])
+    tot_n = sum(s["n"] for s in result["subjects"])
+    lo, hi = wilson(tot_c, tot_n)
+    result["overall"] = {"correct": tot_c, "n": tot_n,
+                         "acc": round(tot_c / tot_n * 100, 1) if tot_n else 0,
+                         "ci_lo": round(lo * 100, 1), "ci_hi": round(hi * 100, 1),
+                         "in_tokens": sum(s["in_tokens"] for s in result["subjects"]),
+                         "out_tokens": sum(s["out_tokens"] for s in result["subjects"])}
+    result["finished_utc"] = datetime.now(timezone.utc).isoformat()
+    result["status"] = "done"
+    save()
+    plog("总体: %d/%d = %.1f%% (CI %.1f-%.1f) => %s" % (tot_c, tot_n, result["overall"]["acc"],
+                                                        lo * 100, hi * 100, path))
+    return path
+
+
+def _run_subjects(url, model, headers, subjects, limit_per_subject, conc, thinking, total_all, result, save):
+    """逐科目跑题并判分, 每科结束写入 result 并 save()。"""
     done_count = [0]
     lock = threading.Lock()
 
@@ -205,17 +296,23 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
         def worker(idx_item):
             idx, item = idx_item
             prompt, mt = prompter(item)
+            if thinking:
+                mt += 8192  # 思考 token 与正文共享 max_tokens 预算
             try:
                 resp, usage = chat(url, {"model": model, "messages": [{"role": "user", "content": prompt}],
                                           "max_tokens": mt, "temperature": 0,
                                           "chat_template_kwargs": {"enable_thinking": bool(thinking)}}, headers)
                 ok = judge(resp, item)
             except Exception as e:
-                return {"sid": sub["id"], "idx": idx, "ok": False, "err": str(e)[:100]}
+                usage, ok, err = {}, False, str(e)[:100]
+            else:
+                err = None
             with lock:
                 done_count[0] += 1
                 if done_count[0] % 20 == 0 or done_count[0] == total_all:
                     plog("  进度 %d/%d" % (done_count[0], total_all))
+            if err:
+                return {"sid": sub["id"], "idx": idx, "ok": False, "err": err}
             return {"sid": sub["id"], "idx": idx, "ok": ok,
                     "in": usage.get("prompt_tokens", 0), "out": usage.get("completion_tokens", 0)}
 
@@ -237,17 +334,3 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
              (sub["id"], correct, n, result["subjects"][-1]["acc"], lo * 100, hi * 100,
               ("  错误%d" % len(errors)) if errors else ""))
         save()
-
-    tot_c = sum(s["correct"] for s in result["subjects"])
-    tot_n = sum(s["n"] for s in result["subjects"])
-    lo, hi = wilson(tot_c, tot_n)
-    result["overall"] = {"correct": tot_c, "n": tot_n,
-                         "acc": round(tot_c / tot_n * 100, 1) if tot_n else 0,
-                         "ci_lo": round(lo * 100, 1), "ci_hi": round(hi * 100, 1),
-                         "in_tokens": sum(s["in_tokens"] for s in result["subjects"]),
-                         "out_tokens": sum(s["out_tokens"] for s in result["subjects"])}
-    result["finished_utc"] = datetime.now(timezone.utc).isoformat()
-    save()
-    plog("总体: %d/%d = %.1f%% (CI %.1f-%.1f) => %s" % (tot_c, tot_n, result["overall"]["acc"],
-                                                        lo * 100, hi * 100, path))
-    return path

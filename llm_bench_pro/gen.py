@@ -13,7 +13,12 @@ import urllib.request
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
-GEN_VERSION = "1.1.0"
+try:
+    from . import iq  # 包内导入: python -m llm_bench_pro.gen
+except ImportError:
+    import iq  # server.py 以包目录为 sys.path 顶层导入
+
+GEN_VERSION = "1.2.0"  # 1.2: 特征检查去重(闭合只计一次), features 标签与 checks 一一对应
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
 WORKS = os.path.join(ROOT, "works")
 
@@ -125,11 +130,9 @@ GEN_TASKS = [
 
 
 _BASE_FEATURES = [r"<!doctype html|<html", r"<script|<style"]
+_BASE_LABELS = ["<!doctype/<html", "<script/<style", "完整闭合</html>"]  # 前两项正则 + 闭合完整性检查
 def chat(url, payload, headers, timeout=600):
-    body = json.dumps(payload).encode()
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **headers})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        d = json.loads(r.read())
+    d = iq.post_chat(url, payload, headers, timeout)
     ch = d["choices"][0]
     msg = ch["message"]
     reasoning = (msg.get("reasoning_content") or msg.get("reasoning") or "").strip()
@@ -177,10 +180,8 @@ def gen_complete(url, model, prompt, tier_max, headers, thinking=False):
 
 
 def extract_html(resp):
-    m = re.search(r"<think>.*?</think>", resp, re.S)
-    if m:
-        resp = (resp[:m.start()] + resp[m.end():]).strip()
-    m = re.search(r"```(?:html|HTML)?\s*\n(.*?)```", resp, re.S)
+    resp = iq.strip_think(resp)
+    m =re.search(r"```(?:html|HTML)?\s*\n(.*?)```", resp, re.S)
     if m:
         return m.group(1).strip()
     low = resp.lower()
@@ -227,15 +228,21 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
               "started_utc": datetime.now(timezone.utc).isoformat(),
               "works_dir": "works/" + run_id, "items": []}
     path = os.path.join(outdir, run_id + ".json")
-    lock_free = True
 
     def save():
-        with open(path, "w", encoding="utf-8") as f:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)  # 原子替换: 崩溃不留半截文件
 
     plog("== gen v%s | %s | %d 题 | conc=%d ==" % (GEN_VERSION, model, len(tasks), conc))
 
     done_ct = [0]
+
+    def failed(task, err):
+        return {"id": task["id"], "name": task["name"], "tags": task["tags"], "error": err,
+                "checks": [], "pass": 0, "total": len(_BASE_LABELS) + len(task["features"]),
+                "features": [], "stars": None, "lines": 0, "chars": 0}
 
     def worker(task):
         plog("▶ 开始: %s (%s)" % (task["name"], "/".join(task["tags"])))
@@ -246,25 +253,24 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
             if len(resp.strip()) < 200:
                 done_ct[0] += 1
                 plog("  ✗ [%s] 思考耗尽未产出正文(思考%d字) · 进度 %d/%d" % (task["name"], reason_len, done_ct[0], len(tasks)))
-                return {"id": task["id"], "name": task["name"], "error": "思考耗尽未产出正文(思考%d字)" % reason_len,
-                        "pass": 0, "total": 0, "features": [], "stars": None, "lines": 0, "chars": 0}
+                return failed(task, "思考耗尽未产出正文(思考%d字)" % reason_len)
         except Exception as e:
             done_ct[0] += 1
             plog("  ✗ [%s] 失败: %s · 进度 %d/%d" % (task["name"], str(e)[:60], done_ct[0], len(tasks)))
-            return {"id": task["id"], "name": task["name"], "error": str(e)[:120],
-                    "pass": 0, "features": [], "stars": None}
+            return failed(task, str(e)[:120])
         html = extract_html(resp)
-        complete = "</html>" in html.lower() and html.lower().count("<script") <= html.lower().count("</script>")
-        feats = _BASE_FEATURES + [r"</html>|完整闭合"] + task["features"]
-        checks = check_features(html, feats)
-        checks.insert(2, complete)
+        low = html.lower()
+        complete = "</html>" in low and low.count("<script") <= low.count("</script>")
+        checks = check_features(html, _BASE_FEATURES)
+        checks.append(complete)
+        checks += check_features(html, task["features"])
         fname = task["id"] + ".html"
         with open(os.path.join(work_dir, fname), "w", encoding="utf-8") as f:
             f.write(html)
         item = {"id": task["id"], "name": task["name"], "tags": task["tags"],
                 "file": "works/%s/%s" % (run_id, fname), "chars": len(html),
                 "lines": html.count("\n") + 1,
-                "features": ["<!doctype/<html", "<script/<style", "完整闭合</html>"] + task["tags"],
+                "features": _BASE_LABELS + task["features"],  # 与 checks 一一对应
                 "continuations": cont_n, "reason_chars": reason_len,
                 "checks": checks, "pass": sum(checks), "total": len(checks),
                 "stars": None, "in_tokens": in_tok, "out_tokens": out_tok}
@@ -272,11 +278,20 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
         plog("  ✓ [%s] 特征 %d/%d · %d 行 · 进度 %d/%d" % (task["name"], item["pass"], item["total"], item["lines"], done_ct[0], len(tasks)))
         return item
 
-    with ThreadPoolExecutor(max_workers=conc) as ex:
-        for item in ex.map(worker, tasks):
-            result["items"].append(item)
-            save()
-    result["finished_utc"] = datetime.now(timezone.utc).isoformat()
+    result["status"] = "running"
     save()
+    try:
+        with ThreadPoolExecutor(max_workers=conc) as ex:
+            for item in ex.map(worker, tasks):
+                result["items"].append(item)
+                save()
+        result["status"] = "done"
+    except BaseException as e:
+        result["status"] = "interrupted" if isinstance(e, KeyboardInterrupt) else "failed"
+        result["error"] = "%s: %s" % (type(e).__name__, str(e)[:300])
+        raise
+    finally:
+        result["finished_utc"] = datetime.now(timezone.utc).isoformat()
+        save()
     plog("完成 => %s" % path)
     return path

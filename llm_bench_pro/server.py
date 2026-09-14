@@ -3,10 +3,12 @@
 """llm-bench-pro 服务: UI 页面 + 模型探测 + 在线起测 + 结果接口 (纯标准库)。"""
 import json
 import os
+import re
 import threading
 import time
+import urllib.parse
 import urllib.request
-from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import os as _os
 import sys as _sys
@@ -21,13 +23,28 @@ import gen
 import iq
 
 RESULTS = os.path.join(ROOT, "results")
+WORKS = os.path.join(ROOT, "works")
 UI = os.path.join(ROOT, "web", "index.html")
+_RUN_ID_RE = re.compile(r"^gen_[A-Za-z0-9_.-]+$")
+
+
+def safe_join(base, rel):
+    """把 rel 解析到 base 之下; 越界(../、绝对路径、盘符)返回 None。"""
+    base = os.path.realpath(base)
+    full = os.path.realpath(os.path.join(base, rel))
+    try:
+        if os.path.commonpath([base, full]) != base:
+            return None
+    except ValueError:  # Windows 跨盘符
+        return None
+    return full
 
 _state_lock = threading.Lock()
 _state = {"running": False, "log": [], "error": None, "run_id": None, "started_at": None}
 
 _gen_lock = threading.Lock()
 _gen_state = {"running": False, "log": [], "error": None, "run_id": None, "started_at": None}
+_rate_lock = threading.Lock()
 
 
 def gen_status_line(msg):
@@ -111,11 +128,12 @@ def run_benchmark(url, model, api_key, suite, tag, metrics_url, conc_ladder=None
             _state["running"] = False
 
 
-class Handler(SimpleHTTPRequestHandler):
+class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
+        path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
+        if path in ("/", "/index.html"):
             self._serve_file(UI, "text/html; charset=utf-8")
-        elif self.path == "/api/results":
+        elif path == "/api/results":
             runs = []
             if os.path.isdir(RESULTS):
                 for fn in sorted(os.listdir(RESULTS)):
@@ -124,25 +142,25 @@ class Handler(SimpleHTTPRequestHandler):
                     try:
                         with open(os.path.join(RESULTS, fn), encoding="utf-8") as f:
                             obj = json.load(f)
-                        if obj.get("kind") != "iq":
+                        if obj.get("kind") not in ("iq", "gen"):  # 性能结果无 kind 字段
                             runs.append(obj)
                     except Exception:
                         pass
             runs.sort(key=lambda r: r.get("started_utc", ""), reverse=True)
             self._body(json.dumps(runs, ensure_ascii=False).encode(), "application/json")
-        elif self.path == "/api/status":
+        elif path == "/api/status":
             with _state_lock:
                 payload = dict(_state)
             self._body(json.dumps(payload, ensure_ascii=False).encode(), "application/json")
-        elif self.path == "/api/iq-status":
+        elif path == "/api/iq-status":
             with _iq_lock:
                 payload = dict(_iq_state)
             self._body(json.dumps(payload, ensure_ascii=False).encode(), "application/json")
-        elif self.path == "/api/gen-status":
+        elif path == "/api/gen-status":
             with _gen_lock:
                 payload = dict(_gen_state)
             self._body(json.dumps(payload, ensure_ascii=False).encode(), "application/json")
-        elif self.path == "/api/gen-results":
+        elif path == "/api/gen-results":
             runs = []
             if os.path.isdir(RESULTS):
                 for fn in sorted(os.listdir(RESULTS)):
@@ -155,17 +173,15 @@ class Handler(SimpleHTTPRequestHandler):
                         pass
             runs.sort(key=lambda r: r.get("started_utc", ""), reverse=True)
             self._body(json.dumps(runs, ensure_ascii=False).encode(), "application/json")
-        elif self.path.startswith("/works/"):
-            rel = os.path.normpath(self.path[len("/works/"):]).replace("\\", "/")
-            full = os.path.join(ROOT, "works", rel)
-            if full.startswith(os.path.join(ROOT, "works")) and os.path.isfile(full):
-                with open(full, "rb") as f:
-                    self._body(f.read(), "text/html; charset=utf-8")
+        elif path.startswith("/works/"):
+            full = safe_join(WORKS, path[len("/works/"):])
+            if full and full.lower().endswith(".html") and os.path.isfile(full):
+                self._serve_file(full, "text/html; charset=utf-8")
             else:
                 self._json({"error": "not found"}, 404)
-        elif self.path == "/api/banks":
+        elif path == "/api/banks":
             self._body(json.dumps(bankman.list_banks(), ensure_ascii=False).encode(), "application/json")
-        elif self.path == "/api/iq-results":
+        elif path == "/api/iq-results":
             runs = []
             if os.path.isdir(RESULTS):
                 for fn in sorted(os.listdir(RESULTS)):
@@ -179,7 +195,7 @@ class Handler(SimpleHTTPRequestHandler):
             runs.sort(key=lambda r: r.get("started_utc", ""), reverse=True)
             self._body(json.dumps(runs, ensure_ascii=False).encode(), "application/json")
         else:
-            super().do_GET()
+            self._json({"error": "not found"}, 404)
 
     def do_POST(self):
         try:
@@ -187,18 +203,21 @@ class Handler(SimpleHTTPRequestHandler):
             body = json.loads(self.rfile.read(length) or b"{}")
         except Exception:
             return self._json({"ok": False, "error": "bad json"}, 400)
+        if not isinstance(body, dict):
+            return self._json({"ok": False, "error": "bad json"}, 400)
 
-        if self.path == "/api/probe":
+        path = urllib.parse.urlsplit(self.path).path
+        if path == "/api/probe":
             return self.api_probe(body)
-        if self.path == "/api/start":
+        if path == "/api/start":
             return self.api_start(body)
-        if self.path == "/api/bank-update":
+        if path == "/api/bank-update":
             return self.api_bank_update(body)
-        if self.path == "/api/iq-start":
+        if path == "/api/iq-start":
             return self.api_iq_start(body)
-        if self.path == "/api/gen-start":
+        if path == "/api/gen-start":
             return self.api_gen_start(body)
-        if self.path == "/api/gen-rate":
+        if path == "/api/gen-rate":
             return self.api_gen_rate(body)
         self._json({"ok": False, "error": "not found"}, 404)
 
@@ -290,9 +309,6 @@ class Handler(SimpleHTTPRequestHandler):
                 _iq_state["bank_building"] = False
 
     def api_iq_start(self, body):
-        with _iq_lock:
-            if _iq_state["running"]:
-                return self._json({"ok": False, "error": "已有智力测试在运行"}, 409)
         base = bench.normalize_base(body.get("base", ""))
         url = base + "/v1/chat/completions"
         model = (body.get("model") or "").strip()
@@ -315,6 +331,8 @@ class Handler(SimpleHTTPRequestHandler):
         except FileNotFoundError as e:
             return self._json({"ok": False, "error": str(e)}, 400)
         with _iq_lock:
+            if _iq_state["running"]:
+                return self._json({"ok": False, "error": "已有智力测试在运行"}, 409)
             _iq_state.update({"running": True, "log": [], "error": None, "run_id": None,
                               "started_at": time.strftime("%Y-%m-%d %H:%M:%S")})
         th = threading.Thread(target=run_iq_benchmark,
@@ -328,9 +346,6 @@ class Handler(SimpleHTTPRequestHandler):
         return self._json({"ok": True, "url": url, "bank_id": bank_id, "conc": conc})
 
     def api_gen_start(self, body):
-        with _gen_lock:
-            if _gen_state["running"]:
-                return self._json({"ok": False, "error": "已有生成测试在运行"}, 409)
         base = bench.normalize_base(body.get("base", ""))
         url = base + "/v1/chat/completions"
         model = (body.get("model") or "").strip()
@@ -342,6 +357,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json({"ok": False, "error": "并发应为整数"}, 400)
         task_ids = body.get("tasks") or None
         with _gen_lock:
+            if _gen_state["running"]:
+                return self._json({"ok": False, "error": "已有生成测试在运行"}, 409)
             _gen_state.update({"running": True, "log": [], "error": None, "run_id": None,
                                "started_at": time.strftime("%Y-%m-%d %H:%M:%S")})
         th = threading.Thread(target=run_gen_benchmark,
@@ -358,17 +375,24 @@ class Handler(SimpleHTTPRequestHandler):
     def api_gen_rate(self, body):
         run_id, item_id = body.get("run_id") or "", body.get("item_id")
         stars = body.get("stars")
+        if not isinstance(run_id, str) or not _RUN_ID_RE.match(run_id) or ".." in run_id:
+            return self._json({"ok": False, "error": "非法 run_id"}, 400)
+        if stars is not None and not (isinstance(stars, int) and 0 <= stars <= 5):
+            return self._json({"ok": False, "error": "stars 应为 0-5 整数或 null"}, 400)
         path = os.path.join(RESULTS, run_id + ".json")
         if not os.path.isfile(path):
             return self._json({"ok": False, "error": "run 不存在"}, 404)
         try:
-            with open(path, encoding="utf-8") as f:
-                r = json.load(f)
-            for it in r.get("items", []):
-                if it.get("id") == item_id:
-                    it["stars"] = stars
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(r, f, ensure_ascii=False, indent=1)
+            with _rate_lock:  # 连续打星的并发读改写互斥; 运行中的 run 会被 gen 增量保存覆盖, 故拒绝
+                with open(path, encoding="utf-8") as f:
+                    r = json.load(f)
+                if "finished_utc" not in r and _gen_state["running"]:
+                    return self._json({"ok": False, "error": "该生成测试仍在运行，完成后再打星"}, 409)
+                for it in r.get("items", []):
+                    if it.get("id") == item_id:
+                        it["stars"] = stars
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(r, f, ensure_ascii=False, indent=1)
             return self._json({"ok": True})
         except Exception as e:
             return self._json({"ok": False, "error": str(e)[:200]}, 500)
