@@ -872,7 +872,8 @@ async function genStart(){
   const d=await r.json();
   if(!d.ok){document.getElementById("genInfo").innerHTML=`<span style="color:var(--err)">${d.error}</span>`;return}
   document.getElementById("genBtnStart").disabled=true;
-  const ro=document.getElementById("genOut");ro.style.display="block";ro.textContent="已启动（23 题生成，地狱级单题可能 2-4 分钟，全程约 15-30 分钟）…\n";
+  const ro=document.getElementById("genOut");ro.style.display="block";ro.textContent=`已启动（${tasks.length} 题生成${tasks.length>8?"，单题可能 1-4 分钟":""}）…
+`;
   genPoll=setInterval(async()=>{
     try{
       const s=await(await fetch("/api/gen-status")).json();
