@@ -131,7 +131,9 @@ def chat(url, payload, headers, timeout=600):
     with urllib.request.urlopen(req, timeout=timeout) as r:
         d = json.loads(r.read())
     ch = d["choices"][0]
-    return (ch["message"].get("content") or "").strip(), d.get("usage") or {}, ch.get("finish_reason") or ""
+    msg = ch["message"]
+    reasoning = (msg.get("reasoning_content") or msg.get("reasoning") or "").strip()
+    return (msg.get("content") or "").strip(), d.get("usage") or {}, ch.get("finish_reason") or "", reasoning
 
 
 def _tail_overlap_dedup(prev, nxt, limit=240):
@@ -147,34 +149,37 @@ def gen_complete(url, model, prompt, tier_max, headers, thinking=False):
     msgs = [{"role": "user", "content": prompt}]
     total_in = total_out = 0
     parts, cont = [], 0
+    total_reason = 0
     while True:
-        resp, usage, finish = chat(url, {"model": model, "messages": msgs,
-                                         "max_tokens": tier_max, "temperature": 0.3,
-                                         "chat_template_kwargs": {"enable_thinking": bool(thinking)}}, headers)
+        resp, usage, finish, reasoning = chat(url, {"model": model, "messages": msgs,
+                                                    "max_tokens": tier_max, "temperature": 0.3,
+                                                    "chat_template_kwargs": {"enable_thinking": bool(thinking and cont == 0)}}, headers)
         total_in += usage.get("prompt_tokens", 0)
         total_out += usage.get("completion_tokens", 0)
+        total_reason += len(reasoning)
         parts.append(resp)
         if finish != "length":
             break
         cont += 1
-        if cont >= 3:
+        if cont >= 4:
             plog("    ⚠ 续写 %d 轮仍未闭合" % cont)
             break
-        plog("    ↻ 截断, 自动续写第 %d 轮" % cont)
+        plog("    ↻ 截断, 续写第 %d 轮(关闭思考直出代码)" % cont)
+        tail_ctx = parts[-1][-3000:] if parts[-1].strip() else "(首轮思考耗尽未产出正文, 请直接输出完整 HTML)"
         msgs = [{"role": "user", "content": prompt},
-                {"role": "assistant", "content": parts[-1][-3000:]},
-                {"role": "user", "content": "继续输出剩余的 HTML 直到 </html> 结束。从上次中断处直接继续，不要重复已输出的内容，不要解释。"}]
-        # 预拼接给下轮去重
-        parts.append(None)
-        parts = [p for p in parts if p is not None]
+                {"role": "assistant", "content": tail_ctx},
+                {"role": "user", "content": "继续输出剩余的 HTML 直到 </html> 结束。不要再思考、不要再解释，直接输出代码本身，从中断处继续，不要重复。"}]
     # 拼接(带重叠去重)
     full = parts[0]
     for p in parts[1:]:
         full += _tail_overlap_dedup(full, p)
-    return full, total_in, total_out, cont
+    return full, total_in, total_out, cont, total_reason
 
 
 def extract_html(resp):
+    m = re.search(r"<think>.*?</think>", resp, re.S)
+    if m:
+        resp = (resp[:m.start()] + resp[m.end():]).strip()
     m = re.search(r"```(?:html|HTML)?\s*\n(.*?)```", resp, re.S)
     if m:
         return m.group(1).strip()
@@ -235,8 +240,14 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
     def worker(task):
         plog("▶ 开始: %s (%s)" % (task["name"], "/".join(task["tags"])))
         try:
-            tier_max = 16000 if "地狱" in task["tags"] else (12000 if "困难" in task["tags"] else 8000)
-            resp, in_tok, out_tok, cont_n = gen_complete(url, model, task["prompt"], tier_max, headers, thinking)
+            base_max = 16000 if "地狱" in task["tags"] else (12000 if "困难" in task["tags"] else 8000)
+            tier_max = int(base_max * 2.5) if thinking else base_max  # 思考 token 与正文共享输出预算
+            resp, in_tok, out_tok, cont_n, reason_len = gen_complete(url, model, task["prompt"], tier_max, headers, thinking)
+            if len(resp.strip()) < 200:
+                done_ct[0] += 1
+                plog("  ✗ [%s] 思考耗尽未产出正文(思考%d字) · 进度 %d/%d" % (task["name"], reason_len, done_ct[0], len(tasks)))
+                return {"id": task["id"], "name": task["name"], "error": "思考耗尽未产出正文(思考%d字)" % reason_len,
+                        "pass": 0, "total": 0, "features": [], "stars": None, "lines": 0, "chars": 0}
         except Exception as e:
             done_ct[0] += 1
             plog("  ✗ [%s] 失败: %s · 进度 %d/%d" % (task["name"], str(e)[:60], done_ct[0], len(tasks)))
@@ -254,7 +265,7 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
                 "file": "works/%s/%s" % (run_id, fname), "chars": len(html),
                 "lines": html.count("\n") + 1,
                 "features": ["<!doctype/<html", "<script/<style", "完整闭合</html>"] + task["tags"],
-                "continuations": cont_n,
+                "continuations": cont_n, "reason_chars": reason_len,
                 "checks": checks, "pass": sum(checks), "total": len(checks),
                 "stars": None, "in_tokens": in_tok, "out_tokens": out_tok}
         done_ct[0] += 1
