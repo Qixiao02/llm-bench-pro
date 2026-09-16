@@ -12,7 +12,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
 try:
@@ -23,22 +23,31 @@ except ImportError:
 # 1.1: 修正 MATH-500 boxed 判分(1.0 的 math500 分数无效)
 # 1.2: 思考模式输出预算 32K(超上下文自动减半)、截断(finish_reason=length)单独标记、选择题答案提取加固、
 #      记录模型答案与错题尾部; 1.x 思考模式选择题仅 8+8192 token, 长思考会被截断计错
-IQ_VERSION = "1.2.0"
+# 1.3: 数学题基础输出预算提高(GSM8K 2048 / MATH-500 4096); 采样参数可配置(思考默认官方推荐 0.6/0.95/20);
+#      逐题增量保存、可取消、可续跑; 总体增加科目宏平均; 运行间配对 McNemar 显著性
+IQ_VERSION = "1.3.0"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
 THINK_MAX_TOKENS = 32768   # 思考模式 max_tokens 上限(思考与正文共享); 端点上下文不足时自动减半
 THINK_TIMEOUT = 1800
 PLAIN_TIMEOUT = 300
 
-_NO_TEMPLATE_KWARGS = set()  # 明确拒绝 chat_template_kwargs 的端点
-_KWARGS_REJECT = re.compile(r"chat_template_kwargs|extra_forbidden|extra inputs|unrecognized request argument|unexpected keyword", re.I)
+_NO_TEMPLATE_KWARGS = set()  # 兼容旧引用: 明确拒绝 chat_template_kwargs 的端点
+_OPTIONAL_KEYS = ("chat_template_kwargs", "top_k", "seed", "ignore_eos")  # 非 OpenAI 标准字段, 端点不认时剔除
+_DROPPED = {}  # url -> 已确认不支持的可选字段集合
+_GENERIC_REJECT = re.compile(r"extra_forbidden|extra inputs are not permitted|unrecognized request argument|unexpected keyword", re.I)
 _CONTEXT_REJECT = re.compile(r"max_tokens|max_completion_tokens|context length|context_length|maximum context|too long|exceed", re.I)
 
 
+def dropped_params(url):
+    return sorted(_DROPPED.get(url, ()))
+
+
 def post_chat(url, payload, headers, timeout):
-    """POST chat/completions。仅当错误信息明确指向 chat_template_kwargs 时才剔除该字段重试并记住;
-    其他 4xx(如超上下文)原样抛出, 错误正文挂在异常的 detail 属性上。"""
-    if url in _NO_TEMPLATE_KWARGS:
-        payload = {k: v for k, v in payload.items() if k != "chat_template_kwargs"}
+    """POST chat/completions。可选字段(chat_template_kwargs/top_k/seed/ignore_eos)仅在错误信息明确指向该字段
+    (或明确为“不允许额外字段”)时剔除重试并按端点记住; 其他 4xx(如超上下文)原样抛出, 错误正文挂在 detail 属性上。"""
+    drop = _DROPPED.get(url, set())
+    if drop:
+        payload = {k: v for k, v in payload.items() if k not in drop}
     body = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **headers})
     try:
@@ -49,9 +58,16 @@ def post_chat(url, payload, headers, timeout):
             e.detail = e.read().decode("utf-8", "replace")[:500]
         except Exception:
             e.detail = ""
-        if e.code in (400, 422) and "chat_template_kwargs" in payload and _KWARGS_REJECT.search(e.detail):
-            _NO_TEMPLATE_KWARGS.add(url)
-            return post_chat(url, payload, headers, timeout)
+        if e.code in (400, 422):
+            present = [k for k in _OPTIONAL_KEYS if k in payload]
+            named = [k for k in present if k in e.detail]
+            if not named and _GENERIC_REJECT.search(e.detail):
+                named = present
+            if named:
+                _DROPPED.setdefault(url, set()).update(named)
+                if "chat_template_kwargs" in named:
+                    _NO_TEMPLATE_KWARGS.add(url)
+                return post_chat(url, payload, headers, timeout)
         raise
 
 
@@ -68,13 +84,34 @@ def strip_think(text):
     return text.strip()
 
 
-def ask(url, model, prompt, max_tokens, thinking, headers):
+def resolve_sampling(thinking, sampling=None):
+    """采样参数(幂等)。official/None: 思考模式 temperature 0.6 / top_p 0.95 / top_k 20(Qwen3 官方推荐, 思考时贪心解码易陷入重复),
+    非思考模式贪心; greedy: 一律贪心; dict: 自定义 temperature/top_p/top_k。temperature>0 时固定 seed 便于复现。"""
+    if isinstance(sampling, dict):
+        out = {}
+        for k in ("temperature", "top_p", "top_k"):
+            v = sampling.get(k)
+            if v not in (None, ""):
+                out[k] = int(v) if k == "top_k" else float(v)
+        out.setdefault("temperature", 0.0)
+    elif sampling == "greedy":
+        out = {"temperature": 0.0}
+    else:
+        out = {"temperature": 0.6, "top_p": 0.95, "top_k": 20} if thinking else {"temperature": 0.0}
+    if out["temperature"] > 0:
+        out["seed"] = 42
+    return out
+
+
+def ask(url, model, prompt, max_tokens, thinking, headers, sampling=None):
     """单题请求。返回 {content, finish, usage, reasoning_chars, max_tokens}。
     思考模式把 max_tokens 提到 THINK_MAX_TOKENS, 若端点因上下文不足拒绝则逐次减半直至题目基础预算。"""
     mt = max(max_tokens, THINK_MAX_TOKENS) if thinking else max_tokens
+    params = resolve_sampling(thinking, sampling)
     while True:
         payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": mt,
-                   "temperature": 0, "chat_template_kwargs": {"enable_thinking": bool(thinking)}}
+                   "chat_template_kwargs": {"enable_thinking": bool(thinking)}}
+        payload.update(params)
         try:
             d = post_chat(url, payload, headers, THINK_TIMEOUT if thinking else PLAIN_TIMEOUT)
         except urllib.error.HTTPError as e:
@@ -108,12 +145,12 @@ def prompt_mcq(item):
 
 
 def prompt_math(item):
-    return (item["q"] + "\n\n请一步步推理，最后单独一行以 \"#### <最终数字答案>\" 的格式给出答案。"), 1280
+    return (item["q"] + "\n\n请一步步推理，最后单独一行以 \"#### <最终数字答案>\" 的格式给出答案。"), 2048
 
 
 def prompt_math500(item):
     tail = "\n\n请推理后给出最终答案，并把答案单独放在最后一行，格式：\\boxed{答案}"
-    return item["q"] + tail, 900
+    return item["q"] + tail, 4096
 
 
 def last_boxed(resp):
@@ -320,6 +357,44 @@ def wilson(correct, n, z=1.96):
     return (max(0.0, (c - m) / d), min(1.0, (c + m) / d))
 
 
+def mcnemar(b, c):
+    """配对 McNemar 检验双侧 p 值。b = A 对 B 错, c = A 错 B 对。n≤400 用精确二项, 否则连续性校正卡方。"""
+    n = b + c
+    if n == 0:
+        return 1.0
+    if n <= 400:
+        k = min(b, c)
+        return min(1.0, 2 * sum(math.comb(n, i) for i in range(k + 1)) / 2 ** n)
+    chi2 = (abs(b - c) - 1) ** 2 / n
+    return min(1.0, math.erfc(math.sqrt(chi2 / 2)))
+
+
+def compare_runs(a, b):
+    """两次运行按 (科目, 题号) 配对比较, 只统计双方都有结果的题。返回总体与分科的一致/分歧计数、p 值与准确率差。"""
+    def index(doc):
+        return {(it["sid"], it["idx"]): bool(it.get("ok")) for it in doc.get("items", [])}
+    ia, ib = index(a), index(b)
+    keys = sorted(set(ia) & set(ib), key=lambda k: (str(k[0]), k[1]))
+
+    def stats(ks):
+        n = len(ks)
+        both = sum(1 for k in ks if ia[k] and ib[k])
+        a_only = sum(1 for k in ks if ia[k] and not ib[k])
+        b_only = sum(1 for k in ks if not ia[k] and ib[k])
+        p = mcnemar(a_only, b_only)
+        return {"n": n, "a_only": a_only, "b_only": b_only,
+                "acc_a": round(100.0 * (both + a_only) / n, 1) if n else None,
+                "acc_b": round(100.0 * (both + b_only) / n, 1) if n else None,
+                "diff": round(100.0 * (b_only - a_only) / n, 1) if n else None,
+                "p": round(p, 4), "significant": bool(n) and p < 0.05}
+    subjects = {sid: stats([k for k in keys if k[0] == sid]) for sid in sorted({k[0] for k in keys})}
+    return {"same_bank": a.get("bank_id") == b.get("bank_id"), "overall": stats(keys), "subjects": subjects}
+
+
+class Cancelled(Exception):
+    """用户取消运行。"""
+
+
 _IQ_PROGRESS = None
 
 
@@ -333,78 +408,109 @@ def plog(msg):
 
 
 def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
-           framework=None, fw_version=None, subject_ids=None, limit_per_subject=None, thinking=False, sink=None):
-    """跑完整智力测试。sink 默认写 outdir/<run_id>.json; 返回落地位置。"""
+           framework=None, fw_version=None, subject_ids=None, limit_per_subject=None, thinking=False, sink=None,
+           sampling=None, cancel=None, resume=None):
+    """跑能力评测。逐题增量保存; cancel(threading.Event)置位后停止派发新题并以 cancelled 状态收尾;
+    resume 传入同版本未完成运行的文档时, 跳过已有结果的题目继续。sink 默认写 outdir/<run_id>.json; 返回落地位置。"""
     outdir = outdir or os.path.join(ROOT, "results")
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
+    if resume:
+        if resume.get("iq_version") != IQ_VERSION:
+            raise ValueError("该运行由评测程序 %s 生成，当前为 %s，判分口径不同，不能续跑，请重新运行"
+                             % (resume.get("iq_version"), IQ_VERSION))
+        result = resume
+        params = result.get("params") or {}
+        subject_ids, limit_per_subject = params.get("subject_ids"), params.get("limit_per_subject")
+        thinking, conc = bool(result.get("thinking")), result.get("conc") or conc
+        sampling = result.get("sampling")
+        result["resumed_utc"] = datetime.now(timezone.utc).isoformat()
+        for k in ("error", "finished_utc", "overall"):
+            result.pop(k, None)
+    else:
+        run_id = "iq_%s_%s" % (datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"), re.sub(r"[^A-Za-z0-9.-]", "_", model))
+        sampling = resolve_sampling(thinking, sampling)
+        result = {"kind": "iq", "iq_version": IQ_VERSION, "run_id": run_id, "tag": tag,
+                  "url": url, "model": model, "conc": conc,
+                  "bank_id": bank["bank_id"], "bank_manifest": bank.get("manifest"),
+                  "framework": {"name": framework or "", "version": fw_version or ""},
+                  "thinking": bool(thinking), "sampling": sampling,
+                  "params": {"subject_ids": subject_ids or None, "limit_per_subject": limit_per_subject or None},
+                  "max_tokens_policy": ("思考模式: 上限 %d(超上下文自动减半)" % THINK_MAX_TOKENS) if thinking else "非思考: 按题型基础预算",
+                  "started_utc": datetime.now(timezone.utc).isoformat(),
+                  "subjects": [], "items": []}
     subjects = bank["subjects"]
     if subject_ids:
         subjects = [s for s in subjects if s["id"] in subject_ids]
-
-    run_id = "iq_%s_%s" % (datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"),
-                           re.sub(r"[^A-Za-z0-9.-]", "_", model))
-    result = {"kind": "iq", "iq_version": IQ_VERSION, "run_id": run_id, "tag": tag,
-              "url": url, "model": model, "conc": conc,
-              "bank_id": bank["bank_id"], "bank_manifest": bank.get("manifest"),
-              "framework": {"name": framework or "", "version": fw_version or ""},
-              "thinking": bool(thinking),
-              "started_utc": datetime.now(timezone.utc).isoformat(),
-              "subjects": [], "items": []}
     sink = sink or sinks.JsonFileSink(outdir)
 
     def save():
+        dp = dropped_params(url)
+        if dp:
+            result["ignored_params"] = dp
         sink.save(result)
 
     total_all = sum(min(len(s["items"]), limit_per_subject or 10**9) for s in subjects)
-    result["max_tokens_policy"] = ("思考模式: 上限 %d(超上下文自动减半)" % THINK_MAX_TOKENS) if thinking else "非思考: 按题型基础预算"
-    plog("== iq v%s | %s | bank=%s | %d 题 | conc=%d | %s ==" % (IQ_VERSION, model, bank["bank_id"], total_all, conc,
-                                                            "思考模式(max_tokens≤%d)" % THINK_MAX_TOKENS if thinking else "非思考"))
+    plog("== iq v%s | %s | bank=%s | %d 题 | conc=%d | %s | 采样 %s%s ==" % (
+        IQ_VERSION, result["model"], bank["bank_id"], total_all, conc,
+        "思考模式(max_tokens≤%d)" % THINK_MAX_TOKENS if thinking else "非思考",
+        json.dumps(sampling, ensure_ascii=False), " | 续跑, 已有 %d 题" % len(result["items"]) if resume else ""))
     result["status"] = "running"
     save()
     try:
-        _run_subjects(url, model, headers, subjects, limit_per_subject, conc, thinking, total_all, result, save)
+        _run_subjects(url, result["model"], headers, subjects, limit_per_subject, conc, thinking, sampling,
+                      total_all, result, save, cancel)
     except BaseException as e:
-        result["status"] = "interrupted" if isinstance(e, KeyboardInterrupt) else "failed"
-        result["error"] = "%s: %s" % (type(e).__name__, str(e)[:300])
+        cancelled = isinstance(e, Cancelled)
+        result["status"] = "cancelled" if cancelled else ("interrupted" if isinstance(e, KeyboardInterrupt) else "failed")
+        result["error"] = "用户取消" if cancelled else "%s: %s" % (type(e).__name__, str(e)[:300])
         result["finished_utc"] = datetime.now(timezone.utc).isoformat()
         save()
+        if cancelled:
+            plog("已取消: 已完成 %d 题, 可在页面上续跑" % len(result["items"]))
+            return sink.location
         raise
-    tot_c = sum(s["correct"] for s in result["subjects"])
-    tot_n = sum(s["n"] for s in result["subjects"])
+    subs = result["subjects"]
+    tot_c = sum(s["correct"] for s in subs)
+    tot_n = sum(s["n"] for s in subs)
     lo, hi = wilson(tot_c, tot_n)
     result["overall"] = {"correct": tot_c, "n": tot_n,
                          "acc": round(tot_c / tot_n * 100, 1) if tot_n else 0,
+                         "macro_acc": round(sum(s["acc"] for s in subs) / len(subs), 1) if subs else 0,
                          "ci_lo": round(lo * 100, 1), "ci_hi": round(hi * 100, 1),
-                         "in_tokens": sum(s["in_tokens"] for s in result["subjects"]),
-                         "out_tokens": sum(s["out_tokens"] for s in result["subjects"]),
-                         "truncated": sum(s.get("truncated", 0) for s in result["subjects"]),
-                         "errors": sum(s.get("errors", 0) for s in result["subjects"])}
+                         "in_tokens": sum(s["in_tokens"] for s in subs),
+                         "out_tokens": sum(s["out_tokens"] for s in subs),
+                         "truncated": sum(s.get("truncated", 0) for s in subs),
+                         "errors": sum(s.get("errors", 0) for s in subs)}
     result["finished_utc"] = datetime.now(timezone.utc).isoformat()
     result["status"] = "done"
     save()
-    plog("总体: %d/%d = %.1f%% (CI %.1f-%.1f) => %s" % (tot_c, tot_n, result["overall"]["acc"],
-                                                        lo * 100, hi * 100, sink.location))
+    plog("总体: %d/%d = %.1f%% (CI %.1f-%.1f, 科目宏平均 %.1f%%) => %s" % (
+        tot_c, tot_n, result["overall"]["acc"], lo * 100, hi * 100, result["overall"]["macro_acc"], sink.location))
     return sink.location
 
 
-def _run_subjects(url, model, headers, subjects, limit_per_subject, conc, thinking, total_all, result, save):
-    """逐科目跑题并判分, 每科结束写入 result 并 save()。"""
-    done_count = [0]
-    lock = threading.Lock()
+def _run_subjects(url, model, headers, subjects, limit_per_subject, conc, thinking, sampling, total_all, result, save, cancel):
+    """逐科目跑题: 已有结果的题跳过(续跑); 完成的题实时追加到 result['items'], 每 20 题保存一次;
+    科目完成后写入汇总。cancel 置位时撤销未开始的题并抛出 Cancelled(进行中的请求不再等待)。"""
+    done = {(r["sid"], r["idx"]) for r in result["items"]}
+    finished_subjects = {s["id"] for s in result["subjects"]}
+    counter = [len(result["items"])]
 
     for sub in subjects:
+        if sub["id"] in finished_subjects:
+            continue
         items = sub["items"][:limit_per_subject] if limit_per_subject else sub["items"]
         stype = sub["type"]
-        judge = JUDGES[stype]
-        extract = EXTRACTORS[stype]
-        prompter = PROMPTS[stype]
+        pending = [(idx, item) for idx, item in enumerate(items) if (sub["id"], idx) not in done]
 
-        def worker(idx_item):
+        def worker(idx_item, sid=sub["id"], judge=JUDGES[stype], extract=EXTRACTORS[stype], prompter=PROMPTS[stype]):
             idx, item = idx_item
+            if cancel is not None and cancel.is_set():
+                return None
             prompt, mt = prompter(item)
-            rec = {"sid": sub["id"], "idx": idx, "ok": False}
+            rec = {"sid": sid, "idx": idx, "ok": False}
             try:
-                r = ask(url, model, prompt, mt, thinking, headers)
+                r = ask(url, model, prompt, mt, thinking, headers, sampling)
             except Exception as e:
                 detail = getattr(e, "detail", "")
                 rec["err"] = ("%s: %s%s" % (type(e).__name__, str(e), (" | " + detail) if detail else ""))[:200]
@@ -419,25 +525,43 @@ def _run_subjects(url, model, headers, subjects, limit_per_subject, conc, thinki
                     rec["trunc"] = True  # 达到输出上限: 通常是思考未结束, 计为错误但单独标记
                 if not rec["ok"]:
                     rec["tail"] = content[-240:] if content else ("（无正文，思考 %d 字）" % r["reasoning_chars"])
-            with lock:
-                done_count[0] += 1
-                if done_count[0] % 20 == 0 or done_count[0] == total_all:
-                    plog("  进度 %d/%d" % (done_count[0], total_all))
             return rec
 
-        with ThreadPoolExecutor(max_workers=conc) as ex:
-            results = list(ex.map(worker, enumerate(items)))
-        result["items"].extend(results)
-        correct = sum(1 for r in results if r["ok"])
-        n_err = sum(1 for r in results if r.get("err"))
-        n_trunc = sum(1 for r in results if r.get("trunc"))
-        n = len(results)
+        ex = ThreadPoolExecutor(max_workers=conc)
+        futures = {ex.submit(worker, x) for x in pending}
+        since_save = 0
+        try:
+            while futures:
+                finished, futures = wait(futures, timeout=1.0, return_when=FIRST_COMPLETED)
+                for f in finished:
+                    rec = f.result()
+                    if rec is None:
+                        continue
+                    result["items"].append(rec)
+                    since_save += 1
+                    counter[0] += 1
+                    if counter[0] % 20 == 0 or counter[0] == total_all:
+                        plog("  进度 %d/%d" % (counter[0], total_all))
+                if since_save >= 20:
+                    save()
+                    since_save = 0
+                if cancel is not None and cancel.is_set():
+                    for f in futures:
+                        f.cancel()
+                    raise Cancelled()
+        finally:
+            ex.shutdown(wait=False)
+        recs = [r for r in result["items"] if r["sid"] == sub["id"]]
+        correct = sum(1 for r in recs if r["ok"])
+        n_err = sum(1 for r in recs if r.get("err"))
+        n_trunc = sum(1 for r in recs if r.get("trunc"))
+        n = len(recs)
         lo, hi = wilson(correct, n)
         result["subjects"].append({"id": sub["id"], "name": sub["name"], "type": stype,
                                    "n": n, "correct": correct, "acc": round(correct / n * 100, 1) if n else 0,
                                    "ci_lo": round(lo * 100, 1), "ci_hi": round(hi * 100, 1),
-                                   "in_tokens": sum(r.get("in", 0) for r in results),
-                                   "out_tokens": sum(r.get("out", 0) for r in results),
+                                   "in_tokens": sum(r.get("in", 0) for r in recs),
+                                   "out_tokens": sum(r.get("out", 0) for r in recs),
                                    "truncated": n_trunc, "errors": n_err})
         plog("  [%s] %d/%d = %.1f%% (CI %.1f-%.1f)%s%s" %
              (sub["id"], correct, n, result["subjects"][-1]["acc"], lo * 100, hi * 100,

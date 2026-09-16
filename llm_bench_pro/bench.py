@@ -31,10 +31,23 @@ try:
 except ImportError:
     import sinks  # server.py 以包目录为 sys.path 顶层导入
 
-BENCH_VERSION = "1.0.1"
+# 1.1: 默认固定输出长度(ignore_eos, 端点不支持时自动关闭并记录), 可取消
+BENCH_VERSION = "1.1.0"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
 
 _PROGRESS_CB = None
+_REQ_EXTRA = {}          # 本次运行附加到每个请求的字段(如 ignore_eos); 同一时刻只有一个性能测试
+_CANCEL = None           # threading.Event; 置位后在下一个检查点停止
+_NO_IGNORE_EOS = set()   # 明确不支持 ignore_eos 的端点
+
+
+class Cancelled(Exception):
+    """用户取消运行。"""
+
+
+def check_cancel():
+    if _CANCEL is not None and _CANCEL.is_set():
+        raise Cancelled()
 
 
 def plog(msg):
@@ -63,12 +76,24 @@ def http_json(url, payload, headers, timeout=900):
 
 def stream_call(url, payload, headers, timeout=900):
     """流式调用, 返回精确的时间戳序列 (SSE 逐 chunk 解析)。"""
-    payload = {**payload, "stream": True, "stream_options": {"include_usage": True}}
+    check_cancel()
+    payload = {**_REQ_EXTRA, **payload, "stream": True, "stream_options": {"include_usage": True}}
+    if url in _NO_IGNORE_EOS:
+        payload.pop("ignore_eos", None)
     body = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **headers})
     t0 = time.perf_counter()
     ttft, stamps, usage, chunks = None, [], {}, 0
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:500] if e.fp else ""
+        if e.code in (400, 422) and "ignore_eos" in payload and "ignore_eos" in detail:
+            _NO_IGNORE_EOS.add(url)  # 端点不支持固定输出长度: 关闭后重试, 结果中会记录
+            plog("  端点不支持 ignore_eos, 已关闭固定输出长度")
+            return stream_call(url, {k: v for k, v in payload.items() if k not in ("stream", "stream_options")}, headers, timeout)
+        raise
+    with resp as r:
         buf = b""
         for raw in r:
             buf += raw
@@ -117,14 +142,14 @@ def derive(sample):
     out_tok = u.get("completion_tokens") or 0
     in_tok = u.get("prompt_tokens") or 0
     stamps = sample["stamps"]
-    decode_span = (stamps[-1] - stamps[0]) if len(stamps) > 1 else 1e-9
+    decode_span = max(stamps[-1] - stamps[0], 1e-6) if len(stamps) > 1 else 1e-6  # 全部 chunk 同时到达时避免除零
     itls = [stamps[i] - stamps[i - 1] for i in range(1, len(stamps))]
     return {
         "in_tokens": in_tok, "out_tokens": out_tok,
         "ttft_s": round(sample["ttft"], 4) if sample["ttft"] else None,
         "wall_s": round(sample["wall"], 3),
         "decode_span_s": round(decode_span, 3),
-        "prefill_tps": round(in_tok / sample["ttft"], 1) if sample["ttft"] else None,
+        "prefill_tps": round(in_tok / max(sample["ttft"], 1e-6), 1) if sample["ttft"] else None,
         "decode_tps": round((out_tok - 1) / decode_span, 2) if out_tok > 1 else None,
         "tpot_ms": round(decode_span / max(out_tok - 1, 1) * 1000, 2) if out_tok > 1 else None,
         "itl_p50_ms": round(pct(itls, 50) * 1000, 2) if itls else None,
@@ -198,6 +223,7 @@ def phase_prefill(url, headers, model, ladder, out_tok, rep):
     points = []
     session_nonce = int(time.time() * 1000) % 1000000
     for label, reps in ladder:
+        check_cancel()
         runs = []
         for seq in range(rep):
             prompt = ("以下是一段技术文本（批次 %d-%d），请仔细阅读后用一句话总结主题：\n"
@@ -248,6 +274,7 @@ def phase_concurrency(url, headers, model, conc_list, out_tok, per_conc):
     """并发阶梯: 屏障同步起跑, 每档 per_conc 轮; 聚合吞吐 = 总 token / 轮墙钟。"""
     points = []
     for conc in conc_list:
+        check_cancel()
         all_runs, ok, fail, agg_list = [], 0, 0, []
         for _ in range(per_conc):
             barrier = threading.Barrier(conc)
@@ -298,6 +325,7 @@ def phase_prefill_conc(url, headers, model, ladder, conc, out_tok):
     points = []
     session_nonce = int(time.time() * 1000) % 1000000
     for label, reps in ladder:
+        check_cancel()
         barrier = threading.Barrier(conc)
         lock, results = threading.Lock(), []
 
@@ -332,8 +360,8 @@ def phase_prefill_conc(url, headers, model, ladder, conc, out_tok):
                 "ttft_avg_ms": round(1000 * sum(ttfts) / len(ttfts), 1),
                 "ttft_max_ms": round(1000 * max_ttft, 1),
                 "itl_avg_ms": round(sum(itls) / len(itls), 2) if itls else None,
-                "prefill_tps_agg": round(in_tot / max_ttft, 1),
-                "decode_tps_agg": round(out_tot / max_dspan, 1) if out_tot > 1 else None,
+                "prefill_tps_agg": round(in_tot / max(max_ttft, 1e-6), 1),
+                "decode_tps_agg": round(out_tot / max(max_dspan, 1e-6), 1) if out_tot > 1 else None,
                 "stream_prefill_tps": [round(r["in_tokens"] / r["ttft_s"], 1) for r in good if r["ttft_s"]],
                 "stream_decode_tps": [r["decode_tps"] for r in good if r["decode_tps"]],
             })
@@ -438,8 +466,13 @@ def detect_framework(base_url, headers):
 
 def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag="",
               outdir=None, custom=None, conc_ladder=None, matrix_conc=None, lens=None,
-              framework=None, fw_version=None, sink=None):
-    """可编程入口: server.py 与 CLI 共用。sink 默认写 outdir/<run_id>.json; 返回落地位置; 失败抛异常。"""
+              framework=None, fw_version=None, sink=None, fixed_output=True, cancel=None, notes=None):
+    """可编程入口: server.py 与 CLI 共用。sink 默认写 outdir/<run_id>.json; 返回落地位置; 失败抛异常。
+    fixed_output: 请求带 ignore_eos, 每次输出都跑满 max_tokens, 使不同后端/模型的吞吐可比。
+    cancel: threading.Event, 置位后在下一个请求前停止, 已完成阶段保留, 状态记为 cancelled。"""
+    global _REQ_EXTRA, _CANCEL
+    _REQ_EXTRA = {"ignore_eos": True} if fixed_output else {}
+    _CANCEL = cancel
     outdir = outdir or os.path.join(ROOT, "results")
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
     if suite != "custom":
@@ -466,25 +499,27 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
     result = {"bench_version": BENCH_VERSION, "run_id": run_id, "tag": tag, "suite": suite,
               "started_utc": datetime.now(timezone.utc).isoformat(), "url": url, "model": model,
               "env": probe_env(base_url, headers), "phases": [],
-              "overrides": {"conc_ladder": conc_ladder or None, "matrix_conc": matrix_conc or None, "lens": lens or None},
+              "overrides": {"conc_ladder": conc_ladder or None, "matrix_conc": matrix_conc or None, "lens": lens or None,
+                            "fixed_output": bool(fixed_output)},
               "framework": fw}
+    if notes:
+        result["notes"] = list(notes)
     sink = sink or sinks.JsonFileSink(outdir)
 
     def save():
         sink.save(result)
 
     plog("== llm-bench-pro v%s | %s | suite=%s ==" % (BENCH_VERSION, model, suite))
-    plog("warmup...")
-    try:
-        stream_call(url, {"model": model, "messages": [{"role": "user", "content": "回复 OK"}],
-                          "max_tokens": 16, "temperature": 0}, headers, timeout=120)
-    except RuntimeError as e:  # 空流不致命(如被截断); 连接类错误(URLError/HTTPError)照常抛出
-        plog("warmup warning: %s" % e)
-
     rec = MetricsRecorder(metrics_url, headers, bool(metrics_url))
     result["status"] = "running"
     try:
         save()
+        plog("warmup...")
+        try:
+            stream_call(url, {"model": model, "messages": [{"role": "user", "content": "回复 OK"}],
+                              "max_tokens": 16, "temperature": 0}, headers, timeout=120)
+        except RuntimeError as e:  # 空流不致命(如被截断); 连接类错误与取消照常抛出
+            plog("warmup warning: %s" % e)
         plog("[phase] prefill")
         result["phases"].append(phase_prefill(url, headers, model, cfg["prefill"], 96, cfg["prefill_rep"])); save()
         pc = cfg.get("prefill_conc")
@@ -499,6 +534,10 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
             plog("[phase] longctx %dK" % (ctx // 1024))
             result["phases"].append(phase_longctx(url, headers, model, ctx, 256)); save()
         result["status"] = "done"
+    except Cancelled:
+        result["status"] = "cancelled"
+        result["error"] = "用户取消"
+        plog("已取消: 已完成的阶段已保存")
     except KeyboardInterrupt:
         result["status"] = "interrupted"
         plog("interrupted - partial results kept")
@@ -509,6 +548,10 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
     finally:
         result["metrics_samples"] = rec.close()
         result["finished_utc"] = datetime.now(timezone.utc).isoformat()
+        if fixed_output and url in _NO_IGNORE_EOS:
+            result["overrides"]["fixed_output"] = False
+            result["overrides"]["fixed_output_note"] = "端点不支持 ignore_eos, 输出长度未固定"
+        _CANCEL = None
         save()
     plog("done => %s" % sink.location)
     return sink.location
@@ -529,6 +572,7 @@ def main():
     ap.add_argument("--lens", default=None, help="自定义长度阶梯(K), 逗号分隔, 如 1,2,4,8,16")
     ap.add_argument("--framework", default=None, help="后端框架名称, 如 1Cat-vLLM / vLLM / SGLang")
     ap.add_argument("--fw-version", default=None, help="框架版本号, 如 1.6.5-sm70main")
+    ap.add_argument("--no-fixed-output", action="store_true", help="不发送 ignore_eos(允许模型提前结束输出)")
     ap.add_argument("--sink", choices=["json", "db", "both"], default="json",
                     help="结果落地: json=outdir 文件(默认) / db=SQLite 库 / both")
     ap.add_argument("--db", default=None, help="SQLite 库路径 (默认 data/llm_bench.db 或 $LLM_BENCH_DB)")
@@ -552,7 +596,7 @@ def main():
         run_suite(url, args.model, args.api_key, args.suite, args.metrics_url, args.tag, args.outdir, args.custom,
                   conc_ladder=ladder, matrix_conc=args.matrix_conc, lens=lens_list,
                   framework=args.framework, fw_version=args.fw_version,
-                  sink=sinks.from_cli(args.sink, args.outdir, args.db))
+                  sink=sinks.from_cli(args.sink, args.outdir, args.db), fixed_output=not args.no_fixed_output)
     except SystemExit:
         raise
     except Exception as e:

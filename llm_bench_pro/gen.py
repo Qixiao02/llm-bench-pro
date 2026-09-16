@@ -8,7 +8,7 @@ gen.py — 真实生成效果测试引擎
 import os
 import re
 from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 try:
     from . import geneval, iq, sinks, store  # 包内导入: python -m llm_bench_pro.gen
@@ -206,9 +206,10 @@ def plog(msg):
 
 
 def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
-            framework=None, fw_version=None, thinking=False, sink=None, judge=None, browsers=2):
+            framework=None, fw_version=None, thinking=False, sink=None, judge=None, browsers=2, cancel=None):
     """跑生成测试。作品落 works/<run_id>/; 每件作品生成后即做运行检测(+可选视觉评审);
-    元数据经 sink (默认 outdir/<run_id>.json); 返回落地位置。judge: {base, model, api_key}"""
+    元数据经 sink (默认 outdir/<run_id>.json); 返回落地位置。judge: {base, model, api_key}
+    cancel: threading.Event, 置位后不再开始新题, 已完成作品保留, 状态记为 cancelled。"""
     outdir = outdir or os.path.join(ROOT, "results")
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
     tasks = [t for t in GEN_TASKS if not task_ids or t["id"] in task_ids]
@@ -242,6 +243,8 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
                 "checks": [], "pass": 0, "total": 0, "features": [], "stars": None, "lines": 0, "chars": 0}
 
     def worker(task):
+        if cancel is not None and cancel.is_set():
+            return None
         plog("▶ 开始: %s (%s)" % (task["name"], "/".join(task["tags"])))
         try:
             base_max = 16000 if "地狱" in task["tags"] else (12000 if "困难" in task["tags"] else 8000)
@@ -274,11 +277,42 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
     result["status"] = "running"
     save()
     try:
-        with ThreadPoolExecutor(max_workers=conc) as ex:
-            for item in ex.map(worker, tasks):
-                result["items"].append(item)
+        ex = ThreadPoolExecutor(max_workers=conc)
+        futures = [ex.submit(worker, t) for t in tasks]
+        flushed = [0]
+
+        def flush(final=False):
+            """按题目顺序把已完成的作品追加并保存; final 时跳过被取消/未开始的题。"""
+            changed = False
+            while flushed[0] < len(futures):
+                f = futures[flushed[0]]
+                if not f.done():
+                    if not final:
+                        break
+                elif not f.cancelled() and f.result() is not None:
+                    result["items"].append(f.result())
+                    changed = True
+                flushed[0] += 1
+            if changed:
                 save()
-        result["status"] = "done"
+
+        try:
+            pending = set(futures)
+            while pending:
+                finished, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
+                flush()
+                if cancel is not None and cancel.is_set():
+                    for f in pending:
+                        f.cancel()
+                    break
+        finally:
+            ex.shutdown(wait=False)
+        flush(final=True)
+        if cancel is not None and cancel.is_set():
+            result["status"], result["error"] = "cancelled", "用户取消"
+            plog("已取消: 保留已完成的 %d 件作品" % len(result["items"]))
+        else:
+            result["status"] = "done"
     except BaseException as e:
         result["status"] = "interrupted" if isinstance(e, KeyboardInterrupt) else "failed"
         result["error"] = "%s: %s" % (type(e).__name__, str(e)[:300])

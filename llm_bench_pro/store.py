@@ -19,7 +19,7 @@ import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: deleted_runs 墓碑表
 STALE_S = 300  # 心跳超过该秒数未更新的 running 运行视为中断
 KINDS = ("perf", "iq", "gen")
 _CHILD_KEYS = ("phases", "metrics_samples", "subjects", "items")
@@ -111,6 +111,12 @@ CREATE TABLE IF NOT EXISTS gen_items (
   PRIMARY KEY (run_id, seq)
 );
 CREATE INDEX IF NOT EXISTS ix_gen_items_task ON gen_items(run_id, task_id);
+
+CREATE TABLE IF NOT EXISTS deleted_runs (
+  run_id      TEXT PRIMARY KEY,
+  kind        TEXT,
+  deleted_utc TEXT NOT NULL
+);
 """
 
 
@@ -378,12 +384,40 @@ def _load_children(conn, kind, where, params, items=True):
     return out
 
 
-def list_runs(kind, items=True, db_path=None):
-    """与旧 /api/*-results 同构: 完整文档列表, started_utc 倒序。"""
+def list_runs(kind, items=True, db_path=None, summary=False):
+    """与旧 /api/*-results 同构: 完整文档列表, started_utc 倒序。
+    summary=True 时只返回顶层元数据(不含 phases/metrics_samples/subjects/items), 供列表与下拉框使用。"""
     with session(db_path) as conn:
         rows = conn.execute("SELECT * FROM runs WHERE kind=? ORDER BY started_utc DESC", (kind,)).fetchall()
+        if summary:
+            out = []
+            for r in rows:
+                doc = json.loads(r["meta_json"])
+                doc["status"] = _row_status(r)
+                if r["error"] is not None and "error" not in doc:
+                    doc["error"] = r["error"]
+                out.append(doc)
+            return out
         children = _load_children(conn, kind, "r.kind=?", (kind,), items)
     return [_rebuild(r, children, items) for r in rows]
+
+
+def delete_run(run_id, db_path=None):
+    """删除运行(子表级联)并写入墓碑, 防止 results/ 中的同名 JSON 在启动时被重新导入。返回被删运行的 kind 或 None。"""
+    with session(db_path) as conn, write_tx(conn):
+        row = conn.execute("SELECT kind,status,heartbeat_ts FROM runs WHERE run_id=?", (run_id,)).fetchone()
+        if not row:
+            return None
+        if _row_status(row) == "running":
+            raise ValueError("运行尚未结束，请先停止后再删除")
+        conn.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
+        conn.execute("INSERT OR REPLACE INTO deleted_runs (run_id,kind,deleted_utc) VALUES (?,?,?)",
+                     (run_id, row["kind"], time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
+        return row["kind"]
+
+
+def is_deleted(conn, run_id):
+    return conn.execute("SELECT 1 FROM deleted_runs WHERE run_id=?", (run_id,)).fetchone() is not None
 
 
 def get_run(run_id, items=True, db_path=None, conn=None):
@@ -467,6 +501,8 @@ def import_json_file(path, force=False, db_path=None, conn=None):
     conn = conn or connect(db_path)
     try:
         with write_tx(conn):
+            if is_deleted(conn, doc["run_id"]) and not force:
+                return "skipped:已删除"
             old = conn.execute("SELECT source_file,source_sha256 FROM runs WHERE run_id=?", (doc["run_id"],)).fetchone()
             verdict = "inserted"
             if old:
