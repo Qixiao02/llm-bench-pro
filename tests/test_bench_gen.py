@@ -3,6 +3,7 @@ import json
 import os
 import struct
 import threading
+import time
 import unittest
 import zlib
 
@@ -109,6 +110,182 @@ class TestGenEval(unittest.TestCase):
         self.assertEqual(ok["score"], 90.0)
         with self.assertRaises(ValueError):
             geneval._parse_judge('{"items":[{"id":"t1","score":8}]}', checklist)
+
+
+def sse_text(content="", reasoning="", finish="stop", chunk=7):
+    out = []
+    for key, text in (("reasoning_content", reasoning), ("content", content)):
+        for i in range(0, len(text), chunk):
+            out.append(b"data: " + json.dumps({"choices": [{"delta": {key: text[i:i + chunk]}}]}).encode() + b"\n\n")
+    out.append(b"data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": finish}]}).encode() + b"\n\n")
+    out.append(b'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20}}\n\ndata: [DONE]\n\n')
+    return b"".join(out)
+
+
+class TestGenGeneration(unittest.TestCase):
+    def setUp(self):
+        gen.iq._DROPPED.clear()
+
+    def test_extract_html(self):
+        doc = "<!doctype html><html><body>hi</body></html>"
+        cases = [("```html\n<!doctype html><html>\n```html\n<body>x</body></html>\n```", "<!doctype html><html>\n<body>x</body></html>"),
+                 ("```css\nbody{}\n```\n```html\n%s\n```" % doc, doc),
+                 ("先安装：\n```\nnpm i\n```\n```html\n%s\n```" % doc, doc),
+                 ("```html\n<!doctype html><html><script>const s='```';</script></html>\n```",
+                  "<!doctype html><html><script>const s='```';</script></html>"),
+                 ("说明文字\n" + doc + "\n以上。", doc),
+                 ("<think>很长的思考", "")]
+        for text, want in cases:
+            with self.subTest(text=text[:30]):
+                self.assertEqual(gen.extract_html(text), want)
+
+    def test_stitch(self):
+        prev = "<script>\nfunction a(){\n  ctx.fillStyle = '#0"
+        self.assertEqual(gen._stitch(prev, "  ctx.fillStyle = '#000';\n}\n"), "<script>\nfunction a(){\n  ctx.fillStyle = '#000';\n}\n")
+        self.assertEqual(gen._stitch("abc\nlet x = 1;\nlet y", "```html\nlet x = 1;\nlet y = 2;"), "abc\nlet x = 1;\nlet y = 2;")
+        self.assertEqual(gen._stitch("abcdef", "00;"), "abcdef00;")
+
+    def test_chat_stream_and_json_fallback(self):
+        def h(method, path, body):
+            if path.startswith("/json"):
+                return 200, {"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}], "usage": {"completion_tokens": 1}}, None
+            return 200, sse_text("hello world", reasoning="think" * 5, finish="length"), "text/event-stream"
+        m = MockServer(h)
+        try:
+            content, usage, finish, reasoning = gen.chat(m.url + "/v1", {"model": "m", "messages": []}, {})
+            self.assertEqual((content, finish, usage["completion_tokens"], reasoning), ("hello world", "length", 20, "think" * 5))
+            self.assertTrue(m.calls[0][2]["stream"])
+            self.assertEqual(gen.chat(m.url + "/json", {"model": "m", "messages": []}, {})[0], "hi")
+        finally:
+            m.close()
+
+    def test_chat_cancel(self):
+        cancel = threading.Event()
+        cancel.set()
+        m = MockServer(lambda *a: (200, sse_text("x" * 100), "text/event-stream"))
+        try:
+            with self.assertRaises(gen.Cancelled):
+                gen.chat(m.url + "/v1", {"model": "m", "messages": []}, {}, cancel)
+        finally:
+            m.close()
+
+    def test_continuation_prefix(self):
+        first = "```html\n<!doctype html><html><body>\n<script>\nlet simYears = 1;\nfunction step(){ simYe"
+        second = "ars += 1; }\n</script></body></html>\n```"
+
+        def h(method, path, body):
+            if len(body["messages"]) == 1:
+                return 200, sse_text(first, finish="length"), "text/event-stream"
+            ok = body.get("continue_final_message") and body["messages"][-1] == {"role": "assistant", "content": first}
+            return 200, sse_text(second if ok else "WRONG"), "text/event-stream"
+        m = MockServer(h)
+        try:
+            full, _, _, cont, _ = gen.gen_complete(m.url + "/v1", "m", "p", 100, {})
+            html = gen.extract_html(full)
+            self.assertEqual(cont, 1)
+            self.assertIn("simYears += 1;", html)
+            self.assertTrue(html.endswith("</html>"))
+        finally:
+            m.close()
+
+    def test_continuation_context_overflow_keeps_partial(self):
+        first = "<!doctype html><html><body>\n<p>partial"
+
+        def h(method, path, body):
+            if len(body["messages"]) == 1:
+                return 200, sse_text(first, finish="length"), "text/event-stream"
+            if body["max_tokens"] > 700:
+                return 400, {"message": "This model's maximum context length is 1000 tokens. However, you requested "
+                                        "1300 tokens (300 in the messages, 1000 in the completion)."}, None
+            return 200, sse_text("</p></body></html>"), "text/event-stream"
+        m = MockServer(h)
+        try:
+            full, _, _, cont, _ = gen.gen_complete(m.url + "/v1", "m", "p", 1000, {})
+            self.assertEqual(full, first + "</p></body></html>")  # 按报错收缩 max_tokens 后续写成功
+            self.assertEqual(m.calls[-1][2]["max_tokens"], 1000 - 300 - 32)
+        finally:
+            m.close()
+        m = MockServer(lambda method, path, body: (200, sse_text(first, finish="length"), "text/event-stream")
+                       if len(body["messages"]) == 1 else (500, {"error": "boom"}, None))
+        try:
+            full, _, _, _, _ = gen.gen_complete(m.url + "/v1", "m", "p", 1000, {})
+            self.assertEqual(full, first)  # 续写失败时保留已生成部分
+        finally:
+            m.close()
+
+    def test_continuation_fallback_when_prefix_rejected(self):
+        first = "<!doctype html><html><body>\n<p>part one"
+
+        def h(method, path, body):
+            if "continue_final_message" in body:
+                return 400, {"detail": [{"type": "extra_forbidden", "loc": ["body", "continue_final_message"],
+                                         "msg": "Extra inputs are not permitted"}]}, None
+            if len(body["messages"]) == 1:
+                return 200, sse_text(first, finish="length"), "text/event-stream"
+            if len(body["messages"]) == 3:
+                return 200, sse_text(" and two</p></body></html>"), "text/event-stream"
+            return 200, sse_text("WRONG"), "text/event-stream"
+        m = MockServer(h)
+        try:
+            full, _, _, cont, _ = gen.gen_complete(m.url + "/v1", "m", "p", 100, {})
+            self.assertEqual(full, "<!doctype html><html><body>\n<p>part one and two</p></body></html>")
+        finally:
+            m.close()
+
+
+class TestGenEvalRobustness(unittest.TestCase):
+    def test_key_params(self):
+        self.assertEqual(geneval._key_params(".")[0]["windowsVirtualKeyCode"], 190)
+        p, text = geneval._key_params("!")
+        self.assertEqual((p["windowsVirtualKeyCode"], p["modifiers"], text), (49, 8, "!"))
+        self.assertEqual(geneval._key_params("@")[0]["code"], "Digit2")
+        self.assertEqual(geneval._key_params("中")[0]["windowsVirtualKeyCode"], 0)
+        self.assertEqual(geneval._key_params("A")[0]["modifiers"], 8)
+
+    def test_judge_parse_tolerant(self):
+        ck = [{"id": "t%d" % i, "label": str(i)} for i in range(1, 6)]
+        scores = (8, 6, 7, 9, 5)
+
+        def items(fmt):
+            return ",".join(fmt % (i, v) for i, v in zip(range(1, 6), scores))
+        texts = ['说明 {见下}\n```json\n{"items":[%s],"summary":"ok"}\n```\n补充 {x}' % items('{"id":"T%d","score":"%d"}'),
+                 '{"items":[%s],}' % items('{"id":"t%d","score":"%d/10"}'),
+                 '{“items”：[%s]}' % items('{"id":"t%d","score":%d}')]
+        for t in texts:
+            with self.subTest(t=t[:20]):
+                self.assertEqual([i["score"] for i in geneval._parse_judge(t, ck)["items"]], list(scores))
+        hundred = geneval._parse_judge('{"items":[%s]}' % items('{"id":"t%d","score":%d5}'), ck)
+        self.assertEqual([i["score"] for i in hundred["items"]], [9, 7, 8, 10, 6])
+        missing = geneval._parse_judge('{"items":[%s]}' % ",".join('{"id":"t%d","score":8}' % i for i in range(1, 5)), ck)
+        self.assertEqual((missing["items"][-1]["score"], missing["score"]), (None, 80.0))
+
+    def test_browser_pool_recovers_from_broken_browsers(self):
+        class FakeBrowser:
+            version = "fake"
+
+            def close(self):
+                pass
+
+        def probe(*a):
+            time.sleep(0.1)
+            raise RuntimeError("browser crashed")
+        orig = (geneval.cdp.Browser, geneval.probe_work, geneval.cdp.find_browser)
+        geneval.cdp.Browser, geneval.probe_work, geneval.cdp.find_browser = FakeBrowser, probe, lambda: "fake"
+        try:
+            ev = geneval.Evaluator(None, browsers=2)
+            task = {"id": "snake", "name": "s", "features": []}
+            d = temp_dir()
+            threads = [threading.Thread(target=ev.evaluate, args=(task, os.path.join(d, "w%d.html" % i), "<html></html>"))
+                       for i in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(10)
+            self.assertFalse(any(t.is_alive() for t in threads))  # 浏览器损坏后等待者会被唤醒, 不会永久等待
+            ev.close()
+            self.assertRaises(RuntimeError, ev._acquire)
+        finally:
+            geneval.cdp.Browser, geneval.probe_work, geneval.cdp.find_browser = orig
 
 
 if __name__ == "__main__":

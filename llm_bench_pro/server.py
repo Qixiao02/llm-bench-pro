@@ -328,11 +328,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parts = urllib.parse.urlsplit(self.path)
+        try:  # 先读完请求体: 提前返回错误而不读取时, Windows 上客户端可能收到连接重置而非错误响应
+            length = min(int(self.headers.get("Content-Length", 0)), 16 * 1024 * 1024)
+            raw = self.rfile.read(length) if length > 0 else b""
+        except (ValueError, OSError):
+            return self._json({"ok": False, "error": "bad request"}, 400)
         if not self._authorized(parts.path, {}):
             return self._json({"ok": False, "error": "需要访问令牌"}, 401)
+        # 跨站/沙箱 iframe(Origin: null)中的作品页面不能调用接口: 要求同源, 且必须是 JSON 请求(跨站时会触发预检)
+        origin = self.headers.get("Origin")
+        if origin is not None and urllib.parse.urlsplit(origin).netloc != (self.headers.get("Host") or ""):
+            return self._json({"ok": False, "error": "拒绝跨源请求"}, 403)
+        if not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
+            return self._json({"ok": False, "error": "Content-Type 必须为 application/json"}, 415)
         try:
-            length = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(length) or b"{}")
+            body = json.loads(raw or b"{}")
         except Exception:
             return self._json({"ok": False, "error": "bad json"}, 400)
         if not isinstance(body, dict):
@@ -596,7 +606,7 @@ class Handler(BaseHTTPRequestHandler):
         job = JOBS["gen"]
         if not job.try_start(None, "重新评测", run_id=run_id):
             return self._json({"ok": False, "error": "已有代码生成任务或重新评测在运行"}, 409)
-        job.run(lambda j: gen.reevaluate(run_id, judge, only=only, log=j.line), "_GEN_PROGRESS", gen)
+        job.run(lambda j: gen.reevaluate(run_id, judge, only=only, log=j.line, cancel=j.cancel), "_GEN_PROGRESS", gen)
         return self._json({"ok": True, "run_id": run_id, "eval": geneval.Evaluator(judge).meta()})
 
     def api_gen_rate(self, body):

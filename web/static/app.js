@@ -1310,6 +1310,8 @@ function renderGen(){
       <span class="badge">视觉评审 <b>${ev.judge_model?esc(ev.judge_model):"未配置"}</b></span>
       ${a.tag?`<span class="badge">标签 <b>${esc(a.tag)}</b></span>`:""}<span class="badge">开始 <b>${esc(timeText(a.started_utc))}</b></span></div>`
     :`<div class="alert is-warning">${icon("alert")}<span>该运行使用旧版评测（源码关键词匹配），分数不可信。点击右上方“重新评测”即可按新口径检测，人工评分会保留。</span></div>`;
+  if(s.v2&&ev.method==="browser"&&verLt(ev.eval_version,"1.1.0"))
+    html+=`<div class="alert is-warning">${icon("alert")}<span>该运行的运行检测使用 ${esc(ev.eval_version||"1.0")} 版口径：交互检查会把自带动画、CSS 悬停样式和每帧重写的计时文字误判为“交互生效”，输入“.”会丢字符，移动端溢出检查不生效。建议点击“重新评测”，人工评分会保留。</span></div>`;
   html+=`<div class="kpi-grid">
     ${kpiBox("已完成作品",`${s.ok.length}<small> / ${(a.items||[]).length}</small>`,"","生成失败的题目不计入")}
     ${kpiBox("运行检测通过率",s.exec==null?"—":fmt(s.exec,1),s.exec==null?"":"%","加载、报错、白屏、动画与交互脚本")}
@@ -1382,9 +1384,10 @@ function genDetail(it){
   if(!j)judgeHtml=`<p class="faint">未配置评审模型。在“新建任务”中填写评审模型后点击“重新评测”。</p>`;
   else if(j.error)judgeHtml=`<div class="alert is-warning">${icon("alert")}<span>${esc(j.error)}</span></div>`;
   else judgeHtml=`<div class="row" style="align-items:baseline"><span class="score-big num ${"score "+scoreCls(j.score)}">${fmt(j.score,1)}</span><span class="faint">/ 100 · ${esc(j.model||"")}</span></div>
+    ${j.stale?`<div class="alert is-info">${icon("info")}<span>重新评测时未配置评审模型，这是之前基于旧截图的评审结果。</span></div>`:""}
     ${j.summary?`<p class="muted" style="margin:6px 0 10px">${esc(j.summary)}</p>`:""}
     <div class="table-wrap" style="max-height:none"><table class="table"><tbody>${j.items.map(x=>`<tr>
-      <td style="width:56px"><span class="score ${scoreCls(x.score*10)}">${x.score} / 10</span></td>
+      <td style="width:56px">${x.score==null?`<span class="badge">未评分</span>`:`<span class="score ${scoreCls(x.score*10)}">${x.score} / 10</span>`}</td>
       <td class="text-left">${esc(x.label)}<span class="sub">${esc(x.reason)}</span></td></tr>`).join("")}</tbody></table></div>`;
   Modal.open(it.name+" · 检测详情",`<div class="detail-layout">
     <div><div class="shot-grid">${(e.shots||[]).map(s=>`<figure class="shot"><img src="/${esc(dir+s.file)}" alt="${esc(s.caption)}" loading="lazy"><figcaption>${esc(s.caption)}</figcaption></figure>`).join("")||emptyState("无截图","源码检查模式不产生截图",{inline:true})}</div></div>

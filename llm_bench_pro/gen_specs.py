@@ -8,7 +8,11 @@ gen_specs.py — 生成测试逐题评测规格 (与 gen.GEN_TASKS 的 id 一一
   idle        空闲观察窗口秒数 (默认 1.0; 慢刷新题调大)
   responsive  是否检查 390px 移动视口无横向溢出
   setup       交互前的预热动作 (如点击开始), 不计分
-  steps       交互步骤, 每步独立判定: 有 assert 时以断言为准, 否则以画面/DOM 变化超出空闲基线为准
+  steps       交互步骤, 每步独立判定:
+                assert  JS 表达式, 操作前不成立且操作后成立才通过(慢输出最多再等 3 秒)
+                count   JS 数值表达式, 操作后比操作前至少增加 gain(默认 1)
+                否则    画面/DOM 变化超出等长空闲基线, 且作品自身处理器响应了该输入;
+                        native=True 的步骤(页面滚动、CSS 悬停样式、原生复选框等)不要求处理器响应
   checklist   视觉评审模型逐项打分清单 (0-10), 须能从截图+运行检测中核实
 
 动作语法 (坐标为视口比例 0-1, 视口 1280x800):
@@ -19,11 +23,14 @@ gen_specs.py — 生成测试逐题评测规格 (与 gen.GEN_TASKS 的 id 一一
   {"move": [[x, y], ...]}                           鼠标悬停轨迹
   {"wheel": 800, "at": [x, y]}
   {"find": "正则", "css": "选择器", "do": "click|dblclick|hover", "optional": true}
-      按可见文本(正则, 不区分大小写)或 CSS 定位最内层可见元素并操作; 找不到且非 optional 则该步失败
+      按可见文本(正则, 不区分大小写)或 CSS 定位可见元素(可点击元素优先, 其次面积最小)并操作;
+      找不到时: 有 "else": [动作...] 则改做这些动作, optional 则跳过, 否则该步失败
   {"wait": 0.5}
 """
 
 C = [0.5, 0.5]
+# 页面文本中独立出现某个数的次数(排除 10:15 这类时间与更长数字的一部分)
+_NUM_COUNT = r"(document.body.innerText.match(/(^|[^\d.:])%s(?![\d.:])/g) || []).length"
 
 # 通用评审项 (追加在每题清单之后)
 GENERIC_CHECKLIST = [
@@ -33,10 +40,14 @@ GENERIC_CHECKLIST = [
 ]
 
 
-def step(label, actions, assert_js=None, settle=0.6):
+def step(label, actions, assert_js=None, settle=0.6, native=False, count=None, gain=1):
     s = {"label": label, "actions": actions, "settle": settle}
     if assert_js:
         s["assert"] = assert_js
+    if count:
+        s["count"], s["gain"] = count, gain
+    if native:
+        s["native"] = True
     return s
 
 
@@ -45,8 +56,18 @@ def ck(*labels):
 
 
 # 注意: JS 正则的 \b 对中文无效, 中文按钮文本不要用 \b
-START = [{"find": r"^\s*[▶►]?\s*(开始游戏|开始挑战|开始|新游戏|start|play|new game)", "do": "click", "optional": True},
-         {"wait": 0.3}]
+_START_RE = r"^\s*[▶►🎮]?\s*(开始游戏|开始挑战|开始冒险|点击开始|进入游戏|进入迷宫|开始|进入|新游戏|start|start game|play|new game)\s*[!！]?\s*$"
+
+
+def start(*fallback):
+    """点击开始按钮; 没有开始按钮时才执行 fallback 动作(如按空格开始), 避免开始后再按一次反而暂停。"""
+    act = {"find": _START_RE, "do": "click", "optional": True}
+    if fallback:
+        act["else"] = list(fallback)
+    return [act, {"wait": 0.3}]
+
+
+START = start()
 
 SPECS = {
     # ---------------- 普通
@@ -75,8 +96,8 @@ SPECS = {
               "checklist": ck("八大行星与轨道齐全", "周期与距离比例合理（对数缩放）", "发光太阳与轨道线",
                               "悬浮显示行星名与信息卡", "时间加速/减速/暂停控件可用")},
     "landing": {"animated": False, "responsive": True,
-                "steps": [step("滚动页面", [{"wheel": 900, "at": C}], settle=0.8),
-                          step("常见问题手风琴展开", [{"find": r"\?|？|常见问题|FAQ", "css": "summary,button,[class*=faq] *,[class*=accordion] *,dt,h3,h4", "do": "click"}])],
+                "steps": [step("滚动页面", [{"wheel": 900, "at": C}], settle=0.8, native=True),
+                          step("常见问题手风琴展开", [{"find": r"\?|？|常见问题|FAQ", "css": "summary,button,[class*=faq] *,[class*=accordion] *,dt,h3,h4", "do": "click"}], native=True)],
                 "checklist": ck("粘性导航栏", "英雄区渐变与粒子背景", "三特性卡片", "价格表及悬停动效",
                                 "常见问题手风琴与页脚", "移动端响应式布局")},
     "dashboard": {"animated": True, "idle": 3.0, "responsive": True,
@@ -88,12 +109,12 @@ SPECS = {
                "steps": [step("空格跳跃", [{"key": " ", "repeat": 3}], settle=0.4),
                          step("点击跳跃", [{"click": C}, {"click": C}], settle=0.4)],
                "checklist": ck("像素风小鸟与管道", "重力下落与跳跃手感", "随机管道间隙与碰撞死亡", "计分与最佳分记录", "死亡后可重开")},
-    "tetris": {"animated": False, "setup": START + [{"key": "Enter"}],
+    "tetris": {"animated": False, "setup": start({"key": "Enter"}),
                "steps": [step("方向键左移", [{"key": "ArrowLeft", "repeat": 3}], settle=0.3),
                          step("旋转", [{"key": "ArrowUp", "repeat": 2}], settle=0.3),
                          step("硬降", [{"key": " "}], settle=0.4)],
                "checklist": ck("7 种标准方块", "旋转与踢墙", "软降/硬降", "消行计分与等级加速", "下一个方块预览", "暂停与结束重开")},
-    "breakout": {"animated": False, "setup": START + [{"key": " "}],
+    "breakout": {"animated": False, "setup": start({"key": " "}),
                  "steps": [step("鼠标控制挡板", [{"move": [[0.3, 0.85], [0.5, 0.85], [0.75, 0.85]]}], settle=0.4),
                            step("键盘控制挡板", [{"key": "ArrowLeft", "hold": 0.6}], settle=0.3)],
                  "checklist": ck("挡板/球/多排彩色砖块", "碰撞反弹正确", "道具掉落（加长/多球）", "生命数与关卡递进", "胜负判定")},
@@ -104,11 +125,12 @@ SPECS = {
                    "steps": [step("右移", [{"key": "ArrowRight", "hold": 0.7}], settle=0.3),
                              step("跳跃", [{"key": " "}, {"key": "ArrowUp"}], settle=0.4)],
                    "checklist": ck("角色重力与跳跃手感", "平台碰撞", "移动敌人与尖刺", "金币收集与旗杆过关", "多关卡与生命重生")},
-    "snake": {"animated": False, "setup": START + [{"key": " "}],
-              "steps": [step("方向键转向", [{"key": "ArrowUp"}, {"wait": 0.4}, {"key": "ArrowLeft"}], settle=0.5)],
+    # 开始后蛇立即移动, 预热开始会在基线观察期间撞墙; 开始与转向放在同一步(基线为开始界面)
+    "snake": {"animated": False,
+              "steps": [step("开始并用方向键转向", start({"key": " "}) + [{"key": "ArrowUp"}, {"wait": 0.3}, {"key": "ArrowLeft"}], settle=0.4)],
               "checklist": ck("网格移动与方向控制（禁止反向）", "吃食物变长并加速", "撞墙/撞自己死亡", "分数与最高分", "开始/暂停/重开")},
     # ---------------- 地狱
-    "fps": {"animated": False, "setup": [{"click": C}],
+    "fps": {"animated": False, "setup": start({"click": C}),
             "steps": [step("W 前进", [{"key": "w", "hold": 0.8}], settle=0.3),
                       step("A/D 或鼠标转向", [{"key": "d", "hold": 0.6}, {"key": "ArrowRight", "hold": 0.4}], settle=0.3)],
             "checklist": ck("raycasting 伪 3D 墙面透视正确", "WASD 移动与转向", "墙壁碰撞", "地面天花板渐变", "迷宫地图/出口/计时")},
@@ -143,10 +165,10 @@ SPECS = {
                               "任务栏与时钟", "记事本（可保存）与画板", "右键菜单")},
     # ---------------- 实战
     "applecard": {"animated": False, "responsive": True,
-                  "steps": [step("滚动淡入", [{"wheel": 900, "at": C}], settle=1.0)],
+                  "steps": [step("滚动淡入", [{"wheel": 900, "at": C}], settle=1.0, native=True)],
                   "checklist": ck("大标题渐变文字", "毛玻璃导航栏", "滚动淡入动画", "精确留白与字体层级", "暗色优雅配色与 Apple 质感")},
     "stripe": {"animated": True, "responsive": True,
-               "steps": [step("按钮悬停微交互", [{"find": r"开始|免费|注册|联系|start|get|sign|contact", "css": "a,button", "do": "hover"}], settle=0.5)],
+               "steps": [step("按钮悬停微交互", [{"find": r"开始|免费|注册|联系|start|get|sign|contact", "css": "a,button", "do": "hover"}], settle=0.5, native=True)],
                "checklist": ck("斜向彩色渐变动态背景（Canvas）", "渐变大标题", "按钮悬停微交互", "导航栏", "三列特性说明与像素级间距")},
     "iostodo": {"animated": False,
                 "steps": [step("新增待办", [{"find": r"^(\+|＋|新增|添加|新建|add|new)", "do": "click", "optional": True},
@@ -154,7 +176,7 @@ SPECS = {
                                           {"type": "测试待办ABC\n"},
                                           {"find": r"^(添加|确定|完成|保存|add|save|done|ok)$", "do": "click", "optional": True}],
                            assert_js="document.body.innerText.includes('测试待办ABC')", settle=0.6),
-                          step("勾选完成", [{"css": "input[type=checkbox],[class*=check],[role=checkbox]", "find": "", "do": "click"}], settle=0.6),
+                          step("勾选完成", [{"css": "input[type=checkbox],[class*=check],[role=checkbox]", "find": "", "do": "click"}], settle=0.6, native=True),
                           step("深浅色切换", [{"find": r"深色|浅色|暗|亮|dark|light|theme|🌙|☀", "do": "click"}], settle=0.6)],
                 "checklist": ck("手机壳容器与 iOS 风格", "毛玻璃工具栏与圆角卡片", "新增输入弹层", "勾选划线动效与左滑删除", "深浅色切换与按压缩放细节")},
     "ecomdetail": {"animated": False, "responsive": True,
@@ -165,20 +187,20 @@ SPECS = {
     "ioscalc": {"animated": False,
                 "steps": [step("7 + 8 = 15", [{"find": r"^7$", "do": "click"}, {"find": r"^[+＋]$", "do": "click"},
                                              {"find": r"^8$", "do": "click"}, {"find": r"^[=＝]$", "do": "click"}],
-                           assert_js=r"/(^|[^\d.])15([^\d.]|$)/.test(document.body.innerText)", settle=0.5),
+                           count=_NUM_COUNT % "15", settle=0.5),
                           step("清除后 9 × 6 = 54", [{"find": r"^(AC|C)$", "do": "click", "optional": True},
                                                   {"find": r"^9$", "do": "click"}, {"find": r"^[×x*✕]$", "do": "click"},
                                                   {"find": r"^6$", "do": "click"}, {"find": r"^[=＝]$", "do": "click"}],
-                           assert_js=r"/(^|[^\d.])54([^\d.]|$)/.test(document.body.innerText)", settle=0.5)],
+                           count=_NUM_COUNT % "54", settle=0.5)],
                 "checklist": ck("网格布局与圆形按键", "深色数字键/橙色运算键配色", "按压缩放动效", "顶部历史行", "四则/百分比/正负/退格逻辑正确")},
     "dock": {"animated": False,
              "steps": [step("鱼眼放大", [{"move": [[0.35, 0.93], [0.45, 0.93], [0.52, 0.93]]}], settle=0.4),
                        step("点击弹跳", [{"click": [0.5, 0.93]}], settle=0.4)],
              "checklist": ck("图标横向排列与反光底座", "鼠标接近时按距离鱼眼放大", "悬停名称气泡", "点击弹跳动画")},
     "terminal": {"animated": False, "setup": [{"click": C}],
-                 "steps": [step("help 命令", [{"type": "help\n"}], assert_js="/clear/i.test(document.body.innerText) && /whoami/i.test(document.body.innerText)", settle=1.2),
+                 "steps": [step("help 命令", [{"type": "help\n"}], count="(document.body.innerText.match(/whoami/gi) || []).length", settle=1.2),
                            step("echo 命令", [{"type": "echo hello9527\n"}],
-                                assert_js="document.body.innerText.split('hello9527').length >= 3", settle=1.2),
+                                count="document.body.innerText.split('hello9527').length - 1", gain=2, settle=1.2),
                            step("上键历史", [{"key": "ArrowUp"}], assert_js=None, settle=0.4)],
                  "checklist": ck("macOS 标题栏红黄绿圆点", "等宽字体与闪烁光标", "help/ls/date/echo/clear/whoami 命令", "上下键命令历史", "打字机输出效果与毛玻璃暗色背景")},
     "parallax": {"animated": False,
@@ -194,7 +216,7 @@ SPECS = {
                    "checklist": ck("流动渐变背景", "玻璃拟态登录卡", "输入框聚焦浮动标签", "错误抖动提示与密码可见切换", "登录加载态与成功动效")},
     "feed": {"animated": False, "responsive": True,
              "steps": [step("点赞动效", [{"find": r"赞|like|♥|❤|👍", "do": "click"}], settle=0.6),
-                       step("滚动加载", [{"wheel": 2500, "at": C}, {"wait": 0.8}, {"wheel": 2500, "at": C}], settle=1.2)],
+                       step("滚动加载", [{"wheel": 2500, "at": C}, {"wait": 0.8}, {"wheel": 2500, "at": C}], settle=1.2, native=True)],
              "checklist": ck("顶栏与卡片流（头像/昵称/时间/正文/图）", "点赞转发动效", "无限滚动加载与骨架屏", "图片九宫格", "返回顶部按钮")},
 }
 

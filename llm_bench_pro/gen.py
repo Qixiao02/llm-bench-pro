@@ -5,8 +5,11 @@ gen.py — 真实生成效果测试引擎
 四档题库(普通/困难/地狱/实战 33 题) -> 模型生成完整 HTML -> 运行检测 + 视觉评审(geneval) + 人工星级。
 作品与截图落盘 works/<run_id>/, 元数据经 sink 写库或 JSON。
 """
+import json
 import os
 import re
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
@@ -19,7 +22,10 @@ except ImportError:
     import store
 
 # 2.0: 源码正则特征 -> 无头浏览器运行检测(逐题交互脚本/功能断言) + 可选视觉模型清单评审, 与 1.x 结果不可直接比较
-GEN_VERSION = "2.0.0"
+# 2.1: 流式生成(思考模式不再整体超时)、续写携带完整已生成内容并按行去重、HTML 提取修正、取消即停
+GEN_VERSION = "2.1.0"
+STREAM_IDLE_TIMEOUT = 300  # 流式响应两次数据之间的最长等待(秒)
+_STREAM_OPTIONAL = ("stream_options", "continue_final_message", "add_generation_prompt")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
 WORKS = os.path.join(ROOT, "works")
 
@@ -130,36 +136,134 @@ GEN_TASKS = [
 ]
 
 
-def chat(url, payload, headers, timeout=600):
-    d = iq.post_chat(url, payload, headers, timeout)
-    ch = d["choices"][0]
-    msg = ch["message"]
-    reasoning = (msg.get("reasoning_content") or msg.get("reasoning") or "").strip()
-    return (msg.get("content") or "").strip(), d.get("usage") or {}, ch.get("finish_reason") or "", reasoning
+class Cancelled(Exception):
+    """用户取消。"""
 
 
-def _tail_overlap_dedup(prev, nxt, limit=240):
-    """续写内容与已有尾部重叠时去重。"""
-    for k in range(min(limit, len(prev)), 40, -1):
-        if nxt.startswith(prev[-k:]):
-            return nxt[k:]
-    return nxt
+def chat(url, payload, headers, cancel=None, idle_timeout=STREAM_IDLE_TIMEOUT):
+    """流式请求 chat/completions, 返回 (content, usage, finish_reason, reasoning)。
+    按数据间隔而非总时长计超时, 长思考不会整体超时; cancel 置位时中断连接并抛出 Cancelled。
+    端点不支持流式而直接返回 JSON 时照常解析; 明确拒绝的可选字段剔除后重试(按端点记住)。"""
+    drop = iq._DROPPED.get(url, set())
+    body = dict(payload, stream=True, stream_options={"include_usage": True})
+    body = {k: v for k, v in body.items() if k not in drop}
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json", "Accept": "text/event-stream", **headers})
+    try:
+        r = urllib.request.urlopen(req, timeout=idle_timeout)
+    except urllib.error.HTTPError as e:
+        try:
+            e.detail = e.read().decode("utf-8", "replace")[:2000]
+        except Exception:
+            e.detail = ""
+        if e.code in (400, 422):
+            present = [k for k in iq._OPTIONAL_KEYS + _STREAM_OPTIONAL if k in body]
+            named = iq._rejected_keys(e.detail, present)
+            if named:
+                iq._DROPPED.setdefault(url, set()).update(named)
+                return chat(url, payload, headers, cancel, idle_timeout)
+        raise
+    content, reasoning, finish, usage = [], [], "", {}
+    with r:
+        if "text/event-stream" not in (r.headers.get("Content-Type") or ""):
+            d = json.loads(r.read())
+            ch = d["choices"][0]
+            msg = ch.get("message") or {}
+            return ((msg.get("content") or "").strip(), d.get("usage") or {}, ch.get("finish_reason") or "",
+                    (msg.get("reasoning_content") or msg.get("reasoning") or "").strip())
+        for raw in r:
+            if cancel is not None and cancel.is_set():
+                raise Cancelled()
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                d = json.loads(data)
+            except ValueError:
+                continue
+            if d.get("usage"):
+                usage = d["usage"]
+            for ch in d.get("choices") or []:
+                delta = ch.get("delta") or {}
+                if delta.get("content"):
+                    content.append(delta["content"])
+                r_part = delta.get("reasoning_content") or delta.get("reasoning")
+                if r_part:
+                    reasoning.append(r_part)
+                if ch.get("finish_reason"):
+                    finish = ch["finish_reason"]
+    return "".join(content), usage, finish, "".join(reasoning).strip()
 
 
-def gen_complete(url, model, prompt, tier_max, headers, thinking=False):
-    """生成并自动续写直到闭合 </html> 或达到轮次上限。thinking=True 开启推理模式。"""
-    msgs = [{"role": "user", "content": prompt}]
+_CONTINUE_HINT = "输出在上面中断了。请从中断处继续输出剩余代码直到 </html>，不要重复已输出的内容，不要解释。"
+_FENCE_LINE = re.compile(r"^\s*```[\w-]*\s*$")
+
+
+def _stitch(prev, nxt):
+    """把续写内容接到已有内容后: 去掉续写开头的代码围栏, 删除与已有尾部重复的整行/行尾片段。"""
+    lines = nxt.split("\n")
+    while lines and (not lines[0].strip() or _FENCE_LINE.match(lines[0])):
+        lines.pop(0)
+    nxt = "\n".join(lines)
+    if not nxt:
+        return prev
+    # 1) 字符级重叠: 续写开头与已有末尾相同的一段(至少 8 字符)
+    for k in range(min(2000, len(prev), len(nxt)), 7, -1):
+        if prev.endswith(nxt[:k]):
+            return prev + nxt[k:]
+    # 2) 行级重叠: 模型从被截断那一行的行首重新输出
+    last_nl = prev.rfind("\n")
+    partial = prev[last_nl + 1:]
+    first = nxt.split("\n", 1)[0]
+    if partial.strip() and first.strip().startswith(partial.strip()):
+        return prev[:last_nl + 1] + nxt
+    return prev + nxt
+
+
+def gen_complete(url, model, prompt, tier_max, headers, thinking=False, cancel=None):
+    """生成并自动续写直到正常结束或达到轮次上限。thinking=True 开启推理模式(仅首轮)。
+    续写时把完整已生成内容作为 assistant 前缀, 支持 continue_final_message 的端点(vLLM/SGLang)直接接着写;
+    不支持时退回"继续输出"指令, 同样携带完整内容, 模型能看到前文声明的变量。"""
     total_in = total_out = 0
-    parts, cont = [], 0
-    total_reason = 0
+    full, cont, total_reason = "", 0, 0
+    msgs = [{"role": "user", "content": prompt}]
+    extra, mt = {}, tier_max
     while True:
-        resp, usage, finish, reasoning = chat(url, {"model": model, "messages": msgs,
-                                                    "max_tokens": tier_max, "temperature": 0.3,
-                                                    "chat_template_kwargs": {"enable_thinking": bool(thinking and cont == 0)}}, headers)
+        payload = {"model": model, "messages": msgs, "max_tokens": mt, "temperature": 0.3,
+                   "chat_template_kwargs": {"enable_thinking": bool(thinking and cont == 0)}}
+        payload.update(extra)
+        try:
+            resp, usage, finish, reasoning = chat(url, payload, headers, cancel)
+        except Cancelled:
+            raise
+        except Exception as e:
+            if cont == 0:
+                raise
+            # 续写携带完整前文可能超出上下文: 按报错收缩输出上限重试一次, 仍失败则保留已生成部分
+            _, fit = iq._context_fit(getattr(e, "detail", ""), len(json.dumps(msgs)) // 3)
+            if fit and 512 <= fit < mt:
+                mt = fit
+                continue
+            plog("    ⚠ 续写失败, 保留已生成部分: %s" % str(e)[:80])
+            break
+        if extra and "continue_final_message" in iq._DROPPED.get(url, ()):
+            # 端点不支持前缀续写(本轮已按普通对话生成, 结果不可用): 改为指令式续写重做本轮
+            msgs = msgs + [{"role": "user", "content": _CONTINUE_HINT}]
+            extra = {}
+            continue
         total_in += usage.get("prompt_tokens", 0)
         total_out += usage.get("completion_tokens", 0)
         total_reason += len(reasoning)
-        parts.append(resp)
+        if cont == 0:
+            full = resp
+        elif re.match(r"\s*(```[\w-]*\s*)?<!doctype|\s*(```[\w-]*\s*)?<html", resp, re.I) and "<html" in full.lower():
+            plog("    ↻ 续写从头重新输出了整个文件, 改用新内容")
+            full = resp
+        else:
+            full = _stitch(full, resp)
         if finish != "length":
             break
         cont += 1
@@ -167,29 +271,51 @@ def gen_complete(url, model, prompt, tier_max, headers, thinking=False):
             plog("    ⚠ 续写 %d 轮仍未闭合" % cont)
             break
         plog("    ↻ 截断, 续写第 %d 轮(关闭思考直出代码)" % cont)
-        tail_ctx = parts[-1][-3000:] if parts[-1].strip() else "(首轮思考耗尽未产出正文, 请直接输出完整 HTML)"
-        msgs = [{"role": "user", "content": prompt},
-                {"role": "assistant", "content": tail_ctx},
-                {"role": "user", "content": "继续输出剩余的 HTML 直到 </html> 结束。不要再思考、不要再解释，直接输出代码本身，从中断处继续，不要重复。"}]
-    # 拼接(带重叠去重)
-    full = parts[0]
-    for p in parts[1:]:
-        full += _tail_overlap_dedup(full, p)
+        visible = iq.strip_think(full) if "<think>" in full or "</think>" in full else full
+        if not visible.strip():
+            msgs = [{"role": "user", "content": prompt + "\n\n（直接输出完整 HTML 代码，不要思考过程。）"}]
+            full, extra = "", {}
+        elif url not in iq._DROPPED or "continue_final_message" not in iq._DROPPED[url]:
+            msgs = [{"role": "user", "content": prompt}, {"role": "assistant", "content": visible}]
+            extra = {"continue_final_message": True, "add_generation_prompt": False}
+            full = visible
+        else:
+            msgs = [{"role": "user", "content": prompt}, {"role": "assistant", "content": visible},
+                    {"role": "user", "content": _CONTINUE_HINT}]
+            extra, full = {}, visible
     return full, total_in, total_out, cont, total_reason
 
 
+def _drop_seam_fences(text):
+    """代码块内部再次出现带语言标记的开围栏(续写时模型重新输出 ```html)是接缝, 删除该行。"""
+    out, open_ = [], False
+    for line in text.split("\n"):
+        m = re.match(r"^[ \t]*```([\w-]*)[ \t]*$", line)
+        if m:
+            if m.group(1) and open_:
+                continue
+            open_ = bool(m.group(1)) or not open_
+        out.append(line)
+    return "\n".join(out)
+
+
 def extract_html(resp):
-    resp = iq.strip_think(resp)
-    m =re.search(r"```(?:html|HTML)?\s*\n(.*?)```", resp, re.S)
-    if m:
-        return m.group(1).strip()
+    """从模型输出中取出 HTML: 删除续写接缝处的代码围栏行后, 优先取包含 <html/<!doctype 的最长代码块, 否则按文档标记截取。"""
+    resp = _drop_seam_fences(iq.strip_think(resp))
+    blocks = [m.group(1) for m in re.finditer(r"(?m)^[ \t]*```[\w-]*[ \t]*\n(.*?)(?:^[ \t]*```[ \t]*$|\Z)", resp, re.S)]
+    docs = [b for b in blocks if re.search(r"<!doctype|<html", b, re.I)]
+    if docs:
+        return max(docs, key=len).strip()
     low = resp.lower()
     i = low.find("<!doctype")
     if i < 0:
         i = low.find("<html")
     if i >= 0:
         j = low.rfind("</html>")
-        return resp[i:j + 7].strip() if j > i else resp[i:].strip()
+        out = resp[i:j + 7] if j > i else resp[i:]
+        return re.sub(r"(?m)^[ \t]*```[\w-]*[ \t]*\n?", "", out).strip()
+    if blocks:
+        return max(blocks, key=len).strip()
     return resp.strip()
 
 
@@ -249,16 +375,24 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
         try:
             base_max = 16000 if "地狱" in task["tags"] else (12000 if "困难" in task["tags"] else 8000)
             tier_max = int(base_max * 2.5) if thinking else base_max  # 思考 token 与正文共享输出预算
-            resp, in_tok, out_tok, cont_n, reason_len = gen_complete(url, model, task["prompt"], tier_max, headers, thinking)
-            if len(resp.strip()) < 200:
-                done_ct[0] += 1
-                plog("  ✗ [%s] 思考耗尽未产出正文(思考%d字) · 进度 %d/%d" % (task["name"], reason_len, done_ct[0], len(tasks)))
-                return failed(task, "思考耗尽未产出正文(思考%d字)" % reason_len)
+            resp, in_tok, out_tok, cont_n, reason_len = gen_complete(url, model, task["prompt"], tier_max, headers,
+                                                                     thinking, cancel)
+        except Cancelled:
+            return None
         except Exception as e:
             done_ct[0] += 1
+            detail = getattr(e, "detail", "")
             plog("  ✗ [%s] 失败: %s · 进度 %d/%d" % (task["name"], str(e)[:60], done_ct[0], len(tasks)))
-            return failed(task, str(e)[:120])
+            return failed(task, (str(e) + ((" " + detail[:120]) if detail else ""))[:240])
         html = extract_html(resp)
+        if len(html) < 200 or "<" not in html:
+            done_ct[0] += 1
+            why = ("思考耗尽未产出正文(思考%d字)" % reason_len) if thinking and reason_len and not iq.strip_think(resp).strip() \
+                else "输出中没有有效的 HTML(提取到 %d 字)" % len(html)
+            plog("  ✗ [%s] %s · 进度 %d/%d" % (task["name"], why, done_ct[0], len(tasks)))
+            return failed(task, why)
+        if cancel is not None and cancel.is_set():
+            return None
         fname = task["id"] + ".html"
         fpath = os.path.join(work_dir, fname)
         with open(fpath + ".tmp", "w", encoding="utf-8") as f:
@@ -269,7 +403,10 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
                 "lines": html.count("\n") + 1,
                 "continuations": cont_n, "reason_chars": reason_len,
                 "stars": None, "in_tokens": in_tok, "out_tokens": out_tok}
-        geneval.apply_eval(item, evaluator.evaluate(task, fpath, html))
+        report = evaluator.evaluate(task, fpath, html)
+        if cancel is not None and cancel.is_set():
+            return None
+        geneval.apply_eval(item, report)
         done_ct[0] += 1
         plog("  ✓ [%s] %s · 进度 %d/%d" % (task["name"], _eval_brief(item), done_ct[0], len(tasks)))
         return item
@@ -289,7 +426,7 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
                 if not f.done():
                     if not final:
                         break
-                elif not f.cancelled() and f.result() is not None:
+                elif not f.cancelled() and f.exception() is None and f.result() is not None:
                     result["items"].append(f.result())
                     changed = True
                 flushed[0] += 1
@@ -304,9 +441,10 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
                 if cancel is not None and cancel.is_set():
                     for f in pending:
                         f.cancel()
+                    evaluator.close()  # 结束进行中的浏览器检测; 生成中的请求在下一个数据块时中断
                     break
         finally:
-            ex.shutdown(wait=False)
+            ex.shutdown(wait=True)  # 等进行中的题收尾, 避免返回后仍有线程写作品/启动浏览器
         flush(final=True)
         if cancel is not None and cancel.is_set():
             result["status"], result["error"] = "cancelled", "用户取消"
@@ -340,8 +478,9 @@ def _eval_brief(item):
     return s + " · %d 行" % item["lines"]
 
 
-def reevaluate(run_id, judge=None, only=None, db_path=None, browsers=2, log=None):
-    """对库中已有生成运行重新评测(运行检测 + 可选视觉评审), 就地更新作品条目, 保留人工星级。"""
+def reevaluate(run_id, judge=None, only=None, db_path=None, browsers=2, log=None, cancel=None):
+    """对库中已有生成运行重新评测(运行检测 + 可选视觉评审), 就地更新作品条目, 保留人工星级。
+    未配置评审模型时保留原有评审结果(标记为基于旧截图); cancel 置位后不再开始新作品。"""
     log = log or plog
     doc = store.get_run(run_id, db_path=db_path)
     if not doc or doc.get("kind") != "gen":
@@ -355,21 +494,40 @@ def reevaluate(run_id, judge=None, only=None, db_path=None, browsers=2, log=None
     done = [0]
 
     def one(it):
+        if cancel is not None and cancel.is_set():
+            return
         path = os.path.join(ROOT, it["file"])
         if not os.path.isfile(path):
             log("  ✗ [%s] 作品文件缺失: %s" % (it["name"], it["file"]))
             return
         with open(path, encoding="utf-8", errors="replace") as f:
             html = f.read()
-        geneval.apply_eval(it, evaluator.evaluate(tasks[it["id"]], path, html))
+        old_judge = (it.get("eval") or {}).get("judge")
+        report = evaluator.evaluate(tasks[it["id"]], path, html)
+        if cancel is not None and cancel.is_set():
+            return
+        if not evaluator.judge_cfg and old_judge and old_judge.get("score") is not None:
+            report["judge"] = dict(old_judge, stale=True)
+        geneval.apply_eval(it, report)
         store.update_gen_item(run_id, it, db_path=db_path)
         done[0] += 1
         log("  ✓ [%s] %s · 进度 %d/%d" % (it["name"], _eval_brief(it), done[0], len(targets)))
 
     try:
         with ThreadPoolExecutor(max_workers=max(1, browsers)) as ex:
-            list(ex.map(one, targets))
+            pending = {ex.submit(one, it) for it in targets}
+            while pending:
+                finished, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
+                for f in finished:
+                    f.result()
+                if cancel is not None and cancel.is_set():
+                    for f in pending:
+                        f.cancel()
+                    evaluator.close()
     finally:
         evaluator.close()
-        store.update_run_meta(run_id, {"eval": evaluator.meta(), "gen_version": GEN_VERSION}, db_path=db_path)
-    log("重新评测完成")
+        meta = evaluator.meta()
+        if not evaluator.judge_cfg:  # 未配置评审时保留了原评审结果, 评审模型沿用原记录
+            meta["judge_model"] = (doc.get("eval") or {}).get("judge_model")
+        store.update_run_meta(run_id, {"eval": meta}, db_path=db_path)  # gen_version 保持生成时的版本
+    log("重新评测已取消" if cancel is not None and cancel.is_set() else "重新评测完成")

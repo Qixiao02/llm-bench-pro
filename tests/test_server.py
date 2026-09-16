@@ -44,6 +44,14 @@ class ServerCase(unittest.TestCase):
 
 
 class TestServer(ServerCase):
+    def test_post_rejects_cross_origin_and_non_json(self):
+        for headers, code in (({"Origin": "null"}, 403), ({"Origin": "http://evil.example"}, 403),
+                              ({"Content-Type": "text/plain"}, 415)):
+            with self.subTest(headers=headers):
+                self.assertEqual(self.request("POST", "/api/run-delete", {"run_id": "x"}, headers)[0], code)
+        st = self.request("POST", "/api/run-delete", {"run_id": "x"}, {"Origin": "http://127.0.0.1:%d" % self.port})[0]
+        self.assertNotIn(st, (403, 415))
+
     def test_path_traversal_blocked(self):
         for p in ["/works/../llm_bench_pro/server.py", "/works/..%2Fllm_bench_pro%2Fserver.py", "/works/..%5CREADME.md",
                   "/static/../../README.md", "/README.md", "/llm_bench_pro/store.py"]:
