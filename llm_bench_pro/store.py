@@ -402,6 +402,16 @@ def list_runs(kind, items=True, db_path=None, summary=False):
     return [_rebuild(r, children, items) for r in rows]
 
 
+def rewrite_children(doc, db_path=None):
+    """整体重写某次运行的子表行(子表只追加, 续跑前删除请求失败的条目后需要调用)。返回新的写入游标。"""
+    kind = doc_kind(doc)
+    with session(db_path) as conn, write_tx(conn):
+        for table in ("perf_phases", "perf_metrics", "iq_subjects", "iq_items", "gen_items"):
+            conn.execute("DELETE FROM %s WHERE run_id=?" % table, (doc["run_id"],))
+        upsert_header(conn, doc)
+        return insert_children(conn, doc, kind, {})
+
+
 def delete_run(run_id, db_path=None):
     """删除运行(子表级联)并写入墓碑, 防止 results/ 中的同名 JSON 在启动时被重新导入。返回被删运行的 kind 或 None。"""
     with session(db_path) as conn, write_tx(conn):

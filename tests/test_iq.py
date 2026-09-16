@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import json
 import os
 import threading
 import time
@@ -77,20 +78,44 @@ class TestStatistics(unittest.TestCase):
 class TestRequests(unittest.TestCase):
     def setUp(self):
         iq._DROPPED.clear()
-        iq._NO_TEMPLATE_KWARGS.clear()
+        iq._CTX_LIMIT.clear()
 
-    def test_context_overflow_halves_max_tokens(self):
+    def test_context_overflow_fits_max_tokens(self):
         def h(method, path, body):
-            if body["max_tokens"] > 9000:
-                return 400, {"message": "This model's maximum context length is 10000 tokens"}, None
+            if body["max_tokens"] + 10 > 10000:
+                return 400, {"message": "This model's maximum context length is 10000 tokens. However, you requested "
+                                        "%d tokens (10 in the messages, %d in the completion)." % (body["max_tokens"] + 10, body["max_tokens"])}, None
             return 200, chat_reply("B"), None
         m = MockServer(h)
         try:
             r = iq.ask(m.url + "/v1/chat/completions", "m", "q", 8, True, {})
-            self.assertEqual((r["content"], r["max_tokens"]), ("B", 8192))
-            self.assertEqual([c[2]["max_tokens"] for c in m.calls], [32768, 16384, 8192])
+            self.assertEqual((r["content"], r["max_tokens"]), ("B", 10000 - 10 - 32))  # 按报错直接收缩, 不逐次减半
+            self.assertEqual(len(m.calls), 2)
+            iq.ask(m.url + "/v1/chat/completions", "m", "q", 8, True, {})
+            self.assertEqual(len(m.calls), 3)  # 上下文长度按端点缓存, 不再先撞一次 400
         finally:
             m.close()
+
+    def test_context_overflow_unparsed_halves(self):
+        def h(method, path, body):
+            if body["max_tokens"] > 9000:
+                return 400, {"message": "max_tokens is too large"}, None
+            return 200, chat_reply("B"), None
+        m = MockServer(h)
+        try:
+            r = iq.ask(m.url + "/v1/chat/completions", "m", "q", 8, True, {})
+            self.assertEqual([c[2]["max_tokens"] for c in m.calls], [32768, 16384, 8192])
+            self.assertEqual(r["max_tokens"], 8192)
+        finally:
+            m.close()
+
+    def test_rejected_keys_ignore_echoed_input(self):
+        d1 = json.dumps({"detail": [{"type": "missing", "loc": ["body", "messages"], "msg": "Field required",
+                                     "input": {"top_k": 20, "seed": 42}}]})
+        self.assertEqual(iq._rejected_keys(d1, ["top_k", "seed"]), set())
+        d2 = json.dumps({"detail": [{"type": "extra_forbidden", "loc": ["body", "top_k"],
+                                     "msg": "Extra inputs are not permitted", "input": 20}]})
+        self.assertEqual(iq._rejected_keys(d2, ["top_k", "seed"]), {"top_k"})
 
     def test_optional_params_dropped_only_when_named(self):
         def h(method, path, body):
@@ -170,6 +195,132 @@ class TestRunLifecycle(unittest.TestCase):
     def test_resume_rejects_other_version(self):
         with self.assertRaises(ValueError):
             iq.run_iq("http://x", "m", bank=_bank(), resume={"iq_version": "1.0.0", "items": [], "subjects": []})
+
+
+class TestReviewRegressions(unittest.TestCase):
+    """1.4.0 审查修复的回归用例。"""
+
+    def test_mcq_first_line_and_case(self):
+        cases = [("C\n\n解释：A 选项错误", "C"), ("D\nExplanation: others are wrong.", "D"),
+                 ("Answer: A careful reading shows nothing", None), ("选项B正确", "B"),
+                 ("Option C is correct.", "C"), ("答案：B，因为 A 不对", "B"), ("\\boxed{D}", "D")]
+        for text, want in cases:
+            with self.subTest(text=text):
+                self.assertEqual(iq.extract_mcq(text), want)
+
+    def test_mcq_echo_choice_text(self):
+        item = {"choices": ["Paris", "London", "Berlin", "Rome"], "answer": "B"}
+        self.assertTrue(iq.judge_mcq("London", item))
+        self.assertFalse(iq.judge_mcq("Rome", item))
+
+    def test_math500_equivalents(self):
+        cases = [("2516_{8}", "2516_8", True), ("5r^{5}", "5r^5", True),
+                 ("-2, 1+\\sqrt{5}, 1-\\sqrt{5}", "1\\pm\\sqrt{5},-2", True),
+                 ("36\\degree", "36^\\circ", True), ("10{,}080", "10,\\!080", True),
+                 ("\u2212120", "-120", True), ("1,2", "12", False), ("1, 2", "1, 3", False)]
+        for pred, gold, want in cases:
+            with self.subTest(pred=pred, gold=gold):
+                self.assertEqual(iq.math_equal(pred, gold), want)
+
+    def test_gsm8k_extraction(self):
+        cases = [("#### **18**\n（共 3 步）", "18", True), ("#### 16\n更正：#### 18", "18", True),
+                 ("\\boxed{18}\n验证完毕，共 3 步。", "18", True), ("#### 1,234", "1234", True)]
+        for text, gold, want in cases:
+            with self.subTest(text=text):
+                self.assertEqual(iq.judge_math(text, {"answer": gold}), want)
+
+    def test_ifeval_rules(self):
+        items = bankman.ifeval_zh_items()
+        by_prefix = lambda p: next(x for x in items if x["q"].startswith(p))  # noqa: E731
+        json_item = next(x for x in items if any(c.get("t") == "json_equals" for c in x["checks"]))
+        self.assertFalse(iq.judge_instruct('{"ok": false}', json_item))
+        self.assertTrue(iq.judge_instruct('```JSON\n{"ok": true}\n```', json_item))
+        keys_item = next(x for x in items if any(c.get("t") == "json_keys" for c in x["checks"]))
+        self.assertFalse(iq.judge_instruct('["name", "age"]', keys_item))
+        three = next(x for x in items if "3个要点" in x["q"] or "三个要点" in x["q"])
+        self.assertFalse(iq.judge_instruct("1. 补水\n2. 代谢\n3. 护肤\n4. 其他", three))
+
+    def test_select_indices_stratified(self):
+        sub = {"items": [{"sub": "s%d" % (i // 8)} for i in range(80)]}
+        idx = iq.select_indices(sub, 10)
+        self.assertEqual(len(idx), 10)
+        self.assertEqual(len({sub["items"][i]["sub"] for i in idx}), 10)
+        self.assertEqual(iq.select_indices(sub, None), list(range(80)))
+        self.assertEqual(iq.select_indices({"items": [{}] * 5}, 3), [0, 1, 2])
+
+    def test_compare_excludes_errors_and_other_bank(self):
+        a = {"bank_id": "b", "items": [{"sid": "s", "idx": i, "ok": True} for i in range(10)]}
+        b = {"bank_id": "b", "items": [{"sid": "s", "idx": i, "ok": False, "err": "timeout"} for i in range(10)]}
+        self.assertEqual(iq.compare_runs(a, b)["overall"]["n"], 0)
+        r = iq.compare_runs(a, dict(a, bank_id="other"))
+        self.assertFalse(r["same_bank"])
+        self.assertIsNone(r["overall"]["significant"])
+
+    def test_macro_merges_mmlu(self):
+        subs = [{"id": "mmlu_a", "correct": 10, "n": 10}, {"id": "mmlu_b", "correct": 0, "n": 10},
+                {"id": "gsm8k", "correct": 0, "n": 10}]
+        self.assertEqual(iq.macro_accuracy(subs), 25.0)
+
+    def test_consecutive_errors_abort_then_resume_retries(self):
+        import sinks
+        state = {"down": True, "n": 0}
+
+        def h(method, path, body):
+            state["n"] += 1
+            if state["down"]:
+                return 503, {"error": "unavailable"}, None
+            return 200, chat_reply("B"), None
+        m = MockServer(h)
+        try:
+            out = temp_dir()
+            sink = sinks.JsonFileSink(out)
+            with self.assertRaises(RuntimeError):
+                iq.run_iq(m.url + "/v1/chat/completions", "m", bank=_bank(2, 20), conc=1, sink=sink)
+            doc = load_json(sink.path)
+            self.assertEqual(doc["status"], "failed")
+            self.assertLess(state["n"], 15)
+            state["down"] = False
+            iq.run_iq(m.url + "/v1/chat/completions", "m", bank=_bank(2, 20), sink=sinks.JsonFileSink(out), resume=doc)
+            doc2 = load_json(sink.path)
+            self.assertEqual((doc2["status"], doc2["overall"]["errors"], doc2["overall"]["correct"]), ("done", 0, 40))
+        finally:
+            m.close()
+
+    def test_resume_sqlite_after_errors(self):
+        """SQLite 子表只追加: 续跑删除失败条目后整体重写, 结果不重复。"""
+        import sinks
+        import store
+        state = {"n": 0}
+
+        def h(method, path, body):
+            state["n"] += 1
+            if state["n"] in (2, 5):
+                return 500, {"error": "boom"}, None
+            return 200, chat_reply("B"), None
+        m = MockServer(h)
+        try:
+            db = os.path.join(temp_dir(), "t.db")
+            sink = sinks.SqliteSink(db)
+            iq.run_iq(m.url + "/v1/chat/completions", "m", bank=_bank(1, 6), conc=1, sink=sink)
+            doc = store.get_run(sink.run_id, db_path=db)
+            self.assertEqual(doc["overall"]["errors"], 2)
+            iq.run_iq(m.url + "/v1/chat/completions", "m", bank=_bank(1, 6), sink=sinks.SqliteSink(db), resume=doc)
+            doc2 = store.get_run(sink.run_id, db_path=db)
+            self.assertEqual(len(doc2["items"]), 6)
+            self.assertEqual((doc2["overall"]["errors"], doc2["overall"]["correct"]), (0, 6))
+        finally:
+            m.close()
+
+    def test_trunc_only_when_wrong(self):
+        import sinks
+        m = MockServer(lambda *a: (200, chat_reply("B", finish="length"), None))
+        try:
+            sink = sinks.JsonFileSink(temp_dir())
+            iq.run_iq(m.url + "/v1/chat/completions", "m", bank=_bank(1, 4), sink=sink)
+            doc = load_json(sink.path)
+            self.assertEqual((doc["overall"]["correct"], doc["overall"]["truncated"]), (4, 0))
+        finally:
+            m.close()
 
 
 if __name__ == "__main__":

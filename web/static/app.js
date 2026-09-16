@@ -1036,16 +1036,26 @@ function renderIq(){
       ${iqIssues(s.r).length?`<div class="kpi-sub" style="color:var(--warning)">${esc(iqIssues(s.r).join(" · "))}</div>`:""}</div>`;
   }).join("")+`</div>`;
   series.forEach(s=>{const w=iqVersionWarning(s.r);if(w)html+=`<div class="alert is-warning">${icon("alert")}<span><b>${s.tag}</b>：${esc(w)}</span></div>`});
+  if(Array.isArray(a.warnings)&&a.warnings.length)
+    html+=`<div class="alert is-warning">${icon("alert")}<span><b>A 运行自检</b>：${a.warnings.map(esc).join("；")}</span></div>`;
+  const errN=(a.overall||{}).errors||0;
+  if(a.status==="done"&&errN&&SERVER.iq_version&&a.iq_version===SERVER.iq_version){
+    html+=`<div class="alert is-info">${icon("info")}<span>A 有 ${errN} 题请求失败（已计为答错）。重试只会重新作答这些题，其余结果保持不变。</span>
+      <button class="btn btn-secondary btn-sm" onclick="iqResume('${esc(a.run_id)}')">${icon("play")}重试失败的题</button></div>`;
+  }
   if(["cancelled","interrupted","failed"].includes(a.status)){
     const canResume=SERVER.iq_version&&a.iq_version===SERVER.iq_version;
     const doneN=(a.subjects||[]).reduce((t,x)=>t+(x.n||0),0);
-    html+=`<div class="alert is-info">${icon("info")}<span>A ${STATUS_NAME[a.status]||a.status}${a.error?"（"+esc(a.error)+"）":""}：已完成 ${a.subjects?a.subjects.length:0} 个科目共 ${doneN} 题，未完成科目中已作答的题目也已保存。${canResume?"续跑会沿用原来的模型端点、采样与题量设置，并使用上方表单中的 API Key。":"该运行由其他版本的评测程序生成，无法续跑。"}</span>
+    html+=`<div class="alert is-info">${icon("info")}<span>A ${STATUS_NAME[a.status]||a.status}${a.error?"（"+esc(a.error)+"）":""}：已完成 ${a.subjects?a.subjects.length:0} 个科目共 ${doneN} 题，未完成科目中已作答的题目也已保存，请求失败的题续跑时会重新作答。${canResume?"续跑会沿用原来的模型端点、采样与题量设置，并使用上方表单中的 API Key。":"该运行由其他版本的评测程序生成，无法续跑。"}</span>
       ${canResume?`<button class="btn btn-secondary btn-sm" onclick="iqResume('${esc(a.run_id)}')">${icon("play")}续跑</button>`:""}</div>`;
   }
   const mismatch=series.slice(1).filter(s=>s.r.bank_id!==a.bank_id);
+  const pkey=r=>JSON.stringify([r.params&&r.params.subject_ids||null,r.params&&r.params.limit_per_subject||null]);
+  const pdiff=series.slice(1).filter(s=>s.r.bank_id===a.bank_id&&pkey(s.r)!==pkey(a));
+  if(pdiff.length)html+=`<div class="alert is-warning">${icon("alert")}<span>题量设置不一致：${pdiff.map(s=>esc(s.tag)).join("、")} 与 A 选择的科目或每科题数不同，总分覆盖的题目不同，请以分科成绩和配对检验为准</span></div>`;
   if(mismatch.length)html+=`<div class="alert is-warning">${icon("alert")}<span>题集版本不一致：${mismatch.map(s=>esc(s.tag+"（"+s.r.bank_id+"）")).join("、")} 与 A（${esc(a.bank_id)}）使用了不同题集，分数不具可比性</span></div>`;
   html+=`<div class="iq-layout">
-    <div class="panel"><div class="panel-head"><div><h3 class="panel-title">能力分布</h3><p class="panel-desc">前 8 个科目的准确率</p></div></div>
+    <div class="panel"><div class="panel-head"><div><h3 class="panel-title">能力分布</h3><p class="panel-desc">各科目准确率</p></div></div>
       <div class="panel-body"><canvas class="chart" id="iqRadar"></canvas><div class="legend" id="iqRadarLg"></div></div></div>
     <div class="panel"><div class="panel-head"><div><h3 class="panel-title">分科准确率</h3><p class="panel-desc">${series.length>1?"加粗为各科最高分":"括号内为 95% 置信区间"}</p></div></div>
       <div class="panel-body" id="iqSubjTbl"></div></div></div>`;
@@ -1071,7 +1081,8 @@ function renderIq(){
     const card=document.querySelector(`[data-sig-card="${CSS.escape(s.r.run_id)}"]`);
     if(!card)return;
     if(!d||!d.ok){card.textContent="配对检验不可用";return}
-    if(!d.same_bank||!d.overall.n){card.textContent="题集不同，无法逐题配对检验";return}
+    if(!d.same_bank){card.textContent="题集不同，无法逐题配对检验";return}
+    if(!d.overall.n||d.overall.significant==null){card.textContent="没有双方都有效作答的共同题目，无法配对检验";return}
     const o=d.overall;
     card.innerHTML=`<span class="sig ${o.significant?"yes":"no"}">${o.significant?"差异显著":"差异不显著"}</span> · p=${fmtP(o.p)} · A 独对 ${o.a_only} / B 独对 ${o.b_only}`;
     card.title=`McNemar 配对检验：${o.n} 道共同题目中，仅 A 答对 ${o.a_only} 题，仅 B 答对 ${o.b_only} 题。p<0.05 视为差异显著。`;
@@ -1088,6 +1099,7 @@ function iqVersionWarning(r){
   if(verLt(r.iq_version,"1.2.0")&&r.thinking)return `该运行使用 ${r.iq_version} 评测程序：思考模式输出上限较低，长思考题目可能被截断计错且未单独标记，建议重新运行`;
   if(verLt(r.iq_version,"1.3.0")&&!r.thinking)return `该运行使用 ${r.iq_version} 评测程序：MATH-500 / GSM8K 输出上限较低（900 / 1280 token），部分题目会被截断计错，数学科目分数偏低`;
   if(verLt(r.iq_version,"1.3.0")&&r.thinking)return `该运行使用 ${r.iq_version} 评测程序：思考模式为贪心解码，容易陷入重复而被截断，建议用新版重新运行`;
+  if(verLt(r.iq_version,"1.4.0"))return `该运行使用 ${r.iq_version} 评测程序：之后修正了答案提取（首行字母、小写选项）、MATH-500 等价判定和部分指令遵循规则；限制题量时 MMLU 只覆盖少数学科，请求失败的题也计为答错。与 1.4.0 及之后的分数不宜直接比较`;
   return "";
 }
 function iqIssues(r){
@@ -1121,7 +1133,7 @@ $("iqResult").addEventListener("click",async e=>{
 function drawRadar(series){
   const cv=$("iqRadar");if(!cv||!cv.clientWidth)return;
   const {g,w,h}=setupCanvas(cv,.9,260,380);
-  const subs=(series[0].r.subjects||[]).slice(0,8),n=subs.length;
+  const subs=series[0].r.subjects||[],n=subs.length;
   $("iqRadarLg").innerHTML=series.map(s=>legendBtn("",s.color,`${s.tag} · ${s.r.overall&&s.r.overall.acc!=null?s.r.overall.acc+"%":"—"}`)).join("");
   if(n<3){noData(g,w,h,"科目不足 3 个，无法绘制");return}
   const cx=w/2,cy=h/2,R=Math.min(w/2-70,h/2-30),ang=i=>-Math.PI/2+2*Math.PI*i/n;

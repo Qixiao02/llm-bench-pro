@@ -186,18 +186,15 @@ def iq_wrong(run_id, sid, limit=300):
         sub_items = next((s["items"] for s in bank["subjects"] if s["id"] == sid), [])
     except FileNotFoundError:
         sub_items = []
+    wrong = sorted((it for it in doc.get("items", []) if it.get("sid") == sid and not it.get("ok")),
+                   key=lambda it: it["idx"] if isinstance(it.get("idx"), int) else 0)[:limit]
     rows = []
-    for it in doc.get("items", []):
-        if it.get("sid") != sid or it.get("ok"):
-            continue
+    for it in wrong:
         q = sub_items[it["idx"]] if isinstance(it.get("idx"), int) and it["idx"] < len(sub_items) else {}
         rows.append({"idx": it.get("idx"), "q": (q.get("q") or "")[:600], "choices": q.get("choices"),
                      "answer": q.get("answer"), "checks": q.get("checks"), "pred": it.get("pred"),
                      "trunc": bool(it.get("trunc")), "err": it.get("err"), "finish": it.get("finish"),
-                     "out": it.get("out"), "tail": it.get("tail")})
-        if len(rows) >= limit:
-            break
-    rows.sort(key=lambda r: r["idx"] if isinstance(r["idx"], int) else 0)
+                     "out": it.get("out"), "tail": it.get("tail"), "sub": q.get("sub")})
     return {"ok": True, "run_id": run_id, "sid": sid, "iq_version": doc.get("iq_version"),
             "bank_found": bool(sub_items), "rows": rows}
 
@@ -217,6 +214,10 @@ def _judge_cfg(body):
     if not base or not model:
         return None
     return {"base": base, "model": model, "api_key": body.get("judge_key") or ""}
+
+
+def _truthy(v):
+    return v is True or (isinstance(v, (int, float)) and v == 1) or str(v).strip().lower() in ("1", "true", "yes", "on")
 
 
 def _parse_sampling(raw):
@@ -509,7 +510,10 @@ class Handler(BaseHTTPRequestHandler):
         if not job.try_start(base, model):
             return self._json({"ok": False, "error": "已有能力评测在运行"}, 409)
         subject_ids = body.get("subjects") or None
-        thinking = bool(body.get("thinking"))
+        if subject_ids is not None and not (isinstance(subject_ids, list) and all(isinstance(x, str) for x in subject_ids)):
+            job.set(running=False)
+            return self._json({"ok": False, "error": "subjects 应为科目 id 列表"}, 400)
+        thinking = _truthy(body.get("thinking"))
 
         def target(j):
             sink = sinks.SqliteSink()
@@ -528,8 +532,9 @@ class Handler(BaseHTTPRequestHandler):
         doc = store.get_run(run_id)
         if not doc:
             return self._json({"ok": False, "error": "run 不存在"}, 404)
-        if doc.get("status") not in ("cancelled", "interrupted", "failed"):
-            return self._json({"ok": False, "error": "只有已停止、中断或失败的运行可以续跑"}, 409)
+        retry_errors = doc.get("status") == "done" and (doc.get("overall") or {}).get("errors")
+        if doc.get("status") not in ("cancelled", "interrupted", "failed") and not retry_errors:
+            return self._json({"ok": False, "error": "只有已停止、中断、失败或含请求失败题目的运行可以续跑"}, 409)
         if doc.get("iq_version") != iq.IQ_VERSION:
             return self._json({"ok": False, "error": "该运行由评测程序 %s 生成，当前为 %s，判分口径不同，不能续跑，请重新运行"
                                % (doc.get("iq_version"), iq.IQ_VERSION)}, 409)
@@ -573,7 +578,7 @@ class Handler(BaseHTTPRequestHandler):
             sink = sinks.SqliteSink()
             gen.run_gen(url, model, body.get("api_key", ""), task_ids, conc, RESULTS, (body.get("tag") or "").strip(),
                         (body.get("framework") or "").strip() or None, (body.get("fw_version") or "").strip() or None,
-                        bool(body.get("thinking")), sink=sink, judge=judge, cancel=j.cancel)
+                        _truthy(body.get("thinking")), sink=sink, judge=judge, cancel=j.cancel)
             j.set(run_id=sink.run_id)
         job.run(target, "_GEN_PROGRESS", gen)
         return self._json({"ok": True, "url": url, "tasks": len(task_ids) if task_ids else len(gen.GEN_TASKS),

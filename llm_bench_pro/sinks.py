@@ -62,6 +62,11 @@ class SqliteSink:
         elif not running and self._hb_stop is not None:
             self._hb_stop.set()
 
+    def reset(self, result):
+        """续跑前整体重写子表(已删除请求失败的条目), 并同步写入游标。"""
+        self.run_id = result["run_id"]
+        self._cursor = store.rewrite_children(result, self.db_path)
+
     def _start_heartbeat(self):
         """独立心跳: 单个 phase 可能持续十几分钟; 调用线程退出(未正常收尾)时自动停止, 交由 stale 判定。"""
         self._hb_stop = stop = threading.Event()
