@@ -766,6 +766,12 @@ details.advanced>.form-grid{margin-top:var(--sp-3)}
 .scn-block{display:flex;flex-direction:column;gap:var(--sp-3)}
 .sub-h-note{display:block;margin-top:2px;font-size:var(--fs-12);font-weight:400;color:var(--text-3)}
 .notes{margin-top:var(--sp-4)}
+.side-row.is-rev{grid-template-columns:minmax(0,1.25fr) minmax(0,1fr)}
+.run-line{display:flex;align-items:center;gap:6px;min-width:0;line-height:1.6}
+.run-line+.run-line{margin-top:4px}
+.run-line .run-tag{width:18px;height:18px;font-size:11px}
+.run-line b{color:var(--text-1);font-weight:600}
+.ov.is-single{grid-template-columns:minmax(0,1fr)}
 .notes .alert{margin-bottom:0}
 
 /* 样式自检 */

@@ -1894,10 +1894,8 @@ async function render(){
    速度对比
    ============================================================ */
 function swapCmp(){const a=$("cmpA").value,b=$("cmpB").value;if(!b)return;$("cmpA").value=b;$("cmpB").value=a;renderCmp()}
-function runCard(r,tag){
-  return `<div class="card cmp-run"><span class="run-tag ${tag.toLowerCase()}">${tag}</span><div style="min-width:0">
-    <div class="cmp-run-name">${esc(r.model||"?")}</div>
-    <div class="cmp-run-meta">${esc([runFw(r)||"推理框架未填写",(SUITE_NAME[r.suite]||r.suite||"")+"规模",r.tag,hostOf(r.url),timeText(r.started_utc)].filter(Boolean).join(" · "))}</div></div></div>`;
+function runLine(r,tag,color){
+  return `<span class="run-line"><span class="run-tag" style="background:${color}">${tag}</span><b>${esc(r.model||"?")}</b> · ${esc([runFw(r)||"推理框架未填写",(SUITE_NAME[r.suite]||r.suite||"")+"规模",r.tag,hostOf(r.url),timeText(r.started_utc)].filter(Boolean).join(" · "))}</span>`;
 }
 function cmpRows(a,b){
   const ma=perfCtx(a),mb=perfCtx(b);
@@ -1906,13 +1904,23 @@ function cmpRows(a,b){
     return{k,label:metricLabel(k,ma),va,vb,d,same,refB:same?"":refText(k,mb),gain:d==null?null:d*k.dir};  /* gain>0 表示 B 更好 */
   }).filter(x=>x.va!=null||x.vb!=null);
 }
+/* 对好坏的影响: 更差 → 更好 → 持平 → 不可比 */
+function cmpImpactOrder(rows){
+  const rank=x=>x.gain==null?(x.same?3:4):x.gain<=-1?0:x.gain>=1?1:2;
+  return [...rows].sort((p,q)=>rank(p)-rank(q)||(rank(p)<2?Math.abs(q.gain)-Math.abs(p.gain):0));
+}
+function cmpTableRows(rows){
+  return rows.map(x=>({label:x.label,va:x.va,vb:x.vb,d:x.same?x.d:null,_dir:x.k.dir,unit:x.k.unit,digits:x.k.digits??1,dirText:x.k.dir<0?"越低越好":"越高越好",
+    cmp:x.va==null||x.vb==null?{tone:"neutral",text:"缺一边"}:x.same?{tone:"good",text:"可比"}:{tone:"warn",text:"档位不同",tip:"B 是"+x.refB},
+    judge:x.gain==null?null:Math.abs(x.gain)<1?{tone:"neutral",text:"持平"}:x.gain>0?{tone:"good",text:"B 更好"}:{tone:"bad",text:"B 更差"}}));
+}
 async function renderCmp(){
   if(!RUNS_LOADED)return;
   const idA=$("cmpA").value,idB=$("cmpB").value;
   const el=$("cmpBody");
   if(!RUNS[idA]){el.innerHTML=emptyState("还没有速度测试","把两次速度测试放在一起看谁更快、快多少。先在「速度测试」页完成至少两次测试");buildJump("cmpJump",null);return}
   if(!RUNS[idB]||idA===idB){
-    el.innerHTML=`<div class="cmp-runs">${runCard(RUNS[idA],"A")}</div><div style="margin-top:16px">`+
+    el.innerHTML=`<div class="ov is-single"><div class="ov-concl"><div class="ov-h">测试 A</div>${runLine(RUNS[idA],"A",C.a)}</div></div><div style="margin-top:16px">`+
       emptyState("再选一个测试 B","比如换了推理框架、量化方式或显卡之后再测一次，放在一起比",{iconName:"compare"})+`</div>`;
     buildJump("cmpJump",null);return;
   }
@@ -1922,44 +1930,40 @@ async function renderCmp(){
   const a=FULL[idA],b=FULL[idB];
   const rows=cmpRows(a,b),both=rows.filter(x=>x.gain!=null);
   const better=both.filter(x=>x.gain>=1).sort((p,q)=>q.gain-p.gain),worse=both.filter(x=>x.gain<=-1).sort((p,q)=>p.gain-q.gain);
+  const notSame=rows.filter(x=>!x.same&&x.va!=null&&x.vb!=null);
   const concl=[];
   concl.push({tone:worse.length>better.length?"warn":better.length?"good":"info",
-    html:`${both.length} 项指标里，B 有 <b>${better.length}</b> 项更好、<b>${worse.length}</b> 项更差、${both.length-better.length-worse.length} 项基本持平（差别小于 1%）。`});
+    html:`${both.length} 项可比的指标里，B 有 <b>${better.length}</b> 项更好、<b>${worse.length}</b> 项更差、${both.length-better.length-worse.length} 项基本持平（差别小于 1%）${notSame.length?`，另有 ${notSame.length} 项档位不同不可比`:""}。`});
   if(better.length)concl.push({tone:"good",html:"B 更好的地方："+better.slice(0,3).map(x=>`${esc(x.label)} <b>${fmt(Math.abs(x.d),1)}%</b>`).join("；")+"。"});
   if(worse.length)concl.push({tone:"bad",html:"B 更差的地方："+worse.slice(0,3).map(x=>`${esc(x.label)} <b>${fmt(Math.abs(x.d),1)}%</b>`).join("；")+"。"});
-  const notSame=rows.filter(x=>!x.same&&x.va!=null&&x.vb!=null);
-  if(notSame.length)concl.push({tone:"info",html:`${notSame.length} 项因为两次测试的档位不同（例如最多同时请求数、最长输入不一样）没有计入：${notSame.map(x=>esc(x.label)).join("、")}。`});
+  if(notSame.length)concl.push({tone:"info",html:`没有计入（两次测试的档位不同，例如最多同时请求数、最长输入不一样）：${notSame.map(x=>esc(x.label)).join("、")}。`});
   const ov=[a,b].map(r=>(r.overrides||{}).fixed_output);
   if(ov[0]!==ov[1])concl.push({tone:"warn",html:"两次测试的输出长度设置不同（一次固定、一次不固定），速度类指标不能直接比较。"});
-  if(a.suite!==b.suite)concl.push({tone:"info",html:`两次测试规模不同（${esc(SUITE_NAME[a.suite]||a.suite)} / ${esc(SUITE_NAME[b.suite]||b.suite)}），只比较两边都有的项目。`});
-  const kpis=rows.map(x=>{
-    const dg=x.k.digits??1,f=v=>v==null?"—":(dg===0?fmtInt(v):fmt(v,dg));
-    const tip=x.k.term&&TERMS[x.k.term]?TERMS[x.k.term].name+"（"+TERMS[x.k.term].tech+"）："+TERMS[x.k.term].desc:"";
-    return `<div class="kpi"${tip?` title="${esc(tip)}"`:""}><div class="kpi-head"><span class="kpi-label">${esc(x.label)}</span>${x.same?deltaPill(x.va,x.vb,x.k.dir):`<span class="delta flat" title="B 是${esc(x.refB)}">档位不同</span>`}</div>
-      <div class="kpi-value" style="font-size:22px">${f(x.va)}<span class="faint" style="font-size:14px;font-weight:400"> → </span>${f(x.vb)}<small>${esc(x.k.unit)}</small></div>
-      <div class="kpi-sub">A → B · ${x.k.dir<0?"越低越好":"越高越好"}${x.same?"":` · B 是${esc(x.refB)}，不可比`}</div></div>`;
-  }).join("");
-  const diff=table(["指标","方向","A","B","差值","变化"],rows.map(x=>{
-    const dg=x.k.digits??1,dd=x.va!=null&&x.vb!=null&&x.same?x.vb-x.va:null;
-    const cls=dd==null||Math.abs(dd)<1e-9?"na":(dd*x.k.dir>0?"up":"down");
-    return [`${esc(x.label)}<span class="sub">${esc(x.k.unit)}</span>`,`<span class="faint">${x.k.dir<0?"越低越好":"越高越好"}</span>`,fmt(x.va,dg),fmt(x.vb,dg),
-      `<span class="${cls}">${dd==null||!x.same?"—":(dd>=0?"+":"")+fmt(dd,dg)}</span>`,x.same?deltaPill(x.va,x.vb,x.k.dir):`<span class="delta flat">档位不同</span>`];
-  }));
+  /* 右侧: 变化最大的项目(最好 2 项 + 最差 2 项) */
+  const top=[...better.slice(0,2),...worse.slice(0,2)];
+  const stats=top.map(x=>stat(esc(x.label),metricVal(x.k,x.vb),esc(x.k.unit),{delta:deltaPill(x.va,x.vb,x.k.dir,{prefix:"B "}),tip:metricTip(x.k),
+    sub:`A ${metricVal(x.k,x.va)} → B ${metricVal(x.k,x.vb)} · ${x.k.dir<0?"越低越好":"越高越好"}`})).join("")+
+    (top.length<4?stat("可比指标",`${better.length}<small>更好</small> ${worse.length}<small>更差</small>`,"",{sub:`${both.length-better.length-worse.length} 项持平${notSame.length?` · ${notSame.length} 项不可比`:""}`,wide:top.length%2===0}):"");
+  const ordered=cmpImpactOrder(rows),trows=cmpTableRows(ordered);
+  const num=(key,label)=>({key,label,type:"num",digitsOf:r=>r.digits,fmt:(v,r)=>metricVal({digits:r.digits,unit:r.unit},v)});
+  const sizeNote=a.suite!==b.suite?`两次测试规模不同（${esc(SUITE_NAME[a.suite]||a.suite)} / ${esc(SUITE_NAME[b.suite]||b.suite)}），只比较两边都有的项目`:"";
+  const compact={id:"c-all-c",title:"对比总表",sub:sizeNote,columns:[{key:"label",label:"指标",type:"text",sticky:true,wrap:true},num("va","A"),num("vb","B"),
+    {key:"d",label:"变化",type:"delta"},{key:"cmp",label:"可比性",type:"status"}],rows:trows,note:"默认按对好坏的影响排序：先更差、再更好"};
+  const full={id:"c-all-t",title:"对比总表",sub:sizeNote,columns:[{key:"label",label:"指标",type:"text",sticky:true,wrap:true},num("va","A"),num("vb","B"),
+    {key:"d",label:"变化",type:"delta"},{key:"judge",label:"结论",type:"status"},{key:"cmp",label:"可比性",type:"status"},{key:"unit",label:"单位",type:"text"},{key:"dirText",label:"方向",type:"text"}],rows:trows};
   const h=Math.max(220,both.length*30+60);
-  el.innerHTML=`<div class="stack"><div class="cmp-runs">${runCard(a,"A")}${runCard(b,"B")}</div>
-      ${summaryCard("对比结论",concl)}</div>`+
-    sec("c-diff","B 相对 A 的变化","往右是 B 更好，往左是 B 更差；延迟类指标（越短越好）已按“好坏”方向换算",
-      ccard("cDiff","各项指标的变化（%）",{desc:"灰色表示差别小于 1%，基本持平",h,table:diff})+
-      `<div class="kpi-grid" style="margin-top:16px">${kpis}</div>`,"变化一览")+
+  el.innerHTML=overview(concl,stats,{title:"对比结论",meta:runLine(a,"A",C.a)+runLine(b,"B",C.b)})+
+    panel({id:"c-diff",title:"变化一览",jump:"变化一览",desc:"往右是 B 更好，往左是 B 更差；延迟类指标（越短越好）已按“好坏”方向换算。灰色表示差别小于 1%，基本持平",
+      chart:`<div class="side-row is-rev">${dataTable(compact)}${ccard("cDiff","各项指标的变化（%）",{desc:"按对好坏的影响排序",h})}</div>`,tables:[full]})+
     perfSectionsHTML(a,b,"c");
   disposeDetached();
-  drawDiffChart("cDiff",both);
+  drawDiffChart("cDiff",cmpImpactOrder(both));
   drawPerfCharts(a,b,"c");
   buildJump("cmpJump",el);
 }
 function drawDiffChart(id,rows){
   if(!rows.length){chartEmpty(id,"两次测试没有共同的指标");return}
-  const lim=niceMax(Math.max(8,...rows.map(x=>Math.abs(x.gain)))*1.12);
+  const lim=niceMax(Math.max(8,...rows.map(x=>Math.abs(x.gain)))*1.45);  /* 两端留出放文字标签的空间 */
   const colorOf=g=>Math.abs(g)<1?C.axis:(g>0?C.goodMark:C.badMark);
   setChart(id,baseOption({
     grid:{left:4,right:24,top:8,bottom:4,containLabel:true},
