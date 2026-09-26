@@ -2123,6 +2123,47 @@ function renderIq(){  /* 渲染出错时明确显示错误, 不静默白屏 */
     if(el)el.innerHTML=emptyState("结果显示出错",String((e&&e.message)||e),{iconName:"alert",inline:true});
   }
 }
+function iqSeries(a){
+  return [{r:a,color:C.series[0],tag:"A"},...[...IQ_CMP].filter(id=>IQ_RUNS[id]).slice(0,5).map((id,i)=>({r:IQ_RUNS[id],color:C.series[i+1],tag:String.fromCharCode(66+i)}))];
+}
+/* 百分点差值: 小于 0.5 个百分点视为持平 */
+function ppText(v){
+  if(v==null||!isFinite(v))return `<span class="dt-delta flat">—</span>`;
+  if(Math.abs(v)<.5)return `<span class="dt-delta flat">${icon("minus","icon-sm")}持平</span>`;
+  return `<span class="dt-delta ${v>0?"up":"down"}">${icon(v>0?"arrow-up":"arrow-down","icon-sm")}${v>0?"+":""}${fmt(v,1)}</span>`;
+}
+const IQ_SIG=new Map();  /* "A|B" -> iq-compare 结果, 用于排行表的「差异是否可信」列 */
+function iqSubjRows(series){
+  const a=series[0].r;
+  const subs=[...(a.subjects||[])].filter(x=>x.n).sort((x,y)=>(y.acc||0)-(x.acc||0));
+  return subs.map(sub=>{
+    const row={sid:sub.id,name:shortSub(sub.name),full:sub.name,n:sub.n,correct:sub.correct,ci:`${fmt(sub.ci_lo,1)}–${fmt(sub.ci_hi,1)}`,
+      trunc:sub.truncated,err:sub.errors,act:`<button type="button" class="btn btn-ghost btn-sm" data-qb-go="${esc(sub.id)}" data-qb-filter="${sub.correct<sub.n?"bad":"all"}">${sub.correct<sub.n?`看错题 ${sub.n-sub.correct}`:"看题目"}</button>`};
+    series.forEach((s,i)=>{
+      const x=(s.r.subjects||[]).find(y=>y.id===sub.id);
+      row["acc_"+i]=x?x.acc:null;row["tok_"+i]=x&&x.n?x.out_tokens/x.n:null;
+      if(i){
+        row["d_"+i]=x&&sub.acc!=null?x.acc-sub.acc:null;
+        const sig=IQ_SIG.get(a.run_id+"|"+s.r.run_id),t=sig&&sig.ok&&sig.same_bank&&sig.subjects&&sig.subjects[sub.id];
+        row["sig_"+i]=!sig?{tone:"neutral",text:"计算中"}:!t||!t.n?{tone:"neutral",text:"—"}:t.significant?{tone:"good",text:"可信",tip:"p = "+fmtP(t.p)}:{tone:"neutral",text:"不明显",tip:"p = "+fmtP(t.p)};
+      }
+    });
+    return row;
+  });
+}
+function iqSubjSpecs(series){
+  const rows=iqSubjRows(series),multi=series.length>1;
+  const accCol=(s,i)=>({key:"acc_"+i,label:multi?s.tag:"正确率",unit:multi?"":"%",group:multi?"正确率（%）":"",type:"bar",color:s.color,max:100});
+  const compact={id:"iq-subj-c",title:"科目排行",columns:[{key:"name",label:"科目",type:"text",sticky:true},...series.map(accCol),
+      ...(multi?series.slice(1).map((s,i)=>({key:"sig_"+(i+1),label:`${s.tag} 与 A`,group:"差异是否可信",type:"status",tip:TERMS.sig.desc})):[{key:"ci",label:"误差范围",unit:"%",type:"text",align:"right",tip:TERMS.ci.desc}]),
+      {key:"n",label:"题数",type:"int"},{key:"act",label:"",type:"html",noSort:true}],rows,search:false};
+  const full={id:"iq-subj-t",title:"科目排行",columns:[{key:"name",label:"科目",type:"text",sticky:true},{key:"n",label:"题数",type:"int"},...series.map(accCol),
+      ...(multi?series.slice(1).map((s,i)=>({key:"d_"+(i+1),label:`${s.tag} 比 A`,group:"差距（百分点）",type:"num",fmt:ppText,sortValue:r=>r["d_"+(i+1)]})):[]),
+      ...(multi?series.slice(1).map((s,i)=>({key:"sig_"+(i+1),label:`${s.tag} 与 A`,group:"差异是否可信",type:"status"})):[{key:"ci",label:"误差范围",unit:"%",type:"text",align:"right"},{key:"correct",label:"答对",type:"int"}]),
+      ...series.map((s,i)=>({key:"tok_"+i,label:multi?s.tag:"每题 token",group:multi?"平均每题输出 token":"",type:"int",tip:"平均每题输出多少 token，越少越省"})),
+      {key:"trunc",label:"没答完",type:"int"},{key:"err",label:"请求失败",type:"int"},{key:"act",label:"",type:"html",noSort:true}],rows};
+  return{compact,full};
+}
 function _renderIq(){
   if(!IQ_LOADED)return;
   const el=$("iqResult");
@@ -2130,23 +2171,8 @@ function _renderIq(){
   renderIqCmpList(mainId);
   if(!a){el.innerHTML=emptyState("还没有能力测试","用公开的标准考题（数学、常识、推理、中文、按要求作答）考模型，看答对多少。点右上角「新建能力测试」开始",
     {action:`<button class="btn btn-primary" data-toggle="iqLauncher">${icon("plus")}新建能力测试</button>`});buildJump("iqJump",null);return}
-  const series=[{r:a,color:C.series[0],tag:"A"},...[...IQ_CMP].filter(id=>IQ_RUNS[id]).slice(0,5).map((id,i)=>({r:IQ_RUNS[id],color:C.series[i+1],tag:String.fromCharCode(66+i)}))];
+  const series=iqSeries(a);
   const base=a.overall||{};
-  /* ---- 成绩块: A 用大号数字, 对比项显示与 A 的差距和是否可信 ---- */
-  const tiles=series.map(s=>{
-    const o=s.r.overall||{},tk=tokStat(s.r);
-    const who=`<span class="run-tag" style="background:${s.color}">${s.tag}</span> ${esc((s.r.model||"?")+(runFw(s.r)?" · "+runFw(s.r):""))}`;
-    const sub=o.n?`${term("ci")} ${fmt(o.ci_lo,1)}–${fmt(o.ci_hi,1)}% · 答对 ${o.correct}/${o.n} 题${o.macro_acc!=null?` · ${term("macro")} ${fmt(o.macro_acc,1)}%`:""}`+
-      `<br>${s.r.thinking?"思考模式":"不思考"} · ${esc(samplingText(s.r.sampling)||"采样未记录")}${tk.per!=null?` · 平均每题输出 ${fmt(tk.per,0)} token`:""}`:
-      `测试没有完成（${esc(STATUS_NAME[s.r.status]||s.r.status||"")}）`;
-    const issues=iqIssues(s.r);
-    return `<div class="kpi${s.tag==="A"?" is-hero":""}"><div class="kpi-head"><span class="kpi-label" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">${who}</span>
-        ${s.tag!=="A"?deltaPill(base.acc,o.acc,1,{mode:"pp",prefix:"比 A "}):""}</div>
-      <div class="kpi-value">${o.acc!=null?fmt(o.acc,1):"—"}<small>%</small></div>
-      <div class="kpi-sub">${sub}</div>
-      ${s.tag!=="A"?`<div class="kpi-sub" data-sig-card="${esc(s.r.run_id)}">正在计算差异是否可信…</div>`:""}
-      ${issues.length?`<div class="kpi-sub warn">${esc(issues.join(" · "))}</div>`:""}</div>`;
-  }).join("");
   /* ---- 提示 ---- */
   let alerts="";
   series.forEach(s=>{const w=iqVersionWarning(s.r);if(w)alerts+=alertBox("warn",`<b>${s.tag}</b>：${esc(w)}`)});
@@ -2177,60 +2203,56 @@ function _renderIq(){
   }
   if(base.truncated)concl.push({tone:"warn",html:`有 <b>${base.truncated}</b> 题${term("trunc")}（写到长度上限被停下），记为答错。${a.thinking?"思考模式下想得太久会出现这种情况。":"可以在「更多设置」里调大这类题的最长长度。"}`});
   if(base.errors)concl.push({tone:"bad",html:`有 <b>${base.errors}</b> 题请求失败，记为答错，可以点「重试失败的题」。`});
-  /* ---- 各科明细表(带错题按钮) ---- */
-  let t=`<div class="table-wrap" style="max-height:640px"><table class="table"><thead><tr><th>科目</th><th>题数</th>${series.map(s=>`<th><span class="run-tag" style="background:${s.color}">${s.tag}</span> 正确率</th><th title="平均每题输出多少 token，越少越省">${s.tag} 每题 token</th>`).join("")}<th>A 没答完 / 请求失败</th><th></th></tr></thead><tbody>`;
-  const tokCell=(v,v0,self)=>{
-    if(!v||!v.n)return `<td class="na">—</td>`;
-    const per=v.out_tokens/v.n;
-    const d=(!self&&v0&&v0.n&&series.length>1)?`<span class="sub">比 A ${per>=v0.out_tokens/v0.n?"+":""}${fmt((per-v0.out_tokens/v0.n)/(v0.out_tokens/v0.n)*100,0)}%</span>`:"";
-    return `<td class="faint">${fmt(per,0)}${d}</td>`;
-  };
-  (a.subjects||[]).forEach(sub=>{
-    const vals=series.map(s=>(s.r.subjects||[]).find(y=>y.id===sub.id)||null);
-    const accs=vals.map(v=>v&&v.acc).filter(v=>v!=null);
-    const best=accs.length>1?Math.max(...accs):null;
-    t+=`<tr><td>${esc(sub.name)}</td><td class="faint">${sub.n}</td>`+vals.map((v,i)=>
-      (v==null?`<td class="na">—</td>`:`<td class="${best!=null&&v.acc===best?"best":""}" ${i?`data-sig-cell="${esc(series[i].r.run_id)}|${esc(sub.id)}"`:""}>${fmt(v.acc,1)}%${series.length===1?`<span class="sub">误差范围 ${fmt(v.ci_lo,1)}–${fmt(v.ci_hi,1)}</span>`:""}</td>`)+
-      tokCell(v,vals[0],i===0)).join("")+
-      `<td class="${(sub.truncated||sub.errors)?"down":"faint"}">${sub.truncated==null?"—":`${sub.truncated} / ${sub.errors||0}`}</td>
-      <td><button class="btn btn-ghost btn-sm" data-qb-go="${esc(sub.id)}" data-qb-filter="${sub.correct<sub.n?"bad":"all"}">${sub.correct<sub.n?`看错题（${sub.n-sub.correct}）`:"看题目"}</button></td></tr>`;
+  /* ---- 概览带右侧: A 的总正确率 + 每个对比对象一行成绩条 ---- */
+  const tk=tokStat(a);
+  let stats=stat(`<span class="run-line"><span class="run-tag" style="background:${C.a}">A</span><b>${esc(a.model||"?")}</b>${runFw(a)?" · "+esc(runFw(a)):""}</span>`,
+    base.acc!=null?fmt(base.acc,1):"—","%",{hero:true,wide:true,
+    sub:base.n?`${term("ci")} ${fmt(base.ci_lo,1)}–${fmt(base.ci_hi,1)}% · 答对 ${base.correct} / ${base.n} 题${base.macro_acc!=null?` · ${term("macro")} ${fmt(base.macro_acc,1)}%`:""}<br>${a.thinking?"思考模式":"不思考"} · ${esc(samplingText(a.sampling)||"采样未记录")}${tk.per!=null?` · 平均每题输出 ${fmt(tk.per,0)} token`:""}${iqIssues(a).length?`<br><span class="warn">${esc(iqIssues(a).join(" · "))}</span>`:""}`
+      :`测试没有完成（${esc(STATUS_NAME[a.status]||a.status||"")}）`});
+  series.slice(1).forEach(s=>{
+    const o=s.r.overall||{};
+    stats+=`<div class="stat is-wide cmp-line"><div class="cmp-line-head"><span class="run-tag" style="background:${s.color}">${s.tag}</span>
+        <span class="cmp-line-name">${esc((s.r.model||"?")+(runFw(s.r)?" · "+runFw(s.r):""))} · ${s.r.thinking?"思考":"不思考"}</span>
+        <span class="cmp-line-acc">${o.acc!=null?fmt(o.acc,1):"—"}<small>%</small></span>${deltaPill(base.acc,o.acc,1,{mode:"pp",prefix:"比 A "})}</div>
+      <div class="cmp-line-sig" data-sig-card="${esc(s.r.run_id)}">正在计算差异是否可信…</div></div>`;
   });
-  const overall=series.map(s=>s.r.overall&&s.r.overall.acc);
-  const bestAll=series.length>1?Math.max(...overall.filter(v=>v!=null)):null;
-  const subjAll=series.map(s=>({n:(s.r.subjects||[]).reduce((t2,x)=>t2+(x.n||0),0),out_tokens:(s.r.subjects||[]).reduce((t2,x)=>t2+(x.out_tokens||0),0)}));
-  t+=`<tr class="total"><td>总计</td><td class="faint">${base.n??"—"}</td>`+overall.map((v,i)=>
-    `<td class="${bestAll!=null&&v===bestAll?"best":""}">${v!=null?fmt(v,1)+"%":"—"}</td>`+tokCell(subjAll[i],subjAll[0],i===0)).join("")+
-    `<td class="${(base.truncated||base.errors)?"down":"faint"}">${base.truncated==null?"—":`${base.truncated} / ${base.errors||0}`}</td><td></td></tr></tbody></table></div>`;
-  const nSub=(a.subjects||[]).length;
-  const barH=Math.max(260,nSub*(series.length*16+14)+70);
-  const summ=summaryCard("结论",concl,`题集 ${esc(a.bank_id||"")} · ${esc(budgetText(a))} · 开始于 ${esc(timeText(a.started_utc))}`);
-  el.innerHTML=`<div class="stack">${series.length===1?`<div class="hero-row">${tiles}${summ}</div>${alerts}`:`<div class="score-row">${tiles}</div>${alerts}${summ}`}</div>`+
-    sec("iq-subj","各科得分","按 A 的成绩从高到低排列；只看一次测试时，横线表示"+term("ci"),
-      `<div class="grid-2" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr)">${ccard("iqBars","各科正确率",{desc:"越高越好 · 点柱子可以看这一科的题",h:barH})}
-        ${ccard("iqRadar","能力分布",{desc:"越往外越好",h:Math.min(460,Math.max(340,barH))})}</div>`,"各科得分")+
-    sec("iq-cost","花了多少 token","同样的正确率，用的 token 越少越省时省钱",ccard("iqTok","平均每题输出多少 token",{desc:"越少越省",h:barH}),"token 花费")+
-    sec("iq-detail","逐科明细",series.length>1?"加粗的是这一科最高分；比 A 的“差异是否可信”显示在每个格子下方":"点「看错题」直接跳到下面这一科答错的题",t,"逐科明细")+
-    sec("iq-items","逐题查看",series.length>1?"每道题的题目、标准答案和各次测试的答案；可以只看两次结果不一样的题":"每道题的题目、标准答案和模型的答案；点「看回答」可以看模型的原话",
-      `<div class="qb" id="qb"></div>`,"逐题查看");
+  /* ---- 各科得分: 排行表为主, 旁边是条形图 / 能力形状 ---- */
+  const {compact,full}=iqSubjSpecs(series);
+  const barH=Math.max(260,subs.length*(series.length*16+14)+70);
+  const chartTabs=`<div class="ccard"><div class="ccard-head"><div><h3 class="ccard-title">各科正确率</h3><p class="ccard-desc">越高越好 · 点柱子看这一科的题${series.length===1?" · 横线是"+term("ci"):""}</p></div>
+      ${segHTML("data-ctab","bars",[["bars","条形"],["radar","能力形状"]])}</div>
+    <div class="chart" id="iqBars" style="height:${barH}px" role="img" aria-label="各科正确率"></div>
+    <div class="chart" id="iqRadar" style="height:${Math.min(460,Math.max(340,barH))}px" role="img" aria-label="能力形状" hidden></div></div>`;
+  const hasMmlu=subs.some(x=>/^mmlu/.test(x.id));
+  el.innerHTML=overview(concl,stats,{meta:`题集 ${esc(a.bank_id||"")} · ${esc(budgetText(a))} · 开始于 ${esc(timeText(a.started_utc))}`})+
+    (alerts?`<div class="notes">${alerts}</div>`:"")+
+    panel({id:"iq-subj",title:"各科得分",jump:"各科得分",desc:series.length>1?"按 A 的成绩从高到低排列；「差异是否可信」按同一批题逐题比较（McNemar 检验）":"按成绩从高到低排列；点「看错题」直接跳到下面这一科答错的题",
+      chart:`<div class="side-row">${dataTable(compact)}${chartTabs}</div>`,tables:[full]})+
+    (hasMmlu?panel({id:"iq-mmlu",title:"MMLU 各学科",jump:"MMLU 学科",desc:"MMLU 四个分组展开到具体学科（每个学科题数不多，正确率仅供参考）",
+      tables:[`<div id="iqMmlu"><div class="qb-loading faint">正在按学科统计…</div></div>`]}):"")+
+    panel({id:"iq-cost",title:"正确率和 token 花费",jump:"token 花费",desc:"每个点是一个科目：越靠上答得越好，越靠左越省 token（横轴是对数刻度）",
+      chart:ccard("iqTok","正确率 × 平均每题输出 token",{desc:series.length>1?"同一科目的 A、B 用细线连起来":"点旁边是科目名",h:380}),
+      tables:[{id:"iq-cost-t",title:"各科正确率与 token",columns:[{key:"name",label:"科目",type:"text",sticky:true},
+        ...series.map((s,i)=>({key:"acc_"+i,label:series.length>1?s.tag:"正确率",group:series.length>1?"正确率（%）":"",unit:series.length>1?"":"%",type:"num"})),
+        ...series.map((s,i)=>({key:"tok_"+i,label:series.length>1?s.tag:"每题 token",group:series.length>1?"平均每题输出 token":"",type:"int"}))],rows:iqSubjRows(series)}]})+
+    qbSectionHTML(series);
   disposeDetached();
   drawIqCharts(series);
   buildJump("iqJump",el);
   qbInit(series);
-  /* 差异是否可信: 同一批题逐题比较, 结果异步填入 */
+  /* 差异是否可信: 同一批题逐题比较, 结果异步填入概览与排行表 */
   series.slice(1).forEach(s=>iqCompare(a.run_id,s.r.run_id).then(d=>{
+    IQ_SIG.set(a.run_id+"|"+s.r.run_id,d||{ok:false});
     const card=document.querySelector(`[data-sig-card="${CSS.escape(s.r.run_id)}"]`);
+    ["iq-subj-c","iq-subj-t"].forEach(id=>{const sp=DT.specs.get(id);if(sp&&$("iqResult").contains(document.querySelector(`[data-dt="${id}"]`))){sp.rows=iqSubjRows(series);dtRefresh(id)}});
     if(!card)return;
     if(!d||!d.ok){card.textContent="暂时无法判断差异是否可信";return}
     if(!d.same_bank){card.textContent="题集不同，无法逐题比较";return}
     if(!d.overall.n||d.overall.significant==null){card.textContent="没有双方都正常作答的共同题目，无法比较";return}
     const o=d.overall;
     const go=(f,txt)=>`<a href="javascript:void 0" class="qb-link" data-qb-go="" data-qb-filter="${f}" data-qb-vs="${esc(s.r.run_id)}" title="在「逐题查看」里列出这些题">${txt}</a>`;
-    card.innerHTML=`<span class="sig ${o.significant?"yes":"no"}">${o.significant?"差异可信":"差异不明显，可能是随机波动"}</span> · ${go("vs-a",`只有 A 答对 ${o.a_only} 题`)}，${go("vs-b",`只有 ${esc(s.tag)} 答对 ${o.b_only} 题`)}`;
+    card.innerHTML=`<span class="sig ${o.significant?"yes":"no"}">${o.significant?"差异可信":"差异不明显，可能是随机波动"}</span> · ${go("vs-a",`只有 A 答对 ${o.a_only} 题`)} · ${go("vs-b",`只有 ${esc(s.tag)} 答对 ${o.b_only} 题`)}`;
     card.title=`${TERMS.sig.tech}：共同题目 ${o.n} 道，p = ${fmtP(o.p)}`;
-    Object.entries(d.subjects).forEach(([sid,x])=>{
-      const cell=document.querySelector(`[data-sig-cell="${CSS.escape(s.r.run_id+"|"+sid)}"]`);
-      if(cell&&x.n)cell.insertAdjacentHTML("beforeend",`<span class="sub sig ${x.significant?"yes":"no"}" title="p = ${fmtP(x.p)}">${x.significant?"差异可信":"差异不明显"}</span>`);
-    });
   }));
 }
 function drawIqCharts(series){
@@ -2240,7 +2262,7 @@ function drawIqCharts(series){
   const names=subs.map(x=>shortSub(x.name));
   const valOf=(s,sub,f)=>{const x=(s.r.subjects||[]).find(y=>y.id===sub.id);return x?f(x):null};
   /* 各科正确率: 横向柱; 只看 A 时加误差范围 */
-  const barSeries=series.map(s=>sBar(s.tag,s.color,subs.map(sub=>valOf(s,sub,x=>x.acc)),{horizontal:true}));
+  const barSeries=series.map(s=>sBar(s.tag,s.color,subs.map(sub=>valOf(s,sub,x=>x.acc)),{horizontal:true,grouped:series.length>1}));
   if(series.length===1)barSeries[0].label={show:true,position:"insideLeft",color:"#fff",fontSize:11,fontWeight:600,formatter:p=>p.value>=12?fmt(p.value,1)+"%":""};
   if(series.length===1)barSeries.push({type:"custom",name:"误差范围",z:10,silent:true,tooltip:{show:false},
     data:subs.map((x,i)=>[i,x.ci_lo,x.ci_hi]),encode:{x:[1,2],y:0},
@@ -2252,14 +2274,14 @@ function drawIqCharts(series){
   const barsInst=setChart("iqBars",baseOption({
     color:series.map(s=>s.color),legend:legendOf(series.map(s=>s.tag),"rect"),
     grid:{left:4,right:16,top:series.length>1?40:12,bottom:4,containLabel:true},
-    xAxis:axisValue({min:0,max:100,fmt:v=>v+"%"}),yAxis:axisCat(names,{inverse:true,labelWidth:150,labelColor:C.text2}),
+    xAxis:axisValue({min:0,max:100,fmt:v=>v+"%"}),yAxis:axisCat(names,{inverse:true,labelWidth:130,labelColor:C.text2}),
     tooltip:Object.assign(baseOption().tooltip,{axisPointer:{type:"shadow",shadowStyle:{color:"rgba(128,128,128,.08)"}},formatter:ps=>{
       const sub=subs[ps[0].dataIndex];
       return tt(sub.name,series.map(s=>{const x=(s.r.subjects||[]).find(y=>y.id===sub.id);
         return [s.color,s.tag,x?`${fmt(x.acc,1)}%（${x.correct}/${x.n}）`:"—"]}),series.length===1?`误差范围 ${fmt(sub.ci_lo,1)}–${fmt(sub.ci_hi,1)}%`:"")}}),
     series:barSeries}));
   if(barsInst){barsInst.off("click");barsInst.on("click",p=>{if(p.seriesType==="bar"&&subs[p.dataIndex])qbGo(subs[p.dataIndex].id,"all")})}
-  /* 能力分布: 雷达 */
+  /* 能力形状: 雷达(第二个标签) */
   setChart("iqRadar",baseOption({
     color:series.map(s=>s.color),legend:legendOf(series.map(s=>s.tag)),
     tooltip:Object.assign(baseOption().tooltip,{trigger:"item",formatter:p=>tt(series[p.dataIndex]?series[p.dataIndex].tag:"",subs.map((sub,i)=>["",names[i],p.value[i]!=null?fmt(p.value[i],1)+"%":"—"]))}),
@@ -2267,9 +2289,72 @@ function drawIqCharts(series){
       axisName:{color:C.text2,fontSize:11},splitLine:{lineStyle:{color:C.grid}},splitArea:{show:false},axisLine:{lineStyle:{color:C.grid}}},
     series:[{type:"radar",symbolSize:6,data:series.map(s=>({name:s.tag,value:subs.map(sub=>valOf(s,sub,x=>x.acc)),
       lineStyle:{width:2,color:s.color},itemStyle:{color:s.color,borderColor:C.surface,borderWidth:1},areaStyle:{color:withAlpha(s.color,.10)}}))}]}));
-  /* 平均每题 token */
-  barChart("iqTok",{cats:names,horizontal:true,unit:"token",digits:0,catLabelWidth:150,labels:series.length===1,
-    series:series.map(s=>({name:s.tag,color:s.color,data:subs.map(sub=>valOf(s,sub,x=>x.n?x.out_tokens/x.n:null))}))});
+  /* 正确率 × 每题 token: 散点, 横轴对数刻度; 对比时同一科目用细线连起来 */
+  const pts=series.map(s=>subs.map(sub=>{const x=(s.r.subjects||[]).find(y=>y.id===sub.id);
+    return x&&x.n&&x.out_tokens>0?{value:[x.out_tokens/x.n,x.acc],name:shortSub(sub.name),n:x.n}:null}));
+  const links=series.length>1?subs.map((sub,i)=>({type:"line",silent:true,symbol:"none",z:1,lineStyle:{color:C.axis,width:1},tooltip:{show:false},
+    data:pts.map(p=>p[i]&&p[i].value).filter(Boolean)})).filter(x=>x.data.length>1):[];
+  setChart("iqTok",baseOption({
+    color:series.map(s=>s.color),legend:legendOf(series.map(s=>s.tag),"rect"),
+    grid:{left:4,right:28,top:series.length>1?44:26,bottom:30,containLabel:true},
+    xAxis:{type:"log",logBase:10,name:"平均每题输出 token（越往左越省）",nameLocation:"middle",nameGap:28,nameTextStyle:{color:C.text3,fontSize:11},
+      axisLine:{show:true,lineStyle:{color:C.axis}},axisTick:{show:false},splitLine:{lineStyle:{color:C.grid}},axisLabel:{color:C.text3,fontSize:11,formatter:fmtAxis}},
+    yAxis:axisValue({name:"正确率 %",max:100,fmt:v=>v+"%",min:v=>Math.max(0,Math.floor(v.min/10)*10-10)}),
+    tooltip:Object.assign(baseOption().tooltip,{trigger:"item",formatter:q=>q.seriesType!=="scatter"?"":tt(q.name,[[q.color,q.seriesName,`${fmt(q.value[1],1)}% · 每题 ${fmtInt(q.value[0])} token`]])}),
+    series:[...links,...series.map((s,i)=>({name:s.tag,type:"scatter",symbolSize:11,z:3,itemStyle:{color:s.color,borderColor:C.surface,borderWidth:1.5},
+      data:pts[i].filter(Boolean),label:i===0?{show:true,position:"right",distance:6,color:C.text2,fontSize:11,formatter:q=>q.name}:undefined,
+      labelLayout:{hideOverlap:true}}))]}));
+}
+/* ---- MMLU 各学科: 分组表(逐题数据加载后统计) ---- */
+function renderMmlu(){
+  const box=$("iqMmlu"),d=QB.data;if(!box||!d)return;
+  const groups=d.subjects.filter(s=>/^mmlu/.test(s.id));
+  if(!groups.length){box.innerHTML=emptyState("这次测试没有 MMLU 题目","",{inline:true});return}
+  const runs=QB.series.filter(s=>(d.runs[s.r.run_id]||{}).same_bank);
+  const rows=[];
+  groups.forEach(g=>{
+    const bySub=new Map();
+    d.questions.filter(q=>q.sid===g.id).forEach(q=>{const k=q.sub||"";if(!bySub.has(k))bySub.set(k,[]);bySub.get(k).push(q)});
+    const part=[...bySub.entries()].map(([sub,list])=>{
+      const row={g:shortSub(g.name),gid:g.id,sub,name:sub?subTopic(sub):"（未分学科）",n:list.length,
+        act:`<button type="button" class="btn btn-ghost btn-sm" data-qb-go="${esc(g.id)}" data-qb-filter="all" data-qb-q="${esc(sub?subTopic(sub):"")}">看题目</button>`};
+      runs.forEach((s,i)=>{const recs=d.runs[s.r.run_id].recs,ok=list.filter(q=>(recs[qbKey(q)]||{}).ok).length;row["ok_"+i]=ok;row["acc_"+i]=100*ok/list.length});
+      return row;
+    }).sort((x,y)=>(y.acc_0??-1)-(x.acc_0??-1));
+    rows.push(...part);
+  });
+  const multi=runs.length>1;
+  const spec={id:"iq-mmlu-t",title:"MMLU 各学科",maxH:640,pageSize:1000,
+    groupBy:r=>r.g,groupLabel:(g,rs)=>{const n=rs.reduce((t,r)=>t+r.n,0),ok=rs.reduce((t,r)=>t+(r.ok_0||0),0);
+      return `${esc(g)} <span class="faint">· ${rs.length} 个学科 · ${n} 题 · A 正确率 ${n?fmt(100*ok/n,1):"—"}%</span>`},
+    columns:[{key:"name",label:"学科",type:"text",sticky:true},{key:"n",label:"题数",type:"int"},
+      ...runs.map((s,i)=>({key:"acc_"+i,label:multi?s.tag:"正确率",unit:multi?"":"%",group:multi?"正确率（%）":"",type:"bar",color:s.color,max:100})),
+      ...runs.map((s,i)=>({key:"ok_"+i,label:multi?s.tag:"答对",group:multi?"答对":"",type:"int"})),{key:"act",label:"",type:"html",noSort:true}],rows};
+  box.innerHTML=dataTable(spec);
+}
+/* ---- 逐题查看: 卡片 | 表格 ---- */
+function qbSectionHTML(series){
+  const mode=panelMode("iq-items");
+  return `<section class="sec" id="iq-items" data-jump="逐题查看" data-pv="${mode}">
+    <div class="sec-head"><div class="sec-head-text"><h2 class="sec-title">逐题查看</h2><p class="sec-desc">${series.length>1?"每道题的题目、标准答案和各次测试的答案；可以只看两次结果不一样的题":"每道题的题目、标准答案和模型的答案；点「看回答」可以看模型的原话"}</p></div>
+      <div class="sec-tools">${segHTML("data-pv-set",mode,[["chart","卡片","layers"],["table","表格","table"]])}</div></div>
+    <div class="qb" id="qb"></div></section>`;
+}
+function qbTableSpec(rows){
+  const d=QB.data,runs=QB.series.filter(s=>(d.runs[s.r.run_id]||{}).same_bank),multi=runs.length>1;
+  const recOf=(s,q)=>((d.runs[s.r.run_id]||{}).recs||{})[qbKey(q)];
+  const stOf=rec=>{const [label,tone]=QB_STATE[qbState(rec)];return{tone:tone||"neutral",text:label}};
+  return{id:"iq-items-t",title:"逐题",search:false,pageSize:50,rowKey:q=>qbKey(q),
+    columns:[{key:"where",label:"题目",type:"text",sticky:true,get:q=>`${shortSub((d.subjMap[q.sid]||{}).name||q.sid)} · 第 ${q.idx+1} 题`,sortValue:q=>d.subjects.findIndex(s=>s.id===q.sid)*1e5+q.idx},
+      {key:"topic",label:"学科",type:"text",get:q=>subTopic(q.sub)||"—"},
+      {key:"q",label:"题目内容",type:"html",get:q=>`<span class="dt-ellipsis" title="${esc(q.q||"")}">${esc(q.q||"（找不到题目）")}</span>`,text:(v,q)=>q.q||""},
+      {key:"gold",label:"标准答案",type:"text",get:q=>q.answer!=null?String(q.answer):(q.rules?"按规则检查":"—")},
+      ...runs.map(s=>({key:"p_"+s.tag,label:multi?s.tag:"模型的答案",group:multi?"答案":"",type:"html",
+        get:q=>{const r=recOf(s,q);return !r?"—":r.err?`<span class="bad">请求失败</span>`:`<span class="${r.ok?"good":"bad"}">${esc(r.pred??"没看出")}</span>`},
+        text:(v,q)=>{const r=recOf(s,q);return !r?"":r.err?"请求失败":String(r.pred??"")}})),
+      ...runs.map(s=>({key:"s_"+s.tag,label:multi?s.tag:"结果",group:multi?"结果":"",type:"status",get:q=>stOf(recOf(s,q))})),
+      {key:"out",label:"输出",unit:"token",type:"int",get:q=>{const r=recOf(runs[0],q);return r&&r.out!=null?r.out:null}}],
+    rows,expand:q=>qbCard(q),note:"点行展开看完整题目和回答"};
 }
 /* ---- 逐题查看: 题目 / 标准答案 / 各次测试的答案; 回答原文点开时才加载 ---- */
 const MMLU_ZH={abstract_algebra:"抽象代数",anatomy:"解剖学",astronomy:"天文学",business_ethics:"商业伦理",clinical_knowledge:"临床知识",
@@ -2347,9 +2432,10 @@ function qbRender(){
     </div>
     ${other.length?`<div class="qb-note">${esc(other.map(s=>s.tag).join("、"))} 用的题集和 A 不一样，不能逐题对照</div>`:""}
     <div class="filter-chips" id="qbChips"></div>
-    <div class="qb-list" id="qbList"></div>
-    <div class="qb-pager" id="qbPager"></div>`;
+    <div class="pv-chart"><div class="qb-list" id="qbList"></div><div class="qb-pager" id="qbPager"></div></div>
+    <div class="pv-table" id="qbTable"></div>`;
   qbRenderList();
+  renderMmlu();
 }
 function qbRenderList(){
   const d=QB.data,list=$("qbList");if(!d||!list)return;
@@ -2366,6 +2452,10 @@ function qbRenderList(){
   $("qbChips").innerHTML=chips.filter(([f])=>!["trunc","err"].includes(f)||cnt[f]||f===QB.filter)
     .map(([f,label])=>`${f==="vs-a"?`<span class="qb-sep" aria-hidden="true"></span>`:""}<button type="button" class="filter-chip" data-qb-filter="${f}" aria-pressed="${f===QB.filter}">${esc(label)} <b>${cnt[f]}</b></button>`).join("");
   const rows=scope.filter(q=>pass(QB.filter,q));
+  /* 表格形态: 同一份筛选结果; 筛选条件变了回到第一页 */
+  const sig=[QB.filter,QB.subj,QB.q,QB.vs].join("|");
+  if(QB.tsig!==sig){QB.tsig=sig;dtState("iq-items-t").page=0}
+  if($("qbTable"))$("qbTable").innerHTML=dataTable(qbTableSpec(rows));
   const pages=Math.max(1,Math.ceil(rows.length/QB_PAGE));
   QB.page=Math.min(Math.max(0,QB.page),pages-1);
   const view=rows.slice(QB.page*QB_PAGE,(QB.page+1)*QB_PAGE);
@@ -2456,16 +2546,22 @@ function qbAnswerHtml(d,runs){
     return `<div class="qresp-block">${head}${body}</div>`;
   }).join("")+prompt(false);
 }
-function qbGo(sid,filter,vs){
+function qbGo(sid,filter,vs,q){
   if(vs)QB.vs=vs;
-  Object.assign(QB,{subj:sid||"",filter:filter||"all",q:"",page:0});
+  Object.assign(QB,{subj:sid||"",filter:filter||"all",q:q||"",page:0});
   if(QB.data)qbRender();
   const t=$("iq-items");if(t)t.scrollIntoView({behavior:"smooth",block:"start"});
 }
 let qbTimer=null;
 $("iqResult").addEventListener("click",e=>{
   const go=e.target.closest("[data-qb-go]");
-  if(go){e.preventDefault();qbGo(go.dataset.qbGo,go.dataset.qbFilter,go.dataset.qbVs);return}
+  if(go){e.preventDefault();qbGo(go.dataset.qbGo,go.dataset.qbFilter,go.dataset.qbVs,go.dataset.qbQ);return}
+  const ct=e.target.closest("[data-ctab]");
+  if(ct){const card=ct.closest(".ccard"),k=ct.dataset.ctab;
+    card.querySelectorAll("[data-ctab]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.ctab===k)));
+    const bars=card.querySelector("#iqBars"),radar=card.querySelector("#iqRadar");
+    if(bars&&radar){bars.hidden=k!=="bars";radar.hidden=k!=="radar";requestAnimationFrame(()=>resizeChartsIn(card))}
+    return}
   const chip=e.target.closest("#qbChips [data-qb-filter]");
   if(chip){QB.filter=chip.dataset.qbFilter;QB.page=0;qbRenderList();return}
   const pg=e.target.closest("[data-qb-page]");
