@@ -31,7 +31,9 @@ except ImportError:
 # 1.1: 交互判定基线与动作窗口等长、需作品处理器响应、忽略无变化的 DOM 重写; 按键码表; 移动端溢出判定;
 #      白屏/截断时不白给分; 断言前后对照; 评审输出容错
 # 1.2: 卡死/中断未跑的步骤记失败; 评审缺项记 0; 截图目录成功后才替换; 有开始按钮的动画在开始后测量
-EVAL_VERSION = "1.2.0"
+# 1.3: 浏览器启动失败(常见于以管理员身份运行服务)时明确记录原因并停止反复重试; 回收遗留的后台浏览器;
+#      作品报错时在不注入任何检测脚本的干净页面里按同样步骤再跑一遍, 区分作品自身错误与检测环境引起的错误
+EVAL_VERSION = "1.3.0"
 VIEW_W, VIEW_H = 1280, 800
 ANALYZE_SCALE = 0.25   # 像素分析用小图 320x200
 SHOT_SCALE = 0.6       # 评审/展示用截图 768x480
@@ -591,6 +593,35 @@ def _commit_shots(tmp, shots_dir):
     os.rename(tmp, shots_dir)
 
 
+def control_run(browser, url, spec):
+    """干净环境对照: 不注入任何检测脚本(存储垫片、事件统计都不加), 按相同的预热与交互步骤操作一遍, 只收集异常。
+    同样报错说明是作品自身的问题; 只在检测环境里报错则可能是检测引起的, 需要人工确认。"""
+    page = browser.new_page()
+    try:
+        page.send("Page.enable")
+        page.send("Runtime.enable")
+        page.send("Network.enable")
+        page.send("Network.setBlockedURLs", {"urls": ["http://*", "https://*", "ws://*", "wss://*"]})
+        page.send("Emulation.setFocusEmulationEnabled", {"enabled": True})
+        pr = Prober(page, spec, None)
+        t0 = time.monotonic()
+        pr.load(url)
+        time.sleep(1.2 + spec["idle"])
+        for act in spec["setup"] + [a for stp in spec["steps"] for a in stp["actions"]]:
+            try:
+                pr.run_action(act)
+            except cdp.CDPError:
+                break
+            time.sleep(0.12)
+        time.sleep(0.6)
+        return list(dict.fromkeys(pr.exceptions(t0)))
+    finally:
+        try:
+            page.close()
+        except Exception:
+            pass
+
+
 def probe_work(browser, html_path, task_id, shots_dir):
     spec = gen_specs.get(task_id)
     tmp = shots_dir + ".tmp"
@@ -629,6 +660,17 @@ def probe_work(browser, html_path, task_id, shots_dir):
         except Exception:
             pass
     _commit_shots(tmp, shots_dir)
+    control = None
+    err_check = next((c for c in prober.checks if c["id"] == "no_error"), None)
+    if err_check and not err_check["pass"] and not prober.blank and "卡死" not in err_check["detail"]:
+        try:
+            errs = control_run(browser, pathlib.Path(html_path).resolve().as_uri(), spec)
+            control = {"errors": errs[:5], "reproduced": bool(errs)}
+            err_check["detail"] = (err_check["detail"] + "。" + (
+                "对照：不注入任何检测脚本单独运行同样报错，是作品自身的问题" if errs else
+                "对照：不注入检测脚本单独运行时没有报错，可能是检测环境引起的，请人工确认"))[:420]
+        except Exception as e:
+            control = {"error": str(e)[:160]}
     # 网络字体(含 Google Fonts 样式表)被拦截只影响字形, 不影响功能, 不判失败
     soft = re.compile(r"^https?://(fonts\.(googleapis|gstatic)\.com|fonts\.loli\.net|use\.typekit\.net)/", re.I)
     hard = [e for e in ext if e["type"] in ("Script", "Stylesheet", "Fetch", "XHR", "WebSocket") and not soft.match(e["url"])]
@@ -636,7 +678,7 @@ def probe_work(browser, html_path, task_id, shots_dir):
                  ("外部依赖被拦截：" + "，".join(e["url"] for e in hard[:3])) if hard else
                  ("仅网络字体/图片等外链 %d 个（已拦截，不影响功能）" % len(ext) if ext else ""))
     return {"method": "browser", "browser": browser.version, "checks": prober.checks,
-            "shots": prober.shots, "notes": prober.notes, "external": ext[:20]}
+            "shots": prober.shots, "notes": prober.notes, "external": ext[:20], "control": control}
 
 
 # ---------------------------------------------------------------- 源码检查 (降级)
@@ -883,6 +925,17 @@ class Evaluator:
         self.closed = False
         self._no_browser = cdp.find_browser() is None
         self.browser_version = None
+        self.browser_error = None if not self._no_browser else "本机没有找到 Chrome / Edge 浏览器"
+        self._launch_failures = 0
+
+    def reap(self):
+        """回收之前运行遗留在后台的浏览器(所属进程已退出)。"""
+        if self._no_browser:
+            return 0
+        try:
+            return cdp.reap_orphans(self.log)
+        except Exception:
+            return 0
 
     @property
     def method(self):
@@ -890,6 +943,7 @@ class Evaluator:
 
     def meta(self):
         return {"eval_version": EVAL_VERSION, "method": self.method, "browser": self.browser_version,
+                "browser_error": self.browser_error,
                 "judge_model": self.judge_cfg["model"] if self.judge_cfg else None}
 
     def _acquire(self):
@@ -905,13 +959,20 @@ class Evaluator:
                 self._cond.wait()
         try:
             b = cdp.Browser()
-        except BaseException:
+        except BaseException as e:
             with self._cond:
                 self._starting -= 1
+                if isinstance(e, Exception):
+                    self._launch_failures += 1
+                    self.browser_error = str(e)[:400]
+                    if self._launch_failures >= 2 and not self._pool:
+                        self._no_browser = True  # 连续启动失败: 不再每件作品都等一次超时
+                        self.log("  ⚠ 后台浏览器无法启动，本次作品只能做源码检查：%s" % self.browser_error)
                 self._cond.notify_all()
             raise
         with self._cond:
             self._starting -= 1
+            self._launch_failures = 0
             self.browser_version = b.version
             if self.closed:
                 b.close()
@@ -934,7 +995,7 @@ class Evaluator:
         """返回 item 的 eval 字段: 运行检测 + (可选)评审。不抛异常。cancel 置位后不再开始视觉评审。"""
         shots_dir = html_path[:-5] + ".shots"
         if self._no_browser:
-            report = static_checks(html, task)
+            report = static_checks(html, task, "后台浏览器不可用，作品没有实际运行，只检查了源代码：%s" % (self.browser_error or "未知原因"))
         else:
             b = None
             try:
@@ -944,7 +1005,7 @@ class Evaluator:
             except Exception as e:
                 if b is not None:
                     self._release(b, broken=True)
-                report = static_checks(html, task, "浏览器检测失败，降级为源码检查：%s" % str(e)[:160])
+                report = static_checks(html, task, "后台浏览器出错，作品没有实际运行，只检查了源代码：%s" % str(e)[:200])
         report["shots_dir"] = os.path.basename(shots_dir)
         report["exec_score"] = round(100.0 * sum(c["pass"] for c in report["checks"]) / max(1, len(report["checks"])), 1)
         if self.closed or (cancel is not None and cancel.is_set()):

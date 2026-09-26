@@ -554,5 +554,171 @@ class TestGenEvalRobustness(unittest.TestCase):
             geneval.cdp.Browser, geneval.probe_work, geneval.cdp.find_browser = orig
 
 
+class TestGenFramework23(unittest.TestCase):
+    """2.3: 重复输出检测 / 原始输出留档 / 采样口径 / 后台浏览器回收。"""
+
+    def setUp(self):
+        gen.iq._DROPPED.clear()
+
+    def test_detect_loops_and_similar_output(self):
+        head = "<!doctype html><html><body><script>\n"
+        cases = {
+            "点号": head + "const t='> 建立神经链路 " + "·" * 30000,
+            "SVG 路径": head + '<path d="M0 512 q30 -6 60 0 ' + "t60 0 " * 5000,
+            "迷宫行循环": head + "const maze=[\n" + '"#.#..#...#...#...#.#",\n"#.##.#.###.###.###.#",\n' * 800,
+            "机械计数": head + "".join("const LANE_TOP_LX%d=340, LANE_TOP_RX%d=386, LANE_TOP_LY%d=170;\n" % (i, i, i)
+                                    for i in range(1000, 3000)),
+        }
+        for name, text in cases.items():
+            with self.subTest(name=name):
+                hit = gen.scan_repetition(text)
+                self.assertIsNotNone(hit, name)
+                self.assertLess(hit.get("start", 0), len(text))
+                self.assertTrue(gen.repetition_text(hit))
+        self.assertEqual(gen.scan_repetition("·" * 30000)["period"], 1)
+
+    def test_normal_code_not_flagged(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for rel in ("web/static/app.js", "web/static/app.css", "llm_bench_pro/gen.py", "llm_bench_pro/geneval.py"):
+            with self.subTest(rel=rel):
+                with open(os.path.join(root, rel), encoding="utf-8") as f:
+                    self.assertIsNone(gen.scan_repetition(f.read()))
+        grid = "const grid=[" + ",".join("0" for _ in range(1500)) + "];"  # 正常规模的数组字面量
+        self.assertIsNone(gen.scan_repetition("<html><script>\n" + grid + "\n</script></html>"))
+
+    def test_chat_stops_on_repetition(self):
+        body = sse_text("<!doctype html><html><body><svg><path d='M0 0 " + "t60 0 " * 20000, finish="length", chunk=500)
+        m = MockServer(lambda *a: (200, body, "text/event-stream"))
+        try:
+            info = {}
+            text, usage, finish, _ = gen.chat(m.url + "/v1", {"model": "m", "messages": []}, {}, info=info)
+            self.assertEqual(finish, "repetition")
+            self.assertEqual(info["repetition"]["kind"], "loop")
+            self.assertEqual(info["repetition"]["where"], "content")
+            self.assertLess(len(text), 40000)  # 远早于模型输出上限就停下
+            self.assertTrue(usage.get("estimated"))
+        finally:
+            m.close()
+
+    def test_no_continuation_after_repetition_and_trace(self):
+        loop = "<!doctype html><html><body><script>\nconst k=Math.min(W,H)*0." + "0" * 30000
+
+        def h(method, path, body):
+            return 200, sse_text(loop, finish="length", chunk=400), "text/event-stream"
+        m = MockServer(h)
+        try:
+            trace = {}
+            full, _, _, cont, _ = gen.gen_complete(m.url + "/v1", "m", "p", 100, {}, trace=trace)
+            self.assertEqual(len(m.calls), 1)  # 没有续写
+            self.assertEqual(cont, 0)
+            self.assertEqual(trace["degenerate"]["kind"], "loop")
+            self.assertEqual(trace["rounds"][0]["finish"], "repetition")
+            self.assertEqual(trace["rounds"][0]["content"], full)
+            self.assertEqual(m.calls[0][2]["temperature"], 0.7)  # 非思考默认官方推荐采样
+            self.assertEqual(m.calls[0][2]["top_p"], 0.8)
+        finally:
+            m.close()
+
+    def test_trace_records_rounds_and_changes(self):
+        first = "好的，下面是完整代码：\n```html\n<!doctype html><html><body>\n<script>\nlet simYears = 1;\nfunction step(){ simYe"
+        second = "ars += 1; }\n</script></body></html>\n```\n以上代码实现了全部功能。"
+
+        def h(method, path, body):
+            return 200, sse_text(first if len(body["messages"]) == 1 else second,
+                                 finish="length" if len(body["messages"]) == 1 else "stop"), "text/event-stream"
+        m = MockServer(h)
+        try:
+            trace = {}
+            full, _, _, cont, _ = gen.gen_complete(m.url + "/v1", "m", "p", 100, {}, thinking=True, trace=trace)
+            self.assertEqual([r["mode"] for r in trace["rounds"]], ["first", "prefix"])
+            self.assertEqual(trace["rounds"][0]["thinking"], True)
+            self.assertEqual(m.calls[0][2]["temperature"], 0.6)   # 思考轮
+            self.assertEqual(m.calls[1][2]["temperature"], 0.7)   # 续写轮不思考
+            html = gen.extract_html(full)
+            changes = gen.describe_changes(full, html, trace)
+            self.assertTrue(any("接上第 2 轮续写" in c for c in changes), changes)
+            self.assertTrue(any("前面的说明文字" in c for c in changes), changes)
+            self.assertTrue(any("后面的说明文字" in c for c in changes), changes)
+        finally:
+            m.close()
+        doc = "<!doctype html><html><body>ok</body></html>"
+        self.assertEqual(gen.describe_changes(doc, doc), ["原样保存了模型输出，没有做任何修改"])
+        self.assertTrue(any("Markdown" in c for c in gen.describe_changes("```html\n" + doc + "\n```", doc)))
+        self.assertTrue(any("思考过程" in c for c in gen.describe_changes("<think>想一想</think>" + doc, doc)))
+
+    def test_resolve_sampling(self):
+        self.assertEqual(gen.resolve_sampling(True), {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "seed": 42})
+        self.assertEqual(gen.resolve_sampling(False), {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "seed": 42})
+        self.assertEqual(gen.resolve_sampling(True, "legacy"), {"temperature": 0.3})
+        self.assertEqual(gen.resolve_sampling(False, {"temperature": "0.5", "top_k": "", "presence_penalty": "1"}),
+                         {"temperature": 0.5, "presence_penalty": 1.0, "seed": 42})
+        for bad in ({"temperature": 5}, {"top_p": "x"}, "greedy"):
+            with self.assertRaises(ValueError):
+                gen.sampling_record(bad)
+
+    def test_run_gen_keeps_trace_file(self):
+        loop = "```html\n<!doctype html><html><body><canvas></canvas><script>\nconst s='" + "·" * 30000
+        good = "```html\n<!doctype html><html><head><title>t</title></head><body><canvas></canvas><script>requestAnimationFrame(()=>{});" \
+               + "/*" + "x" * 300 + "*/</script></body></html>\n```"
+
+        def h(method, path, body):
+            prompt = body["messages"][0]["content"]
+            return 200, sse_text(loop if "鹈鹕" in prompt else good, finish="length" if "鹈鹕" in prompt else "stop"), \
+                "text/event-stream"
+        m = MockServer(h)
+        tmp = temp_dir()
+        orig = (gen.ROOT, gen.WORKS, geneval.cdp.find_browser)
+        gen.ROOT, gen.WORKS = tmp, os.path.join(tmp, "works")
+        geneval.cdp.find_browser = lambda: None
+        try:
+            import sinks
+            sink = sinks.JsonFileSink(os.path.join(tmp, "results"))
+            gen.run_gen(m.url + "/v1/chat/completions", "m", task_ids=["pelican", "matrix"], conc=1, sink=sink)
+            doc = load_json(sink.path)
+            items = {it["id"]: it for it in doc["items"]}
+            self.assertEqual(doc["sampling"]["mode"], "official")
+            bad = items["pelican"]
+            self.assertEqual(bad["degenerate"]["kind"], "loop")
+            self.assertEqual(len(bad["rounds"]), 1)
+            ok = items["matrix"]
+            self.assertNotIn("degenerate", ok)
+            self.assertTrue(any("Markdown" in c for c in ok["changes"]))
+            for it in (bad, ok):
+                with open(os.path.join(tmp, it["trace"]), encoding="utf-8") as f:
+                    tr = json.load(f)
+                self.assertEqual(tr["task"], it["id"])
+                self.assertIn("content", tr["rounds"][0])
+            self.assertIn("没有找到", doc["eval"]["browser_error"])
+        finally:
+            gen.ROOT, gen.WORKS, geneval.cdp.find_browser = orig
+            m.close()
+
+    def test_reap_orphans_only_dead_owners(self):
+        import subprocess
+        import sys
+        import tempfile
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        base = tempfile.gettempdir()
+        dirs = {}
+        for key, owner in (("dead", dead.pid), ("alive", os.getpid()), ("legacy", None)):
+            d = tempfile.mkdtemp(prefix=cdp.PROFILE_PREFIX + "test-%s-" % key, dir=base)
+            if owner is not None:
+                with open(os.path.join(d, cdp._OWNER_FILE), "w") as f:
+                    json.dump({"pid": owner}, f)
+            dirs[key] = d
+        try:
+            self.assertTrue(cdp._pid_alive(os.getpid()))
+            self.assertFalse(cdp._pid_alive(dead.pid))
+            cdp.reap_orphans()
+            self.assertFalse(os.path.exists(dirs["dead"]))
+            self.assertTrue(os.path.exists(dirs["alive"]))
+            self.assertTrue(os.path.exists(dirs["legacy"]))  # 没有归属记录的旧目录不自动处理
+        finally:
+            import shutil
+            for d in dirs.values():
+                shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()

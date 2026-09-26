@@ -8,8 +8,10 @@ gen.py — 真实生成效果测试引擎
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
+import zlib
 from datetime import datetime, timezone
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
@@ -24,7 +26,8 @@ except ImportError:
 # 2.0: 源码正则特征 -> 无头浏览器运行检测(逐题交互脚本/功能断言) + 可选视觉模型清单评审, 与 1.x 结果不可直接比较
 # 2.1: 流式生成(思考模式不再整体超时)、续写携带完整已生成内容并按行去重、HTML 提取修正、取消即停
 # 2.2: 续写保留换行且不在单词中间去重; 已落盘的作品取消后仍入库; 题目 id 精确匹配
-GEN_VERSION = "2.2.0"
+# 2.3: 采样改为官方推荐(旧版 T0.3 易陷入重复)、流式检测逐字重复并立即停止、逐轮保存模型原始输出(works/<run>/<题>.gen.json)
+GEN_VERSION = "2.3.0"
 STREAM_IDLE_TIMEOUT = 300  # 流式响应两次数据之间的最长等待(秒)
 _STREAM_OPTIONAL = ("stream_options", "continue_final_message", "add_generation_prompt")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
@@ -141,10 +144,143 @@ class Cancelled(Exception):
     """用户取消。"""
 
 
-def chat(url, payload, headers, cancel=None, idle_timeout=STREAM_IDLE_TIMEOUT):
+# ---------------------------------------------------------------- 采样参数
+
+# 默认按 Qwen 系列官方推荐: 思考 T0.6/top_p0.95/top_k20, 非思考 T0.7/top_p0.8/top_k20; 固定 seed 便于复现。
+# 2.2 及之前统一用 T0.3: 接近贪心解码, 小模型写长文件时容易陷入逐字重复(同一段内容无限循环到输出上限)。
+GEN_SAMPLING = {
+    "think": {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "seed": 42},
+    "plain": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "seed": 42},
+}
+_SAMPLING_KEYS = (("temperature", float, 0.0, 2.0), ("top_p", float, 0.01, 1.0), ("top_k", int, -1, 1000),
+                  ("presence_penalty", float, -2.0, 2.0), ("seed", int, 0, 2 ** 31 - 1))
+
+
+def resolve_sampling(thinking, sampling=None):
+    """返回本轮请求的采样参数。sampling: None/"official"(官方推荐, 按是否思考区分) | "legacy"(旧版 T0.3) | dict(自定义)。"""
+    base = GEN_SAMPLING["think" if thinking else "plain"]
+    if sampling in (None, "", "official"):
+        return dict(base)
+    if sampling == "legacy":
+        return {"temperature": 0.3}
+    if isinstance(sampling, dict):
+        out = {}
+        for key, cast, lo, hi in _SAMPLING_KEYS:
+            v = sampling.get(key)
+            if v is None or (isinstance(v, str) and not v.strip()):
+                continue
+            try:
+                v = cast(v)
+            except (TypeError, ValueError):
+                raise ValueError("采样参数 %s 无效: %r" % (key, sampling.get(key)))
+            if not lo <= v <= hi:
+                raise ValueError("采样参数 %s 应在 %s 到 %s 之间: %s" % (key, lo, hi, v))
+            out[key] = v
+        out.setdefault("temperature", base["temperature"])
+        out.setdefault("seed", 42)
+        return out
+    raise ValueError("未知的采样方式: %r" % (sampling,))
+
+
+def sampling_record(sampling):
+    """写进运行记录的采样口径: 首轮(可能思考) / 续写轮(不思考) 各自的参数。"""
+    mode = "official" if sampling in (None, "", "official") else ("legacy" if sampling == "legacy" else "custom")
+    return {"mode": mode, "think": resolve_sampling(True, sampling), "plain": resolve_sampling(False, sampling)}
+
+
+# ---------------------------------------------------------------- 重复输出检测
+
+REPEAT_SPAN = 6000          # 严格循环: 末尾至少这么多字符按同一周期逐字重复
+REPEAT_SPAN_TINY = 8000     # 周期 ≤4 个字符(一长串 0 / 点号)时要求更长, 避免误伤正常的数组字面量
+REPEAT_MAX_PERIOD = 2000
+REPEAT_WINDOW = 8000        # 高度雷同: 最近 8000 字符的压缩率
+REPEAT_RATIO = 0.13         # 实测正常作品任意 8000 字符窗口压缩率 ≥ 0.19; 循环/机械计数输出持续低于 0.12
+REPEAT_LOW_CHECKS = 3       # 连续 3 次检查都低于阈值才判定(输出又增长了约 4000 字符, 排除偶发的整齐数据块)
+REPEAT_CHECK_EVERY = 2000   # 流式输出每增长这么多字符检查一次
+
+
+def _min_period(unit):
+    """字符串的最小周期(unit 由某个更短片段整数次重复而成时返回该片段长度)。"""
+    n = len(unit)
+    for d in range(1, n):
+        if n % d == 0 and unit[:d] * (n // d) == unit:
+            return d
+    return n
+
+
+def detect_repetition(text):
+    """严格循环: 输出末尾 L 个字符与其前移 p 个字符完全相同(L ≥ max(6000, 4p); 周期 ≤4 时整段循环 ≥ 8000)。
+    正常代码不会出现这么长的逐字循环。返回 {"kind": "loop", "period", "repeats", "start", "sample"} 或 None。"""
+    n = len(text)
+    if n <= REPEAT_SPAN:
+        return None
+    probe = 48
+    for p in range(1, min(REPEAT_MAX_PERIOD, n // 4) + 1):
+        need = max(REPEAT_SPAN, 4 * p)
+        if need + p > n:
+            break
+        if text[n - probe:] != text[n - probe - p:n - p]:  # 先比最后几十个字符, 快速排除
+            continue
+        if text[n - need:] != text[n - need - p:n - p]:
+            continue
+        start = n - need - p
+        lo = max(0, start - 500000)
+        while start > lo and text[start - 1] == text[start - 1 + p]:
+            start -= 1
+        period = _min_period(text[n - p:])
+        if period <= 4 and n - start < REPEAT_SPAN_TINY:
+            return None
+        return {"kind": "loop", "period": period, "repeats": (n - start) // period, "start": start,
+                "sample": text[n - max(period, 40):][:160]}
+    return None
+
+
+class RepetitionWatch:
+    """流式输出的重复检测: 逐字循环立即判定; 内容高度雷同(机械计数、同一句式反复)连续多次低于压缩率阈值时判定。"""
+
+    def __init__(self):
+        self.low = 0
+
+    def check(self, text):
+        hit = detect_repetition(text)
+        if hit:
+            return hit
+        if len(text) < REPEAT_WINDOW:
+            return None
+        w = text[-REPEAT_WINDOW:].encode("utf-8")
+        ratio = len(zlib.compress(w, 6)) / len(w)
+        self.low = self.low + 1 if ratio < REPEAT_RATIO else 0
+        if self.low >= REPEAT_LOW_CHECKS:
+            return {"kind": "similar", "ratio": round(ratio, 3), "period": None, "repeats": None,
+                    "sample": text[-160:]}
+        return None
+
+
+def repetition_text(rep):
+    """重复输出的大白话描述。"""
+    if rep.get("kind") == "loop":
+        return "每 %d 个字符循环一次，已重复 %d 次" % (rep["period"], rep["repeats"])
+    return "最近几千字内容高度雷同（压缩率 %.2f，正常代码约 0.2 以上）" % (rep.get("ratio") or 0)
+
+
+def scan_repetition(text):
+    """按流式检查的节奏扫描一段完整输出(非流式响应或事后核查用), 返回首次命中或 None。"""
+    watch = RepetitionWatch()
+    for end in range(REPEAT_CHECK_EVERY, len(text) + REPEAT_CHECK_EVERY, REPEAT_CHECK_EVERY):
+        hit = watch.check(text[:min(end, len(text))])
+        if hit:
+            return hit
+    return None
+
+
+# ---------------------------------------------------------------- 流式请求
+
+def chat(url, payload, headers, cancel=None, idle_timeout=STREAM_IDLE_TIMEOUT, info=None):
     """流式请求 chat/completions, 返回 (content, usage, finish_reason, reasoning)。
     按数据间隔而非总时长计超时, 长思考不会整体超时; cancel 置位时中断连接并抛出 Cancelled。
-    端点不支持流式而直接返回 JSON 时照常解析; 明确拒绝的可选字段剔除后重试(按端点记住)。"""
+    正文或思考陷入逐字重复时立即断开(finish_reason="repetition", 详情写入 info["repetition"]),
+    不再等模型把输出上限耗完。端点不支持流式而直接返回 JSON 时照常解析;
+    明确拒绝的可选字段剔除后重试(按端点记住)。"""
     drop = iq._DROPPED.get(url, set())
     body = dict(payload, stream=True, stream_options={"include_usage": True})
     body = {k: v for k, v in body.items() if k not in drop}
@@ -162,16 +298,34 @@ def chat(url, payload, headers, cancel=None, idle_timeout=STREAM_IDLE_TIMEOUT):
             named = iq._rejected_keys(e.detail, present)
             if named:
                 iq._DROPPED.setdefault(url, set()).update(named)
-                return chat(url, payload, headers, cancel, idle_timeout)
+                return chat(url, payload, headers, cancel, idle_timeout, info)
         raise
+
+    watches = {"content": RepetitionWatch(), "reasoning": RepetitionWatch()}
+
+    def repetition(parts, where, full_scan=False):
+        text = "".join(parts)
+        hit = (scan_repetition(text) if full_scan else watches[where].check(text)) if text else None
+        if hit:
+            hit["where"] = where
+            if info is not None:
+                info["repetition"] = hit
+        return hit
+
     content, reasoning, finish, usage = [], [], "", {}
+    size, next_check = 0, REPEAT_CHECK_EVERY
     with r:
         if "text/event-stream" not in (r.headers.get("Content-Type") or ""):
             d = json.loads(r.read())
             ch = d["choices"][0]
             msg = ch.get("message") or {}
-            return ((msg.get("content") or ""), d.get("usage") or {}, ch.get("finish_reason") or "",
-                    (msg.get("reasoning_content") or msg.get("reasoning") or "").strip())
+            text = msg.get("content") or ""
+            reason = (msg.get("reasoning_content") or msg.get("reasoning") or "").strip()
+            finish = ch.get("finish_reason") or ""
+            if finish == "length" and (repetition([text], "content", True) or repetition([reason], "reasoning", True)):
+                finish = "repetition"
+            return text, d.get("usage") or {}, finish, reason
+        stopped = False
         for raw in r:
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
@@ -191,13 +345,30 @@ def chat(url, payload, headers, cancel=None, idle_timeout=STREAM_IDLE_TIMEOUT):
                 delta = ch.get("delta") or {}
                 if delta.get("content"):
                     content.append(delta["content"])
+                    size += len(delta["content"])
                 r_part = delta.get("reasoning_content") or delta.get("reasoning")
                 if r_part:
                     reasoning.append(r_part)
+                    size += len(r_part)
                 if ch.get("finish_reason"):
                     finish = ch["finish_reason"]
-    return "".join(content), usage, finish, "".join(reasoning).strip()
+            if size >= next_check:
+                next_check = size + REPEAT_CHECK_EVERY
+                if repetition(content, "content") or repetition(reasoning, "reasoning"):
+                    stopped = True
+                    break  # 断开连接, 服务端随之中止生成
+        text, reason = "".join(content), "".join(reasoning).strip()
+        if stopped:
+            finish = "repetition"
+            if not usage:  # 提前断开拿不到服务端统计, 按字符数估算(约 3 字符 / token)
+                usage = {"completion_tokens": (len(text) + len(reason)) // 3, "estimated": True}
+        elif finish == "length" and not (info or {}).get("repetition") and (
+                repetition([text], "content", True) or repetition([reason], "reasoning", True)):
+            finish = "repetition"
+    return text, usage, finish, reason
 
+
+# ---------------------------------------------------------------- 续写拼接
 
 _CONTINUE_HINT = "输出在上面中断了。请从中断处继续输出剩余代码直到 </html>，不要重复已输出的内容，不要解释。"
 _FENCE_LINE = re.compile(r"^\s*```[\w-]*\s*$")
@@ -223,22 +394,24 @@ def _join_parts(prev, nxt):
     return prev + nxt
 
 
-def _stitch(prev, nxt):
-    """把续写内容接到已有内容后: 去掉续写开头的代码围栏, 删除与已有尾部重复的整行/行尾片段。
+def _stitch_info(prev, nxt):
+    """把续写内容接到已有内容后, 返回 (拼接结果, 处理说明)。
+    处理说明 {fence: 去掉了续写开头的代码块标记, overlap: 去掉的与上文重复的字符数,
+             line_restart: 模型从被截断那一行的行首重新输出, newline: 补了一个换行}。
 
     续写以换行开头时保留该换行(截断点常在行尾)。重叠不能从单词中间切开,
     例如已有内容以 myfunction 结尾、续写以 function 开头时不能删掉 function。
     """
+    info = {"fence": False, "overlap": 0, "line_restart": False, "newline": False}
     lines = nxt.split("\n")
-    dropped_fence = False
     while lines and _FENCE_LINE.match(lines[0]):
         lines.pop(0)
-        dropped_fence = True
-    if dropped_fence and lines and lines[0] == "":
+        info["fence"] = True
+    if info["fence"] and lines and lines[0] == "":
         lines.pop(0)  # 围栏后习惯性空行, 不是截断点的换行
     nxt = "\n".join(lines)
     if not nxt:
-        return prev
+        return prev, info
     limit = min(2000, len(prev), len(nxt))
     for k in range(limit, 7, -1):
         if not prev.endswith(nxt[:k]):
@@ -246,7 +419,8 @@ def _stitch(prev, nxt):
         before = prev[-k - 1] if len(prev) > k else ""
         if _word_char(before) and _word_char(nxt[0]):
             continue
-        return prev + nxt[k:]
+        info["overlap"] = k
+        return prev + nxt[k:], info
     last_nl = prev.rfind("\n")
     partial = prev[last_nl + 1:]
     first = nxt.split("\n", 1)[0]
@@ -255,24 +429,38 @@ def _stitch(prev, nxt):
         rest = fs[len(ps):]
         mid_token = bool(rest) and _word_char(ps[-1]) and _word_char(rest[0])
         if not (mid_token and len(ps) < 4):
-            return prev[:last_nl + 1] + nxt
-    return _join_parts(prev, nxt)
+            info["line_restart"], info["overlap"] = True, len(partial)
+            return prev[:last_nl + 1] + nxt, info
+    joined = _join_parts(prev, nxt)
+    info["newline"] = len(joined) == len(prev) + len(nxt) + 1
+    return joined, info
 
 
-def gen_complete(url, model, prompt, tier_max, headers, thinking=False, cancel=None):
+def _stitch(prev, nxt):
+    return _stitch_info(prev, nxt)[0]
+
+
+def gen_complete(url, model, prompt, tier_max, headers, thinking=False, cancel=None, sampling=None, trace=None):
     """生成并自动续写直到正常结束或达到轮次上限。thinking=True 开启推理模式(仅首轮)。
     续写时把完整已生成内容作为 assistant 前缀, 支持 continue_final_message 的端点(vLLM/SGLang)直接接着写;
-    不支持时退回"继续输出"指令, 同样携带完整内容, 模型能看到前文声明的变量。"""
+    不支持时退回"继续输出"指令, 同样携带完整内容, 模型能看到前文声明的变量。
+    模型陷入逐字重复时立即停止且不再续写(继续只会放大重复)。
+    trace(dict): 逐轮记录原始输出、结束原因、token 与拼接方式, 用于核对框架是否改动了模型输出。"""
+    trace = trace if trace is not None else {}
+    rounds = trace.setdefault("rounds", [])
     total_in = total_out = 0
     full, cont, total_reason = "", 0, 0
     msgs = [{"role": "user", "content": prompt}]
-    extra, mt = {}, tier_max
+    extra, mt, mode = {}, tier_max, "first"
     while True:
-        payload = {"model": model, "messages": msgs, "max_tokens": mt, "temperature": 0.3,
-                   "chat_template_kwargs": {"enable_thinking": bool(thinking and cont == 0)}}
+        think_now = bool(thinking and cont == 0)
+        payload = {"model": model, "messages": msgs, "max_tokens": mt,
+                   "chat_template_kwargs": {"enable_thinking": think_now}}
+        payload.update(resolve_sampling(think_now, sampling))
         payload.update(extra)
+        info, t0 = {}, time.time()
         try:
-            resp, usage, finish, reasoning = chat(url, payload, headers, cancel)
+            resp, usage, finish, reasoning = chat(url, payload, headers, cancel, info=info)
         except Cancelled:
             raise
         except Exception as e:
@@ -284,42 +472,108 @@ def gen_complete(url, model, prompt, tier_max, headers, thinking=False, cancel=N
                 mt = fit
                 continue
             plog("    ⚠ 续写失败, 保留已生成部分: %s" % str(e)[:80])
+            rounds.append({"n": len(rounds) + 1, "mode": mode, "error": str(e)[:240]})
             break
         if extra and "continue_final_message" in iq._DROPPED.get(url, ()):
             # 端点不支持前缀续写(本轮已按普通对话生成, 结果不可用): 改为指令式续写重做本轮
             msgs = msgs + [{"role": "user", "content": _CONTINUE_HINT}]
-            extra = {}
+            extra, mode = {}, "instruct"
             continue
         total_in += usage.get("prompt_tokens", 0)
         total_out += usage.get("completion_tokens", 0)
         total_reason += len(reasoning)
-        if cont == 0:
+        rec = {"n": len(rounds) + 1, "mode": mode, "thinking": think_now, "max_tokens": mt, "finish": finish,
+               "prompt_tokens": usage.get("prompt_tokens"), "completion_tokens": usage.get("completion_tokens"),
+               "tokens_estimated": bool(usage.get("estimated")), "seconds": round(time.time() - t0, 1),
+               "content_chars": len(resp), "reasoning_chars": len(reasoning),
+               "reasoning_head": reasoning[:1500], "reasoning_tail": reasoning[-1500:] if len(reasoning) > 3000 else "",
+               "content": resp}
+        rep = info.get("repetition")
+        if rep:
+            rec["repetition"] = rep
+        if cont == 0 or mode == "restart":
             full = resp
         elif re.match(r"\s*(```[\w-]*\s*)?<!doctype|\s*(```[\w-]*\s*)?<html", resp, re.I) and "<html" in full.lower():
             plog("    ↻ 续写从头重新输出了整个文件, 改用新内容")
             full = resp
+            rec["join"] = {"replaced": True}
         else:
-            full = _stitch(full, resp)
+            full, rec["join"] = _stitch_info(full, resp)
+        rounds.append(rec)
+        if rep and rep["where"] == "content":
+            trace["degenerate"] = {k: rep.get(k) for k in ("kind", "period", "repeats", "ratio", "sample")}
+            trace["degenerate"]["round"] = rec["n"]
+            plog("    ⚠ 模型陷入重复输出(%s), 停止生成、不再续写" % repetition_text(rep))
+            break
+        if rep:  # 思考过程陷入重复: 与思考用完输出长度同样处理(正文为空时改为不思考重新生成)
+            trace["degenerate_reasoning"] = {k: rep.get(k) for k in ("kind", "period", "repeats", "ratio", "sample")}
+            trace["degenerate_reasoning"]["round"] = rec["n"]
+            plog("    ⚠ 思考过程陷入重复输出, 停止思考")
+            finish = "length"
         if finish != "length":
             break
         cont += 1
         if cont >= 4:
             plog("    ⚠ 续写 %d 轮仍未闭合" % cont)
+            trace["unfinished"] = True
             break
         plog("    ↻ 截断, 续写第 %d 轮(关闭思考直出代码)" % cont)
         visible = iq.strip_think(full) if "<think>" in full or "</think>" in full else full
         if not visible.strip():
             msgs = [{"role": "user", "content": prompt + "\n\n（直接输出完整 HTML 代码，不要思考过程。）"}]
-            full, extra = "", {}
+            full, extra, mode = "", {}, "restart"
+            trace["rescued"] = "思考过程%s，没写出代码；改为不思考、直接重新生成" % ("陷入重复" if rep else "用完了输出长度")
         elif url not in iq._DROPPED or "continue_final_message" not in iq._DROPPED[url]:
             msgs = [{"role": "user", "content": prompt}, {"role": "assistant", "content": visible}]
-            extra = {"continue_final_message": True, "add_generation_prompt": False}
-            full = visible
+            extra, full, mode = {"continue_final_message": True, "add_generation_prompt": False}, visible, "prefix"
         else:
             msgs = [{"role": "user", "content": prompt}, {"role": "assistant", "content": visible},
                     {"role": "user", "content": _CONTINUE_HINT}]
-            extra, full = {}, visible
+            extra, full, mode = {}, visible, "instruct"
     return full, total_in, total_out, cont, total_reason
+
+
+def describe_changes(raw, html, trace=None):
+    """用大白话列出框架对模型原始输出做过的全部处理。除列出的处理外, 保存的作品与模型输出逐字一致,
+    用于回答"作品是不是被框架弄坏了"。没有任何处理时返回 ["原样保存…"]。"""
+    trace = trace or {}
+    out = []
+    if trace.get("rescued"):
+        out.append(trace["rescued"])
+    for r in (trace.get("rounds") or [])[1:]:
+        if r.get("mode") == "restart" or r.get("error"):
+            continue
+        j = r.get("join") or {}
+        if j.get("replaced"):
+            out.append("第 %d 轮续写时模型从头重写了整个文件，采用了重写后的版本" % r["n"])
+            continue
+        bits = []
+        if j.get("line_restart"):
+            bits.append("模型从被截断的那一行重新写，去掉了重复的半行（%d 个字符）" % j.get("overlap", 0))
+        elif j.get("overlap"):
+            bits.append("去掉了与上文重复的 %d 个字符" % j["overlap"])
+        if j.get("fence"):
+            bits.append("去掉了开头的代码块标记")
+        if j.get("newline"):
+            bits.append("补了 1 个换行")
+        out.append("接上第 %d 轮续写（%s）" % (r["n"], "，".join(bits) if bits else "直接拼接"))
+    no_think = iq.strip_think(raw)
+    cut = len(raw.strip()) - len(no_think)
+    if cut > 0:
+        out.append("去掉了混在正文里的思考过程（%d 个字符）" % cut)
+    pos = no_think.find(html) if html else -1
+    if pos >= 0:
+        for where, text in (("前面", no_think[:pos]), ("后面", no_think[pos + len(html):])):
+            prose = re.sub(r"```[\w-]*", "", text).strip()
+            if prose:
+                out.append("去掉了代码%s的说明文字（%d 个字符）%s：「%s」" % (
+                    where, len(prose), "和代码块标记" if "```" in text else "",
+                    prose[:40].replace("\n", " ") + ("…" if len(prose) > 40 else "")))
+            elif "```" in text:
+                out.append("去掉了代码%s的 Markdown 代码块标记" % where)
+    elif html:
+        out.append("删除了续写接缝处多余的代码块标记")
+    return out or ["原样保存了模型输出，没有做任何修改"]
 
 
 def _drop_seam_fences(text):
@@ -390,10 +644,13 @@ def plog(msg):
 
 
 def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
-            framework=None, fw_version=None, thinking=False, sink=None, judge=None, browsers=2, cancel=None):
+            framework=None, fw_version=None, thinking=False, sink=None, judge=None, browsers=2, cancel=None,
+            sampling=None):
     """跑生成测试。作品落 works/<run_id>/; 每件作品生成后即做运行检测(+可选视觉评审);
     元数据经 sink (默认 outdir/<run_id>.json); 返回落地位置。judge: {base, model, api_key}
-    cancel: threading.Event, 置位后不再开始新题, 已完成作品保留, 状态记为 cancelled。"""
+    cancel: threading.Event, 置位后不再开始新题, 已完成作品保留, 状态记为 cancelled。
+    sampling: None/"official" | "legacy" | dict, 见 resolve_sampling。每题的原始输出逐轮保存在 works/<run_id>/<题>.gen.json。"""
+    sampling_record(sampling)  # 参数有误时在开始前报错
     outdir = outdir or os.path.join(ROOT, "results")
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
     if task_ids is not None:
@@ -408,19 +665,51 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
     result = {"kind": "gen", "gen_version": GEN_VERSION, "run_id": run_id, "tag": tag,
               "url": url, "model": model, "conc": conc,
               "framework": {"name": framework or "", "version": fw_version or ""},
-              "thinking": bool(thinking), "planned": len(tasks),
+              "thinking": bool(thinking), "planned": len(tasks), "sampling": sampling_record(sampling),
               "started_utc": datetime.now(timezone.utc).isoformat(),
               "works_dir": "works/" + run_id, "items": []}
     sink = sink or sinks.JsonFileSink(outdir)
     evaluator = geneval.Evaluator(judge, browsers=browsers, log=plog)
+    evaluator.reap()
     result["eval"] = evaluator.meta()
 
     def save():
         sink.save(result)
 
-    plog("== gen v%s | %s | %d 题 | conc=%d | 评测: %s%s ==" % (
-        GEN_VERSION, model, len(tasks), conc, "无头浏览器运行检测" if evaluator.method == "browser" else "源码检查(未找到浏览器)",
+    first = resolve_sampling(thinking, sampling)
+    plog("== gen v%s | %s | %d 题 | conc=%d | 采样 %s | 评测: %s%s ==" % (
+        GEN_VERSION, model, len(tasks), conc, json.dumps(first, ensure_ascii=False),
+        "无头浏览器运行检测" if evaluator.method == "browser" else "源码检查(未找到浏览器)",
         " + 视觉评审 " + judge["model"] if evaluator.judge_cfg else ""))
+
+    def keep_trace(task, trace, raw, html):
+        """逐题留档: 模型每一轮的原始输出 + 框架做过的处理; 返回写进作品条目的摘要字段。"""
+        if not trace.get("rounds"):
+            return {}
+        changes = describe_changes(raw, html, trace) if raw is not None else []
+        doc = {"gen_version": GEN_VERSION, "task": task["id"], "prompt": task["prompt"], "thinking": bool(thinking),
+               "sampling": result["sampling"], "raw_chars": len(raw or ""), "html_chars": len(html or ""),
+               "changes": changes}
+        doc.update(trace)
+        rel = "works/%s/%s.gen.json" % (run_id, task["id"])
+        path = os.path.join(ROOT, rel)
+        try:
+            with open(path + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(doc, f, ensure_ascii=False)
+            os.replace(path + ".tmp", path)
+        except OSError as e:
+            plog("  ⚠ [%s] 原始输出留档失败: %s" % (task["name"], e))
+            rel = None
+        brief = {"rounds": [{k: r.get(k) for k in ("n", "mode", "thinking", "finish", "completion_tokens", "tokens_estimated",
+                                                   "content_chars", "reasoning_chars", "seconds", "error")}
+                            for r in trace["rounds"]],
+                 "changes": changes}
+        if rel:
+            brief["trace"] = rel
+        for k in ("degenerate", "degenerate_reasoning", "rescued", "unfinished"):
+            if trace.get(k):
+                brief[k] = trace[k]
+        return brief
 
     done_ct = [0]
 
@@ -432,25 +721,32 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
         if cancel is not None and cancel.is_set():
             return None
         plog("▶ 开始: %s (%s)" % (task["name"], "/".join(task["tags"])))
+        trace = {}
         try:
             base_max = 16000 if "地狱" in task["tags"] else (12000 if "困难" in task["tags"] else 8000)
             tier_max = int(base_max * 2.5) if thinking else base_max  # 思考 token 与正文共享输出预算
             resp, in_tok, out_tok, cont_n, reason_len = gen_complete(url, model, task["prompt"], tier_max, headers,
-                                                                     thinking, cancel)
+                                                                     thinking, cancel, sampling, trace)
         except Cancelled:
             return None
         except Exception as e:
             done_ct[0] += 1
             detail = getattr(e, "detail", "")
             plog("  ✗ [%s] 失败: %s · 进度 %d/%d" % (task["name"], str(e)[:60], done_ct[0], len(tasks)))
-            return failed(task, (str(e) + ((" " + detail[:120]) if detail else ""))[:240])
+            item = failed(task, (str(e) + ((" " + detail[:120]) if detail else ""))[:240])
+            item.update(keep_trace(task, trace, None, None))
+            return item
         html = extract_html(resp)
         if len(html) < 200 or "<" not in html:
             done_ct[0] += 1
             why = ("思考耗尽未产出正文(思考%d字)" % reason_len) if thinking and reason_len and not iq.strip_think(resp).strip() \
                 else "输出中没有有效的 HTML(提取到 %d 字)" % len(html)
+            if trace.get("degenerate"):
+                why = "模型陷入重复输出，没有写出有效的 HTML"
             plog("  ✗ [%s] %s · 进度 %d/%d" % (task["name"], why, done_ct[0], len(tasks)))
-            return failed(task, why)
+            item = failed(task, why)
+            item.update(keep_trace(task, trace, resp, html))
+            return item
         fname = task["id"] + ".html"
         fpath = os.path.join(work_dir, fname)
         try:
@@ -462,6 +758,7 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
                     "lines": html.count("\n") + 1,
                     "continuations": cont_n, "reason_chars": reason_len,
                     "stars": None, "in_tokens": in_tok, "out_tokens": out_tok}
+            item.update(keep_trace(task, trace, resp, html))
             if cancel is None or not cancel.is_set():
                 report = evaluator.evaluate(task, fpath, html, cancel)
                 geneval.apply_eval(item, report)
@@ -562,6 +859,7 @@ def reevaluate(run_id, judge=None, only=None, db_path=None, browsers=2, log=None
         raise KeyError("生成运行不存在: %s" % run_id)
     tasks = {t["id"]: t for t in GEN_TASKS}
     evaluator = geneval.Evaluator(judge, browsers=browsers, log=log)
+    evaluator.reap()
     targets = [it for it in doc.get("items", []) if not it.get("error") and it.get("id") in tasks
                and (not only or it["id"] in only)]
     log("== 重新评测 %s | %d 件作品 | %s%s ==" % (run_id, len(targets), evaluator.method,

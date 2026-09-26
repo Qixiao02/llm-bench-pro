@@ -121,6 +121,11 @@ class TestServer(ServerCase):
             self.assertLess(header.index(b"<html>"), header.index(b"storage shim"))
             self.assertLess(header.index(b"storage shim"), header.index(b"<header"))
             self.assertIn(b'localStorage.getItem("best")', body)         # 原始内容完整保留
+            with open(os.path.join(d, "game.gen.json"), "w", encoding="utf-8") as f:
+                f.write('{"task": "game", "rounds": []}')
+            st, h2, body2 = self.request("GET", "/works/game.gen.json")
+            self.assertEqual((st, h2["Content-Type"].split(";")[0], body2["task"]), (200, "application/json", "game"))
+            self.assertNotIn("Content-Security-Policy", h2)
             st, _, jpg = self.request("GET", "/works/shot.jpg")
             self.assertEqual((st, jpg[:2]), (200, b"\xff\xd8"))           # 非 HTML 不注入
         finally:

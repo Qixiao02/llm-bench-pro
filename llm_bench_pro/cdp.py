@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 cdp.py — 纯标准库 Chrome DevTools Protocol 客户端
-- 查找本机 Chrome / Edge / Chromium, 以无头模式启动 (独立临时用户目录)
+- 查找本机 Chrome / Edge / Chromium, 以无头模式启动 (独立临时用户目录, 记录所属进程, 遗留进程可回收)
 - 最小 WebSocket 客户端 (RFC 6455: 握手 / 掩码帧 / 扩展长度 / 分片 / ping)
 - CDP 会话: 同步命令 + 事件缓冲
 - PNG 解码 (8-bit RGB/RGBA 非隔行, 即 Chrome 截图格式) 与像素统计, 供白屏/动画/交互判定
@@ -51,14 +51,124 @@ def find_browser():
     return None
 
 
+PROFILE_PREFIX = "llmbench-chrome-"
+_OWNER_FILE = "llmbench-owner.json"
+
+
+def _pid_alive(pid):
+    """进程是否仍在运行。Windows 上 os.kill(pid, 0) 会直接结束目标进程, 必须用 OpenProcess 查询。"""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if sys.platform.startswith("win"):
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        k32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ctypes.get_last_error() == 5  # 拒绝访问: 进程存在(例如以管理员身份运行)
+        try:
+            code = wintypes.DWORD()
+            return bool(k32.GetExitCodeProcess(h, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+        finally:
+            k32.CloseHandle(h)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _read_port(profile):
+    try:
+        with open(os.path.join(profile, "DevToolsActivePort")) as f:
+            return int(f.readline().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def close_via_devtools(port, timeout=3):
+    """通过 DevTools 让浏览器自行退出。对"启动进程已退出、实际浏览器是它重启出来的另一个进程"同样有效。"""
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:%d/json/version" % port, timeout=timeout) as r:
+            ws_url = json.loads(r.read()).get("webSocketDebuggerUrl")
+        if not ws_url:
+            return False
+        ws = WebSocket(ws_url, timeout=timeout)
+        try:
+            ws.send(json.dumps({"id": 1, "method": "Browser.close"}))
+            try:
+                ws.recv()
+            except Exception:
+                pass
+        finally:
+            ws.close()
+        return True
+    except Exception:
+        return False
+
+
+def _remove_profile(path, tries=20):
+    for _ in range(tries):  # Windows 上进程退出后文件句柄释放有延迟
+        shutil.rmtree(path, ignore_errors=True)
+        if not os.path.exists(path):
+            return True
+        time.sleep(0.3)
+    return False
+
+
+def reap_orphans(log=None):
+    """关闭本工具遗留在后台的浏览器: 临时目录里记录的所属进程已经退出, 浏览器却还在运行。
+    只处理带归属记录的目录; 没有记录的旧目录可能正被其他仍在运行的服务使用, 不自动处理。返回处理的目录数。"""
+    base = tempfile.gettempdir()
+    try:
+        names = [n for n in os.listdir(base) if n.startswith(PROFILE_PREFIX)]
+    except OSError:
+        return 0
+    n = 0
+    for name in names:
+        d = os.path.join(base, name)
+        try:
+            with open(os.path.join(d, _OWNER_FILE), encoding="utf-8") as f:
+                owner = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if _pid_alive(owner.get("pid")):
+            continue
+        port = _read_port(d)
+        if port:
+            close_via_devtools(port)
+        _remove_profile(d, tries=10)
+        n += 1
+        if log:
+            log("  已关闭遗留的后台浏览器(所属进程 %s 已退出): %s" % (owner.get("pid"), name))
+    return n
+
+
 class Browser:
     """一个无头浏览器进程; 通过 /json 端点开关标签页。线程安全地为每个作品开独立标签。"""
 
-    def __init__(self, path=None, timeout=20):
+    def __init__(self, path=None, timeout=30):
         self.path = path or find_browser()
         if not self.path:
             raise RuntimeError("未找到 Chrome/Edge/Chromium (可设 LLM_BENCH_BROWSER 指定路径)")
-        self.profile = tempfile.mkdtemp(prefix="llmbench-chrome-")
+        self.profile = tempfile.mkdtemp(prefix=PROFILE_PREFIX)
+        self.proc, self.port, self._log = None, None, None
+        self.relaunched = False
+        try:
+            with open(os.path.join(self.profile, _OWNER_FILE), "w", encoding="utf-8") as f:
+                json.dump({"pid": os.getpid(), "created": time.time()}, f)
+        except OSError:
+            pass
         args = [self.path, "--headless=new", "--remote-debugging-port=0", "--remote-allow-origins=*",
                 "--user-data-dir=" + self.profile, "--no-first-run", "--no-default-browser-check",
                 "--disable-extensions", "--disable-background-networking", "--disable-sync",
@@ -67,19 +177,55 @@ class Browser:
                 "--use-angle=swiftshader", "--enable-unsafe-swiftshader",  # 无 GPU 环境下 WebGL 软件渲染
                 "--disable-renderer-backgrounding", "--disable-background-timer-throttling",
                 "--disable-backgrounding-occluded-windows", "--window-size=1280,800", "about:blank"]
+        if sys.platform.startswith("win"):
+            # 服务以管理员身份运行时, Chrome 默认会以普通权限重启自身, 启动进程随即退出。
+            # 旧代码因此判定"启动失败": 所有作品降级成源码检查, 重启出的浏览器也一直留在后台。
+            args.insert(1, "--do-not-de-elevate")
         flags = 0x08000000 if sys.platform.startswith("win") else 0  # CREATE_NO_WINDOW
-        self.proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
-        port_file = os.path.join(self.profile, "DevToolsActivePort")
+        try:
+            self._log = open(os.path.join(self.profile, "chrome-launch.log"), "wb")
+            self.proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=self._log, creationflags=flags)
+        except OSError as e:
+            self.close()
+            raise RuntimeError("无法启动浏览器 %s: %s" % (self.path, e))
         t0 = time.time()
-        while not os.path.isfile(port_file) or os.path.getsize(port_file) == 0:
-            if self.proc.poll() is not None or time.time() - t0 > timeout:
+        exited = None
+        while True:
+            self.port = _read_port(self.profile)
+            if self.port:
+                break
+            now = time.time()
+            if exited is None and self.proc.poll() is not None:
+                exited = now  # 启动进程已退出: 可能是浏览器重启了自身, 再等一会儿看新进程是否就绪
+            if (exited is not None and now - exited > 8) or now - t0 > timeout:
+                reason = self._failure_reason(exited is not None, now - t0)
                 self.close()
-                raise RuntimeError("无头浏览器启动失败: %s" % self.path)
+                raise RuntimeError(reason)
             time.sleep(0.1)
-        time.sleep(0.2)
-        with open(port_file) as f:
-            self.port = int(f.readline().strip())
-        self.version = self._http("GET", "/json/version").get("Browser", "")
+        self.relaunched = self.proc.poll() is not None  # 实际浏览器是启动进程重启出来的
+        try:
+            self.version = self._http("GET", "/json/version").get("Browser", "")
+        except Exception as e:
+            self.close()
+            raise RuntimeError("浏览器已启动但无法连接调试端口 %s: %s" % (self.port, e))
+
+    def _failure_reason(self, exited, waited):
+        tail = ""
+        try:
+            self._log.flush()
+            with open(self._log.name, "rb") as f:
+                tail = f.read()[-800:].decode("utf-8", "replace").strip()
+        except Exception:
+            pass
+        if exited:
+            msg = "浏览器启动后立即退出（退出码 %s）" % self.proc.returncode
+        else:
+            msg = "浏览器 %d 秒内没有准备好" % waited
+        msg += "：%s" % self.path
+        lines = [x for x in tail.splitlines() if x.strip()]
+        if lines:
+            msg += "。浏览器输出：" + " / ".join(lines[-3:])[:300]
+        return msg
 
     def _http(self, method, path):
         req = urllib.request.Request("http://127.0.0.1:%d%s" % (self.port, path), method=method)
@@ -102,18 +248,21 @@ class Browser:
 
     def close(self):
         try:
-            if self.proc.poll() is None:
+            if self.port:
+                close_via_devtools(self.port)  # 先让浏览器自行退出: 覆盖重启后换了进程的情况
+            if self.proc is not None and self.proc.poll() is None:
                 self.proc.terminate()
                 try:
                     self.proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     self.proc.kill()
         finally:
-            for _ in range(10):  # Windows 上进程退出后文件句柄释放有延迟
-                shutil.rmtree(self.profile, ignore_errors=True)
-                if not os.path.exists(self.profile):
-                    break
-                time.sleep(0.3)
+            if self._log is not None:
+                try:
+                    self._log.close()
+                except Exception:
+                    pass
+            _remove_profile(self.profile)
 
     def __enter__(self):
         return self
@@ -373,3 +522,39 @@ def image_diff(png_a, png_b, threshold=24):
 
 if __name__ == "__main__":
     print("browser:", find_browser())
+
+
+def reap_all_legacy(log=print):
+    """手动回收: 关闭所有 llmbench-chrome-* 目录对应的后台浏览器(包括旧版本遗留、没有归属记录的)。
+    只应在没有评测正在运行时使用。返回处理的目录数。"""
+    base = tempfile.gettempdir()
+    n = 0
+    for name in sorted(os.listdir(base)):
+        if not name.startswith(PROFILE_PREFIX):
+            continue
+        d = os.path.join(base, name)
+        port = _read_port(d)
+        closed = close_via_devtools(port) if port else False
+        removed = _remove_profile(d, tries=10)
+        n += 1
+        log("%s  浏览器%s  目录%s" % (name, "已关闭" if closed else "未在运行", "已删除" if removed else "删除失败(可能仍被占用)"))
+    return n
+
+
+def main(argv=None):
+    import argparse
+    ap = argparse.ArgumentParser(description="后台浏览器维护")
+    ap.add_argument("--reap", action="store_true", help="回收所属进程已退出的后台浏览器")
+    ap.add_argument("--reap-all", action="store_true", help="关闭全部 llmbench 后台浏览器(含旧版本遗留), 确认没有评测在运行时使用")
+    args = ap.parse_args(argv)
+    if args.reap_all:
+        print("共处理 %d 个" % reap_all_legacy())
+    elif args.reap:
+        print("共处理 %d 个" % reap_orphans(print))
+    else:
+        ap.print_help()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

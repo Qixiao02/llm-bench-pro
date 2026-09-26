@@ -452,6 +452,8 @@ class Handler(BaseHTTPRequestHandler):
             full = safe_join(WORKS, path[len("/works/"):])
             ext = os.path.splitext(full or "")[1].lower()
             ctype = {".html": "text/html; charset=utf-8", ".jpg": "image/jpeg"}.get(ext)
+            if full and full.endswith(".gen.json"):  # 模型原始输出留档(纯数据, 不执行)
+                ctype = "application/json; charset=utf-8"
             if full and ctype and os.path.isfile(full):
                 if ext == ".html":
                     with open(full, "rb") as f:
@@ -930,8 +932,10 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             return self._json({"ok": False, "error": "并发应为整数"}, 400)
         raw_tasks = body.get("tasks")
+        sampling = body.get("sampling") or None
         try:
             task_ids = None if raw_tasks in (None, "") else gen.normalize_task_ids(raw_tasks)
+            gen.sampling_record(sampling)
         except ValueError as e:
             return self._json({"ok": False, "error": str(e)}, 400)
         if self._busy_or_conflict("gen", base, body):
@@ -945,7 +949,7 @@ class Handler(BaseHTTPRequestHandler):
             sink = sinks.SqliteSink()
             gen.run_gen(url, model, body.get("api_key", ""), task_ids, conc, RESULTS, (body.get("tag") or "").strip(),
                         (body.get("framework") or "").strip() or None, (body.get("fw_version") or "").strip() or None,
-                        _truthy(body.get("thinking")), sink=sink, judge=judge, cancel=j.cancel)
+                        _truthy(body.get("thinking")), sink=sink, judge=judge, cancel=j.cancel, sampling=sampling)
             j.set(run_id=sink.run_id)
         job.run(target, "_GEN_PROGRESS", gen)
         return self._json({"ok": True, "url": url, "tasks": len(task_ids) if task_ids is not None else len(gen.GEN_TASKS),
