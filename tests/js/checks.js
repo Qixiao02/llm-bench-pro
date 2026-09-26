@@ -180,6 +180,55 @@ T("逐题查看: MMLU 学科名换成中文, 未知的去下划线", () => {
   assert.equal(subTopic("brand_new_subject"), "brand new subject");
   assert.equal(subTopic(""), "");
 });
+T("表格排序: 数字升降、空值永远排最后、相等保持原顺序", () => {
+  const spec = {id: "t-sort", columns: [{key: "v", type: "num"}, {key: "s", type: "status"}]};
+  const rows = [{v: 3, i: 0}, {v: null, i: 1}, {v: 10, i: 2}, {v: 3, i: 3}, {v: NaN, i: 4}];
+  assert.deepEqual(dtSortRows(spec, rows, {key: "v", dir: "asc"}).map(r => r.i), [0, 3, 2, 1, 4]);
+  assert.deepEqual(dtSortRows(spec, rows, {key: "v", dir: "desc"}).map(r => r.i), [2, 0, 3, 1, 4]);
+  assert.deepEqual(dtSortRows(spec, rows, null).map(r => r.i), [0, 1, 2, 3, 4]);
+  const st = [{s: {tone: "good"}}, {s: {tone: "bad"}}, {s: {tone: "warn"}}];
+  assert.deepEqual(dtSortRows(spec, st, {key: "s", dir: "desc"}).map(r => r.s.tone), ["bad", "warn", "good"]);  /* 按严重程度 */
+});
+T("表格数字: 千分位 + 固定小数, 空值占位; 导出不带千分位", () => {
+  assert.equal(numText(1774.63, 1), "1,774.6");
+  assert.equal(numText(7, 2), "7.00");
+  assert.equal(numText(null), "—");
+  assert.equal(dtExport({key: "v", type: "num", digits: 1}, {v: 1774.63}), "1774.6");
+  assert.equal(dtExport({key: "v", type: "delta"}, {v: -5.04}), "-5.0%");
+  assert.equal(dtExport({key: "v", type: "status"}, {v: {tone: "bad", text: "没过"}}), "没过");
+});
+T("CSV / TSV: 逗号、引号、换行正确转义, CSV 带 BOM", () => {
+  assert.equal(csvCell("a,b"), '"a,b"');
+  assert.equal(csvCell('说 "好"'), '"说 ""好"""');
+  assert.equal(csvCell("x\ny"), '"x\ny"');
+  assert.equal(csvCell(12.5), "12.5");
+  const m = {head: ["指标", "值"], rows: [["速度, 中文", "130.8"], ["说明\t含制表符", "1"]]};
+  const csv = toCSV(m);
+  assert.ok(csv.startsWith("﻿"));
+  assert.ok(csv.includes('"速度, 中文",130.8'));
+  assert.equal(toTSV(m).split("\n")[2], "说明 含制表符\t1");
+});
+T("变化判定: 按方向判断好坏, 差别小于 1% 为持平", () => {
+  assert.ok(deltaText(0.6, 1).includes("持平"));
+  assert.ok(deltaText(5, 1).includes("up"));
+  assert.ok(deltaText(5, -1).includes("down"));   /* 越低越好的指标变大 = 更差 */
+  assert.ok(deltaText(-5, -1).includes("up"));
+  assert.ok(deltaText(null, 1).includes("—"));
+});
+T("矩阵整形与对比整形", () => {
+  const p = pivotRows([{l: "1K", c: 1, v: 0.1}, {l: "1K", c: 4, v: 0.3}, {l: "2K", c: 1, v: 0.2}], {row: "l", col: "c", value: "v"});
+  assert.deepEqual(p.cols, [1, 4]);
+  assert.deepEqual(p.rows.map(r => r._row), ["1K", "2K"]);
+  assert.equal(p.rows[0].c_4, 0.3);
+  assert.equal(p.rows[1].c_4, undefined);
+  const rows = compareRows([1], [{v: 100}, {v: 110}], (x, k) => x, [{key: "m", get: r => r.v}]);
+  assert.equal(rows[0].m_0, 100);
+  assert.equal(rows[0].m_1, 110);
+  assert.equal(Math.round(rows[0].m_d), 10);
+  const cols = compareCols([{tag: "A"}, {tag: "B"}], [{key: "m", label: "速度", unit: "token/秒", dir: 1}]);
+  assert.deepEqual(cols.map(c => c.label), ["A", "B", "变化"]);
+  assert.equal(cols[0].group, "速度（token/秒）");
+});
 T("maskKey: API Key 掩码显示", () => {
   assert.equal(maskKey("sk-1234567890abcdef"), "sk-1…cdef");
   assert.equal(maskKey(""), "—");

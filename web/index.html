@@ -105,11 +105,13 @@
         <div class="tb-field"><span class="run-tag b">B</span><select class="select" id="runB" aria-label="对比的测试 B" onchange="render()"><option value="">不对比</option></select></div>
       </div>
       <div class="bar-tools">
+        <span class="seg bar-vm" role="group" aria-label="查看方式" data-vm-page="dash"><button type="button" class="seg-btn" data-vm="chart" aria-pressed="true" title="图表视图"><svg class="icon"><use href="#i-chart"/></svg><span>图表</span></button><button type="button" class="seg-btn" data-vm="table" aria-pressed="false" title="表格视图：每个章节都换成表格"><svg class="icon"><use href="#i-table"/></svg><span>表格</span></button></span>
         <button class="btn btn-secondary btn-sm bar-export" onclick="exportReport('dash')" title="把 A（和 B）导出成一个网页文件，可以直接发给别人打开"><svg class="icon"><use href="#i-file-down"/></svg><span>导出报告</span></button>
         <details class="dropdown more">
           <summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作" title="更多操作"><svg class="icon"><use href="#i-more"/></svg></summary>
           <div class="dropdown-panel menu is-right" role="menu">
             <button class="menu-item" type="button" onclick="refresh()"><svg class="icon"><use href="#i-refresh"/></svg>刷新结果</button>
+            <button class="menu-item" type="button" onclick="exportPageTables('dash')"><svg class="icon"><use href="#i-download"/></svg>导出本页全部表格（CSV）</button>
             <button class="menu-item is-danger" type="button" onclick="deleteRun('perf')"><svg class="icon"><use href="#i-trash"/></svg>删除测试 A</button>
             <div class="menu-sep"></div>
             <div class="menu-note" id="status"></div>
@@ -139,11 +141,13 @@
         <div class="tb-field"><span class="run-tag b">B</span><select class="select" id="cmpB" aria-label="测试 B" onchange="renderCmp()"></select></div>
       </div>
       <div class="bar-tools">
+        <span class="seg bar-vm" role="group" aria-label="查看方式" data-vm-page="cmp"><button type="button" class="seg-btn" data-vm="chart" aria-pressed="true" title="图表视图"><svg class="icon"><use href="#i-chart"/></svg><span>图表</span></button><button type="button" class="seg-btn" data-vm="table" aria-pressed="false" title="表格视图：每个章节都换成表格"><svg class="icon"><use href="#i-table"/></svg><span>表格</span></button></span>
         <button class="btn btn-secondary btn-sm bar-export" onclick="exportReport('cmp')" title="把 A/B 对比导出成一个网页文件，可以直接发给别人打开"><svg class="icon"><use href="#i-file-down"/></svg><span>导出报告</span></button>
         <details class="dropdown more">
           <summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作" title="更多操作"><svg class="icon"><use href="#i-more"/></svg></summary>
           <div class="dropdown-panel menu is-right" role="menu">
             <button class="menu-item" type="button" onclick="refresh()"><svg class="icon"><use href="#i-refresh"/></svg>刷新结果</button>
+            <button class="menu-item" type="button" onclick="exportPageTables('cmp')"><svg class="icon"><use href="#i-download"/></svg>导出本页全部表格（CSV）</button>
             <div class="menu-sep"></div>
             <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
             <button class="menu-item" type="button" data-theme-toggle><svg class="icon"><use href="#i-contrast"/></svg>切换亮色 / 暗色</button>
@@ -172,11 +176,13 @@
         </details>
       </div>
       <div class="bar-tools">
+        <span class="seg bar-vm" role="group" aria-label="查看方式" data-vm-page="iq"><button type="button" class="seg-btn" data-vm="chart" aria-pressed="true" title="图表视图"><svg class="icon"><use href="#i-chart"/></svg><span>图表</span></button><button type="button" class="seg-btn" data-vm="table" aria-pressed="false" title="表格视图：每个章节都换成表格"><svg class="icon"><use href="#i-table"/></svg><span>表格</span></button></span>
 
         <details class="dropdown more">
           <summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作" title="更多操作"><svg class="icon"><use href="#i-more"/></svg></summary>
           <div class="dropdown-panel menu is-right" role="menu">
             <button class="menu-item" type="button" onclick="loadIqResults()"><svg class="icon"><use href="#i-refresh"/></svg>刷新结果</button>
+            <button class="menu-item" type="button" onclick="exportPageTables('iq')"><svg class="icon"><use href="#i-download"/></svg>导出本页全部表格（CSV）</button>
             <button class="menu-item is-danger" type="button" onclick="deleteRun('iq')"><svg class="icon"><use href="#i-trash"/></svg>删除测试 A</button>
             <div class="menu-sep"></div>
             <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
@@ -203,11 +209,13 @@
         <div class="tb-field"><span class="run-tag b">B</span><select class="select" id="genCmpSel" aria-label="对比的任务" onchange="renderGen()"></select></div>
       </div>
       <div class="bar-tools">
+        <span class="seg bar-vm" role="group" aria-label="查看方式" data-vm-page="gen"><button type="button" class="seg-btn" data-vm="chart" aria-pressed="true" title="图表视图"><svg class="icon"><use href="#i-chart"/></svg><span>图表</span></button><button type="button" class="seg-btn" data-vm="table" aria-pressed="false" title="表格视图：每个章节都换成表格"><svg class="icon"><use href="#i-table"/></svg><span>表格</span></button></span>
 
         <details class="dropdown more">
           <summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作" title="更多操作"><svg class="icon"><use href="#i-more"/></svg></summary>
           <div class="dropdown-panel menu is-right" role="menu">
             <button class="menu-item" type="button" onclick="loadGenResults()"><svg class="icon"><use href="#i-refresh"/></svg>刷新结果</button>
+            <button class="menu-item" type="button" onclick="exportPageTables('gen')"><svg class="icon"><use href="#i-download"/></svg>导出本页全部表格（CSV）</button>
             <button class="menu-item" type="button" id="genBtnEval" onclick="genReeval()" title="对 A 的作品重新运行检查（可同时配置 AI 看图打分），保留人工评分"><svg class="icon"><use href="#i-scan-check"/></svg>重新检查作品</button>
             <button class="menu-item is-danger" type="button" onclick="deleteRun('gen')"><svg class="icon"><use href="#i-trash"/></svg>删除任务 A（连同作品）</button>
             <div class="menu-sep"></div>

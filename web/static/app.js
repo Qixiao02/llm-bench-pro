@@ -754,6 +754,352 @@ function table(head,rows,{maxH}={}){
 function abCell(va,vb,f,hasB){return `${f(va)}${hasB?`<span class="sub">B ${f(vb)}</span>`:""}`}
 
 /* ============================================================
+   多表格系统
+   - dataTable(spec): 统一的表格组件。排序(升/降/还原)、吸顶表头、固定首列、两层表头、
+     格内细条 / 热力底色 / 变化 / 状态、搜索、列显隐、复制(TSV)、导出 CSV、行展开、分页、分组
+   - 7 种形态都是同一个组件的不同配置: 明细 / 对比 / 矩阵热力 / 排行 / 分组 / 检查矩阵 / 统计摘要
+   - panel(): 章节面板, 右上角「图表 | 表格」切换; 吸顶栏的页面级切换一次换整页
+   列定义: {key,label,unit,type,digits,get,fmt,text,sortValue,sticky,group,hidden,tip,color,max,scale,dir,noSort,width}
+     type: text | num | int | pct | sec | delta | status | bar | heat | tag | html
+   ============================================================ */
+const DT={specs:new Map(),state:new Map()};
+const DT_PAGE=50;
+const DT_LS="llm-bench-pro-dt";
+function dtState(id){
+  let s=DT.state.get(id);
+  if(!s){
+    const saved=lsGet(DT_LS)[id]||{};
+    s={sort:saved.sort||null,hidden:new Set(saved.hidden||[]),q:"",page:0,open:new Set(),closed:new Set()};
+    DT.state.set(id,s);
+  }
+  return s;
+}
+function dtSave(id){const all=lsGet(DT_LS),s=dtState(id);all[id]={sort:s.sort,hidden:[...s.hidden]};lsSet(DT_LS,all)}
+/* 数字: 千分位 + 固定小数位; 空值 "—" */
+function numText(v,d=1){return v==null||!isFinite(v)?"—":Number(v).toLocaleString("zh-CN",{minimumFractionDigits:d,maximumFractionDigits:d})}
+function dtDigits(col){return col.digits??(col.type==="int"?0:col.type==="sec"?2:1)}
+function dtVal(col,row){return col.get?col.get(row):row[col.key]}
+const TONE_RANK={bad:3,warn:2,neutral:1,info:1,good:0};
+/* 排序与导出用的原始值: 数字 / 文本; 状态取文字, 变化取百分比 */
+function dtRaw(col,row){
+  const v=dtVal(col,row);
+  if(v==null)return null;
+  if(col.type==="status")return v.text??"";
+  if(col.type==="tag")return String(v);
+  if(typeof v==="number")return isFinite(v)?v:null;
+  if(col.type==="html")return col.text?col.text(v,row):stripTags(String(v)).trim();
+  return col.text?col.text(v,row):v;
+}
+function dtSortKey(col,row){
+  if(col.sortValue)return col.sortValue(row);
+  const v=dtVal(col,row);
+  if(col.type==="status")return v?TONE_RANK[v.tone]??1:null;
+  if(col.type==="delta"){const dir=col.dir??row._dir??1;return v==null||!isFinite(v)?null:v*dir}
+  return dtRaw(col,row);
+}
+/* 导出值: 数字按显示精度取整, 不带千分位 */
+function dtExport(col,row){
+  const raw=dtRaw(col,row);
+  if(raw==null||raw==="")return"";
+  if(typeof raw==="number"){const d=dtDigits(col);return col.type==="delta"?(raw>=0?"+":"")+raw.toFixed(1)+"%":String(Number(raw.toFixed(d)))}
+  return String(raw);
+}
+function dtCompare(a,b){
+  if(typeof a==="number"&&typeof b==="number")return a-b;
+  return String(a).localeCompare(String(b),"zh-CN",{numeric:true});
+}
+/* 排序: 空值永远排最后; 相等时保持原顺序 */
+function dtSortRows(spec,rows,sort){
+  if(!sort)return rows;
+  const col=spec.columns.find(c=>c.key===sort.key);if(!col)return rows;
+  const key=r=>{const v=dtSortKey(col,r);return v==null||v===""||(typeof v==="number"&&!isFinite(v))?null:v};
+  return rows.map((r,i)=>[r,key(r),i]).sort((x,y)=>{
+    if(x[1]==null||y[1]==null)return x[1]==null&&y[1]==null?x[2]-y[2]:(x[1]==null?1:-1);
+    const c=dtCompare(x[1],y[1]);
+    return c?(sort.dir==="desc"?-c:c):x[2]-y[2];
+  }).map(x=>x[0]);
+}
+function dtVisibleCols(spec){const st=dtState(spec.id);return spec.columns.filter(c=>c.sticky||!st.hidden.has(c.key))}
+/* 过滤 + 排序后的全部行(不分页) */
+function dtRows(spec){
+  const st=dtState(spec.id),cols=dtVisibleCols(spec);
+  let rows=spec.rows||[];
+  const q=st.q.trim().toLowerCase();
+  if(q)rows=rows.filter(r=>cols.some(c=>{const t=dtExport(c,r);return t&&t.toLowerCase().includes(q)})||(spec.searchText&&spec.searchText(r).toLowerCase().includes(q)));
+  return dtSortRows(spec,rows,st.sort);
+}
+/* 导出矩阵: 可见列 + 过滤排序后的全部行 */
+function dtMatrix(spec){
+  const cols=dtVisibleCols(spec);
+  return{head:cols.map(c=>[c.group,c.label&&stripTags(c.label),c.unit?`（${c.unit}）`:""].filter(Boolean).join(" ").replace(" （","（")),
+    rows:dtRows(spec).map(r=>cols.map(c=>dtExport(c,r)))};
+}
+function csvCell(v){const s=v==null?"":String(v);return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s}
+function toCSV(m,title){return "﻿"+(title?csvCell(title)+"\r\n":"")+[m.head,...m.rows].map(r=>r.map(csvCell).join(",")).join("\r\n")}
+function toTSV(m){return [m.head,...m.rows].map(r=>r.map(v=>String(v??"").replace(/[\t\r\n]+/g," ")).join("\t")).join("\n")}
+function downloadText(name,text,type="text/csv;charset=utf-8"){
+  const u=URL.createObjectURL(new Blob([text],{type}));
+  const a=document.createElement("a");a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(u),2000);
+}
+function safeName(s){return String(s||"表格").replace(/[\\/:*?"<>|\s]+/g,"_").slice(0,60)}
+/* 热力底色: seq = 同一色相由浅到深; div = 正(更好)绿 / 负(更差)红, 小于 1 视为持平 */
+function heatBg(t){return mix(C.surface,C.heatHi||C.series[4],Math.max(0,Math.min(1,t))*.62)}
+function divBg(g,lim){if(g==null||!isFinite(g)||Math.abs(g)<1)return"";const t=Math.min(1,Math.abs(g)/(lim||20));return mix(C.surface,g>0?C.goodMark:C.badMark,.12+t*.46)}
+function deltaText(d,dir){
+  if(d==null||!isFinite(d))return `<span class="dt-delta flat">—</span>`;
+  if(Math.abs(d)<1)return `<span class="dt-delta flat">${icon("minus","icon-sm")}持平</span>`;
+  const good=d*(dir||1)>0;
+  return `<span class="dt-delta ${good?"up":"down"}">${icon(d>0?"arrow-up":"arrow-down","icon-sm")}${d>=0?"+":""}${fmt(d,1)}%</span>`;
+}
+function statusBadge(v){
+  if(!v||(v.tone==="neutral"&&(!v.text||v.text==="—")))return `<span class="faint">—</span>`;
+  const ic={good:"check",bad:"x",warn:"alert",info:"clock",neutral:"minus"}[v.tone]||"minus";
+  return `<span class="badge is-${v.tone==="neutral"?"plain":v.tone}"${v.tip?` title="${esc(v.tip)}"`:""}>${icon(v.icon||ic)}${esc(v.text)}</span>`;
+}
+/* 单元格 HTML */
+function dtCell(col,row,ctx){
+  const v=dtVal(col,row);
+  if(col.fmt)return col.fmt(v,row);
+  const d=dtDigits(col);
+  switch(col.type){
+    case "html":return v==null?"—":String(v);
+    case "tag":{const c=(row._color)||C.a;return v?`<span class="run-tag" style="background:${c}">${esc(v)}</span>`:""}
+    case "status":return statusBadge(v);
+    case "delta":return deltaText(v,col.dir??row._dir??1);
+    case "sec":return v==null||!isFinite(v)?"—":fmtSec(v);
+    case "bar":{
+      if(v==null||!isFinite(v))return"—";
+      const mx=col.max||ctx.max[col.key]||1,w=Math.max(0,Math.min(100,100*v/mx));
+      return `<span class="dt-barcell"><span class="dt-meter"><i style="width:${w.toFixed(1)}%;background:${row._color&&col.runColor?row._color:(col.color||C.text3)}"></i></span><span class="dt-num">${numText(v,d)}</span></span>`;
+    }
+    case "num":case "int":case "pct":case "heat":return numText(v,d);
+    default:return v==null||v===""?"—":esc(v);
+  }
+}
+function dtAlign(col){return col.align||(["text","status","html","tag"].includes(col.type||"text")?"left":"right")}
+function dtHeat(spec,cols,rows){
+  /* 热力列的取值范围: spec.heatShared 时所有热力列共用一个范围(矩阵表) */
+  const heatCols=cols.filter(c=>c.type==="heat");
+  const range=list=>{const xs=list.filter(v=>v!=null&&isFinite(v));return xs.length?[Math.min(...xs),Math.max(...xs)]:null};
+  const out={};
+  if(spec.heatShared){const r=range(heatCols.flatMap(c=>rows.map(x=>dtVal(c,x))));heatCols.forEach(c=>out[c.key]=r)}
+  else heatCols.forEach(c=>out[c.key]=range(rows.map(x=>dtVal(c,x))));
+  return out;
+}
+function dtCellStyle(col,row,ctx){
+  const v=dtVal(col,row);
+  if(col.type==="heat"&&v!=null&&isFinite(v)){
+    if(col.scale==="div"){const g=v*(col.dir??row._dir??1);const bg=divBg(g,col.lim||ctx.divLim);return bg?` style="background:${bg}"`:""}
+    const r=ctx.heat[col.key];if(!r)return"";
+    const t=r[1]>r[0]?(v-r[0])/(r[1]-r[0]):.5;
+    return ` style="background:${heatBg(col.invert?1-t:t)}"`;
+  }
+  return"";
+}
+function dtInner(spec){
+  const st=dtState(spec.id);
+  const cols=dtVisibleCols(spec);
+  const all=dtRows(spec);
+  const size=spec.pageSize||DT_PAGE;
+  const pages=Math.max(1,Math.ceil(all.length/size));
+  st.page=Math.min(Math.max(0,st.page),pages-1);
+  const view=all.length>size?all.slice(st.page*size,(st.page+1)*size):all;
+  const ctx={max:{},heat:dtHeat(spec,cols,spec.rows||[]),divLim:spec.divLim||20};
+  cols.filter(c=>c.type==="bar").forEach(c=>ctx.max[c.key]=Math.max(1e-9,...(spec.rows||[]).map(r=>{const v=dtVal(c,r);return v!=null&&isFinite(v)?v:0})));
+  const hasGroups=cols.some(c=>c.group);
+  let groupRow="";
+  if(hasGroups){
+    const spans=[];cols.forEach(c=>{const g=c.group||"";const last=spans[spans.length-1];if(last&&last.g===g)last.n++;else spans.push({g,n:1,sticky:c.sticky})});
+    groupRow=`<tr class="dt-groups">${spans.map(x=>`<th colspan="${x.n}" class="${x.sticky?"dt-sticky":""}${x.g?" has-group":""}">${x.g?`<span>${x.g}</span>`:""}</th>`).join("")}</tr>`;
+  }
+  const th=c=>{
+    const sorted=st.sort&&st.sort.key===c.key?st.sort.dir:"";
+    const can=!c.noSort&&!spec.noSort;
+    return `<th data-k="${esc(c.key)}" class="dt-${dtAlign(c)}${c.sticky?" dt-sticky":""}${can?" can-sort":""}"${can?` tabindex="0" aria-sort="${sorted==="asc"?"ascending":sorted==="desc"?"descending":"none"}"`:""}${c.tip?` title="${esc(c.tip)}"`:""}${c.width?` style="width:${c.width}"`:""}>`+
+      `<span class="dt-th">${c.label}${c.unit?`<span class="dt-unit">${esc(c.unit)}</span>`:""}${can?`<span class="dt-sort">${sorted==="asc"?"▲":sorted==="desc"?"▼":""}</span>`:""}</span></th>`;
+  };
+  const rowKey=(r,i)=>spec.rowKey?String(spec.rowKey(r)):String((spec.rows||[]).indexOf(r));
+  const tr=(r)=>{
+    const key=rowKey(r),exp=spec.expand?spec.expand(r):null,open=exp&&st.open.has(key);
+    const cls=[r._cls||"",exp?"is-expandable":"",open?"is-open":""].filter(Boolean).join(" ");
+    return `<tr data-rk="${esc(key)}"${cls?` class="${cls}"`:""}${exp?` aria-expanded="${!!open}"`:""}>${cols.map((c,ci)=>`<td class="dt-${dtAlign(c)}${c.sticky?" dt-sticky":""}${c.wrap?" dt-wrap":""}${c.type==="num"||c.type==="int"||c.type==="pct"||c.type==="sec"||c.type==="heat"||c.type==="bar"?" dt-n":""}"${dtCellStyle(c,r,ctx)}>${ci===0&&exp?icon("chevron-right","icon-sm dt-caret"):""}${dtCell(c,r,ctx)}</td>`).join("")}</tr>`+
+      (open?`<tr class="dt-detail"><td colspan="${cols.length}">${exp}</td></tr>`:"");
+  };
+  let body;
+  if(spec.groupBy){
+    const order=[];const by=new Map();
+    view.forEach(r=>{const g=spec.groupBy(r);if(!by.has(g)){by.set(g,[]);order.push(g)}by.get(g).push(r)});
+    body=order.map(g=>{
+      const rs=by.get(g),closed=st.closed.has(String(g));
+      return `<tr class="dt-grouprow" data-g="${esc(g)}"><td colspan="${cols.length}"><button type="button" class="dt-gbtn" aria-expanded="${!closed}">${icon("chevron-right","icon-sm dt-caret")}${spec.groupLabel?spec.groupLabel(g,rs):esc(g)}</button></td></tr>`+
+        (closed?"":rs.map(tr).join(""));
+    }).join("");
+  }else body=view.map(tr).join("");
+  const tfoot=spec.totals?`<tfoot><tr>${cols.map((c,ci)=>{const v=ci===0?(spec.totals.label||"合计"):spec.totals.values&&spec.totals.values[c.key];
+    return `<td class="dt-${dtAlign(c)}${c.sticky?" dt-sticky":""}">${ci===0?esc(v):v==null?"":(typeof v==="number"?numText(v,dtDigits(c)):v)}</td>`}).join("")}</tr></tfoot>`:"";
+  const n=(spec.rows||[]).length;
+  const showSearch=spec.search??n>12;
+  const hideable=spec.columns.filter(c=>!c.sticky);
+  const tools=`<div class="dt-tools">
+      ${showSearch?`<label class="dt-search">${icon("search","icon-sm")}<input type="search" data-dt-q placeholder="搜索" value="${esc(st.q)}" aria-label="在表格里搜索"></label>`:""}
+      ${hideable.length>2?`<details class="dropdown dt-cols"><summary class="btn btn-ghost btn-sm" title="选择显示哪些列">${icon("columns","icon-sm")}列</summary>
+        <div class="dropdown-panel menu is-right">${hideable.map(c=>`<label class="option-row"><input type="checkbox" data-dt-col="${esc(c.key)}" ${st.hidden.has(c.key)?"":"checked"}><span class="grow">${esc([c.group,stripTags(c.label)].filter(Boolean).join(" · "))}</span></label>`).join("")}</div></details>`:""}
+      <button type="button" class="btn btn-ghost btn-sm" data-dt-copy title="复制整张表（可以直接粘进 Excel）">${icon("copy","icon-sm")}复制</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-dt-csv title="导出为 CSV 文件">${icon("download","icon-sm")}CSV</button>
+    </div>`;
+  const pager=pages>1?`<div class="dt-pager"><button type="button" class="btn btn-ghost btn-sm" data-dt-page="${st.page-1}" ${st.page?"":"disabled"}>上一页</button>
+      <span>第 ${st.page+1} / ${pages} 页</span><button type="button" class="btn btn-ghost btn-sm" data-dt-page="${st.page+1}" ${st.page<pages-1?"":"disabled"}>下一页</button></div>`:"";
+  const count=all.length!==n?`显示 ${fmtInt(all.length)} / ${fmtInt(n)} 行`:`${fmtInt(n)} 行`;
+  return `<div class="dt-bar">${spec.title?`<div class="dt-title">${spec.title}${spec.sub?`<span class="dt-sub">${spec.sub}</span>`:""}</div>`:""}${tools}</div>
+    <div class="dt-scroll"${spec.maxH?` style="max-height:${spec.maxH}px"`:""}><table class="dt-table${spec.cls?" "+spec.cls:""}"><thead>${groupRow}<tr>${cols.map(th).join("")}</tr></thead>
+      <tbody>${body||`<tr class="dt-empty"><td colspan="${cols.length}">${esc(spec.empty||(st.q?"没有匹配的行":"没有数据"))}</td></tr>`}</tbody>${tfoot}</table></div>
+    <div class="dt-foot"><span>${count}${spec.note?` · ${spec.note}`:""}</span>${pager}</div>`;
+}
+function dataTable(spec){
+  DT.specs.set(spec.id,spec);
+  return `<div class="dt" data-dt="${esc(spec.id)}">${dtInner(spec)}</div>`;
+}
+function dtRefresh(id,keepFocus){
+  const spec=DT.specs.get(id);if(!spec)return;
+  const html=dtInner(spec);
+  document.querySelectorAll(`[data-dt="${CSS.escape(id)}"]`).forEach(el=>{
+    const q=keepFocus&&el.contains(document.activeElement)&&document.activeElement.matches("[data-dt-q]");
+    const pos=q?document.activeElement.selectionStart:0;
+    el.innerHTML=html;
+    if(q){const inp=el.querySelector("[data-dt-q]");if(inp){inp.focus();try{inp.setSelectionRange(pos,pos)}catch(e){}}}
+  });
+}
+function dtSort(id,key){
+  const st=dtState(id),s=st.sort;
+  st.sort=!s||s.key!==key?{key,dir:"desc"}:s.dir==="desc"?{key,dir:"asc"}:null;
+  st.page=0;dtSave(id);dtRefresh(id);
+}
+/* 多张表合成一个 CSV: 表名一行, 表与表之间空一行 */
+function tablesCSV(ids){
+  return "﻿"+ids.map(id=>{const s=DT.specs.get(id);if(!s)return"";const m=dtMatrix(s);
+    return [csvCell(stripTags(s.title||s.exportName||id))].concat([m.head,...m.rows].map(r=>r.map(csvCell).join(","))).join("\r\n")}).filter(Boolean).join("\r\n\r\n");
+}
+function tableIdsIn(root){return root?[...new Set([...root.querySelectorAll("[data-dt]")].map(x=>x.dataset.dt))]:[]}
+function exportPageTables(page){
+  const root={dash:"dashBody",cmp:"cmpBody",iq:"iqResult",gen:"genResult"}[page];
+  const ids=tableIdsIn($(root));
+  if(!ids.length){toast("这一页没有可以导出的表格","warning");return}
+  downloadText(`${{dash:"速度测试",cmp:"速度对比",iq:"能力测试",gen:"代码生成"}[page]}_全部表格.csv`,tablesCSV(ids));
+  toast(`已导出 ${ids.length} 张表`,"success",2500);
+}
+async function copyText(text,what){
+  try{await navigator.clipboard.writeText(text);toast(`已复制${what||""}，可以直接粘进 Excel`,"success",2500)}
+  catch(e){toast("浏览器没有允许复制，请改用导出 CSV","error")}
+}
+document.addEventListener("click",e=>{
+  const box=e.target.closest("[data-dt]");if(!box)return;
+  const id=box.dataset.dt,spec=DT.specs.get(id);if(!spec)return;
+  const th=e.target.closest("th.can-sort");
+  if(th){dtSort(id,th.dataset.k);return}
+  const pg=e.target.closest("[data-dt-page]");
+  if(pg){dtState(id).page=+pg.dataset.dtPage;dtRefresh(id);box.querySelector(".dt-scroll")?.scrollTo?.(0,0);return}
+  if(e.target.closest("[data-dt-copy]")){copyText(toTSV(dtMatrix(spec)),"表格");return}
+  if(e.target.closest("[data-dt-csv]")){downloadText(safeName(stripTags(spec.exportName||spec.title||id))+".csv",toCSV(dtMatrix(spec),stripTags(spec.title||"")));return}
+  const g=e.target.closest(".dt-gbtn");
+  if(g){const st=dtState(id),k=g.closest("tr").dataset.g;st.closed.has(k)?st.closed.delete(k):st.closed.add(k);dtRefresh(id);return}
+  const row=e.target.closest("tr.is-expandable");
+  if(row&&!e.target.closest("button,a,input,summary,label,select")){
+    const st=dtState(id),k=row.dataset.rk;st.open.has(k)?st.open.delete(k):st.open.add(k);dtRefresh(id);
+  }
+});
+document.addEventListener("keydown",e=>{
+  const th=e.target.closest&&e.target.closest("[data-dt] th.can-sort");
+  if(th&&(e.key==="Enter"||e.key===" ")){e.preventDefault();const id=th.closest("[data-dt]").dataset.dt;dtSort(id,th.dataset.k);
+    const again=document.querySelector(`[data-dt="${CSS.escape(id)}"] th[data-k="${CSS.escape(th.dataset.k)}"]`);if(again)again.focus()}
+});
+let dtQT=null;
+document.addEventListener("input",e=>{
+  const q=e.target.closest&&e.target.closest("[data-dt-q]");if(!q)return;
+  const id=q.closest("[data-dt]").dataset.dt;
+  clearTimeout(dtQT);dtQT=setTimeout(()=>{const st=dtState(id);st.q=q.value;st.page=0;dtRefresh(id,true)},160);
+});
+document.addEventListener("change",e=>{
+  const c=e.target.closest&&e.target.closest("[data-dt-col]");if(!c)return;
+  const id=c.closest("[data-dt]").dataset.dt,st=dtState(id);
+  c.checked?st.hidden.delete(c.dataset.dtCol):st.hidden.add(c.dataset.dtCol);
+  dtSave(id);dtRefresh(id);
+  const dd=document.querySelector(`[data-dt="${CSS.escape(id)}"] .dt-cols`);if(dd)dd.open=true;
+});
+/* 矩阵(透视)表: 记录 → 行 × 列 → 值 */
+function pivotRows(records,{row,col,value}){
+  const rows=[],cols=[],map=new Map();
+  records.forEach(r=>{
+    const rk=typeof row==="function"?row(r):r[row],ck=typeof col==="function"?col(r):r[col];
+    if(!map.has(rk)){map.set(rk,{_row:rk});rows.push(rk)}
+    if(!cols.includes(ck))cols.push(ck);
+    map.get(rk)["c_"+ck]=typeof value==="function"?value(r):r[value];
+  });
+  return{rows:rows.map(k=>map.get(k)),cols};
+}
+/* 对比表: 同一个键的 A/B 两行 → 一行里 A | B | 变化 三列一组 */
+function compareRows(keys,runs,getRow,metrics){
+  return keys.map(k=>{
+    const out={_key:k};
+    metrics.forEach(m=>{
+      const vals=runs.map(x=>{const r=getRow(x,k);return r?m.get(r):null});
+      vals.forEach((v,i)=>out[m.key+"_"+i]=v);
+      if(runs.length>1)out[m.key+"_d"]=pctChange(vals[0],vals[1]);
+    });
+    return out;
+  });
+}
+function compareCols(runs,metrics){
+  return metrics.flatMap(m=>[
+    ...runs.map((x,i)=>({key:m.key+"_"+i,label:x.tag,group:m.label+(m.unit?`（${m.unit}）`:""),type:m.type||"num",digits:m.digits,tip:m.tip})),
+    ...(runs.length>1?[{key:m.key+"_d",label:"变化",group:m.label+(m.unit?`（${m.unit}）`:""),type:"delta",dir:m.dir??1}]:[])]);
+}
+/* ---------- 面板: 图表 | 表格 ---------- */
+const VIEWMODE=Object.assign({dash:"chart",cmp:"chart",iq:"chart",gen:"chart"},lsGet("llm-bench-pro-viewmode"));
+const PANEL_OVR=new Map();
+function panelMode(id){return PANEL_OVR.get(id)||VIEWMODE[VIEW]||"chart"}
+function segHTML(attr,cur,items){
+  return `<span class="seg" role="group">${items.map(([v,label,ic])=>`<button type="button" class="seg-btn" ${attr}="${v}" aria-pressed="${v===cur}">${ic?icon(ic):""}${label}</button>`).join("")}</span>`;
+}
+/* 面板: chart=图表区 HTML(可含主表), tables=[spec|HTML], 两者都有时右上角可切换 */
+function panel({id,title,desc="",jump,chart="",tables=[],tcols=2,tools="",foot=""}){
+  const both=!!chart&&tables.length>0,mode=panelMode(id);
+  const tbl=tables.map(t=>typeof t==="string"?t:dataTable(t));
+  const multi=tbl.length>1;
+  return `<section class="sec" id="${id}" data-jump="${esc(jump||stripTags(title))}" data-pv="${both?mode:(chart?"chart":"table")}">
+    <div class="sec-head"><div class="sec-head-text"><h2 class="sec-title">${title}</h2>${desc?`<p class="sec-desc">${desc}</p>`:""}</div>
+      <div class="sec-tools">${tools}${both?segHTML("data-pv-set",mode,[["chart","图表","chart"],["table","表格","table"]]):""}
+        ${tables.some(t=>typeof t!=="string")?`<button type="button" class="btn btn-ghost btn-icon btn-sm" data-pv-export title="导出本节全部表格（CSV）" aria-label="导出本节全部表格">${icon("download")}</button>`:""}</div></div>
+    ${chart?`<div class="pv-chart">${chart}</div>`:""}
+    ${tbl.length?`<div class="pv-table"><div class="dt-grid${multi?" is-multi":""}" style="--tcols:${multi?tcols:1}">${tbl.join("")}</div></div>`:""}${foot}
+  </section>`;
+}
+function resizeChartsIn(root){root.querySelectorAll(".chart").forEach(ch=>{if(ch._ec)try{ch._ec.resize()}catch(e){}})}
+function setPanelMode(sec,mode){
+  if(!sec.querySelector(".pv-chart")||!sec.querySelector(".pv-table"))return;
+  sec.dataset.pv=mode;
+  sec.querySelectorAll("[data-pv-set]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.pvSet===mode)));
+  if(mode==="chart")requestAnimationFrame(()=>resizeChartsIn(sec));
+}
+function applyViewMode(page,mode,persist){
+  VIEWMODE[page]=mode;
+  if(persist)lsSet("llm-bench-pro-viewmode",VIEWMODE);
+  const root=$({dash:"dashBody",cmp:"cmpBody",iq:"iqResult",gen:"genResult"}[page]);
+  document.querySelectorAll(`[data-vm-page="${page}"] [data-vm]`).forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.vm===mode)));
+  if(!root)return;
+  root.querySelectorAll("section.sec[data-pv]").forEach(sec=>{PANEL_OVR.delete(sec.id);setPanelMode(sec,mode)});
+}
+document.addEventListener("click",e=>{
+  const ps=e.target.closest("[data-pv-set]");
+  if(ps){const sec=ps.closest("section.sec");PANEL_OVR.set(sec.id,ps.dataset.pvSet);setPanelMode(sec,ps.dataset.pvSet);return}
+  const pe=e.target.closest("[data-pv-export]");
+  if(pe){const sec=pe.closest("section.sec"),ids=tableIdsIn(sec);
+    if(ids.length)downloadText(safeName(sec.dataset.jump||sec.id)+".csv",tablesCSV(ids));return}
+  const vm=e.target.closest("[data-vm]");
+  if(vm){applyViewMode(vm.closest("[data-vm-page]").dataset.vmPage,vm.dataset.vm,true);return}
+});
+
+/* ============================================================
    速度测试: 新建 / 列表 / 指标
    ============================================================ */
 let RUNS={},RUNS_LOADED=false,perfPoll=null;
@@ -2671,6 +3017,35 @@ Object.keys(EP_SEL).forEach(page=>{const sel=$(EP_SEL[page]);if(sel)sel.addEvent
 /* ============================================================
    样式自检: 令牌色块 / 字号 / 基础组件(地址 #styleguide)
    ============================================================ */
+/* 样式自检用的 7 种表格示例(演示数据) */
+function sgTables(){
+  const concs=[1,2,4,8,16,32,48,64],agg=[130.8,258,476,812,1352,1511,1775,1745],ttft=[.08,.1,.12,.15,.5,7.2,7.6,13.5];
+  const detail={id:"sg-detail",title:"① 明细表 · 同时请求",columns:[
+    {key:"conc",label:"同时请求数",type:"int",sticky:true},{key:"agg",label:"总生成速度",unit:"token/秒",type:"bar",color:C.a},
+    {key:"per",label:"单个请求速度",unit:"token/秒",type:"num"},{key:"ttft",label:"首字等待 较慢",unit:"秒",type:"sec"},{key:"ok",label:"成功",type:"text"}],
+    rows:concs.map((c,i)=>({conc:c,agg:agg[i],per:agg[i]/c,ttft:ttft[i],ok:`${c*10} / ${c*10}`}))};
+  const runs=[{tag:"A"},{tag:"B"}],bAgg=agg.map((v,i)=>v*(i%3?0.94:1.03)),bT=ttft.map(v=>v*1.2);
+  const cmpMetrics=[{key:"agg",label:"总生成速度",unit:"token/秒",dir:1,get:r=>r.agg},{key:"t95",label:"首字等待 较慢",unit:"秒",dir:-1,type:"sec",get:r=>r.t}];
+  const compare={id:"sg-compare",title:"② 对比表 · A / B 与变化",columns:[{key:"_key",label:"同时请求数",type:"int",sticky:true},...compareCols(runs,cmpMetrics)],
+    rows:compareRows(concs,[{a:agg,t:ttft},{a:bAgg,t:bT}],(x,k)=>{const i=concs.indexOf(k);return{agg:x.a[i],t:x.t[i]}},cmpMetrics)};
+  const lens=["1K","2K","4K","8K","16K"];
+  const pv=pivotRows(lens.flatMap((l,i)=>[1,4,16].map(c=>({l,c,v:(i+1)*c*0.07}))),{row:"l",col:"c",value:"v"});
+  const matrix={id:"sg-matrix",title:"③ 矩阵热力表 · 首字等待（秒）",heatShared:true,columns:[{key:"_row",label:"输入长度",type:"text",sticky:true},
+    ...pv.cols.map(c=>({key:"c_"+c,label:`同时 ${c} 个`,type:"heat",digits:2}))],rows:pv.rows};
+  const subs=[["指令遵循",100],["ARC 科学推理",92.5],["GSM8K 数学",88.7],["MMLU 中学",85.6],["MMLU 通识",77.5],["MATH-500",76.2],["HellaSwag",73.8]];
+  const rank={id:"sg-rank",title:"④ 排行表 · 各科正确率",columns:[{key:"name",label:"科目",type:"text",sticky:true},{key:"acc",label:"正确率",unit:"%",type:"bar",color:C.a,max:100},{key:"n",label:"题数",type:"int"}],
+    rows:subs.map(([name,acc],i)=>({name,acc,n:[30,80,150,104,240,80,80][i]}))};
+  const grp={id:"sg-group",title:"⑤ 分组表 · MMLU 学科",groupBy:r=>r.g,groupLabel:(g,rs)=>`${esc(g)} <span class="faint">· ${rs.length} 个学科</span>`,
+    columns:[{key:"sub",label:"学科",type:"text",sticky:true},{key:"acc",label:"正确率",unit:"%",type:"bar",color:C.a,max:100},{key:"n",label:"题数",type:"int"}],
+    rows:[["MMLU 中学","高中物理",75,8],["MMLU 中学","高中生物",100,8],["MMLU 大学","大学数学",50,8],["MMLU 大学","大学医学",87.5,8],["MMLU 专业","专业法律",62.5,8]].map(([g,sub,acc,n])=>({g,sub,acc,n}))};
+  const ck=["能打开","不白屏","有动画","没报错","手机适配"],st=(p)=>p==null?{tone:"neutral",text:"—"}:p?{tone:"good",text:"通过"}:{tone:"bad",text:"没过"};
+  const checks={id:"sg-checks",title:"⑥ 检查矩阵表 · 作品 × 检查项",columns:[{key:"name",label:"作品",type:"text",sticky:true},...ck.map((c,i)=>({key:"k"+i,label:c,type:"status",align:"center"}))],
+    rows:[["贪吃蛇",[1,1,1,1,1]],["俄罗斯方块",[1,1,1,0,1]],["3D 魔方",[1,0,null,0,1]],["钢琴",[1,1,0,1,0]]].map(([name,v])=>Object.assign({name},...v.map((p,i)=>({["k"+i]:st(p==null?null:!!p)}))))};
+  const summ={id:"sg-summary",title:"⑦ 统计摘要表 · 出字间隔（毫秒）",columns:[{key:"lang",label:"内容",type:"text",sticky:true},
+    ...[["mean","平均"],["p50","一般"],["p95","较慢"],["p99","最慢"],["max","最大"]].map(([k,l])=>({key:k,label:l,type:"num",digits:1})),{key:"n",label:"样本数",type:"int"}],
+    rows:[{lang:"中文",mean:7.8,p50:7.6,p95:9.9,p99:12.4,max:18.2,n:1536},{lang:"英文",mean:7.7,p50:7.6,p95:9.6,p99:11.8,max:16.9,n:1536}]};
+  return [detail,compare,matrix,rank,grp,checks,summ].map(dataTable).join("");
+}
 function renderStyleguide(){
   const cs=getComputedStyle(document.documentElement),v=n=>cs.getPropertyValue(n).trim();
   const sw=(name,label)=>`<div class="sg-sw"><i style="background:var(${name})"></i><span class="sg-sw-name">${esc(label||name)}</span><span class="sg-sw-val">${esc(v(name))}</span></div>`;
@@ -2706,6 +3081,7 @@ function renderStyleguide(){
       <div class="field"><label for="sgIn">服务地址</label><input class="input" id="sgIn" placeholder="http://127.0.0.1:8000"><span class="help">OpenAI 兼容接口的地址</span></div>
       <div class="field"><label for="sgSel">测试规模</label><select class="select" id="sgSel"><option>标准：约 12 分钟（推荐）</option><option>完整：约 35 分钟</option></select></div>
       <div class="field"><span class="label">思考模式</span><label class="check"><input type="checkbox" checked>让模型先思考再回答</label></div></div></div>
+    <div class="sg-group"><h3 class="sg-h">表格形态（同一个组件的 7 种配置）</h3><div class="dt-grid is-multi" style="--tcols:2">${sgTables()}</div></div>
     <div class="sg-group"><h3 class="sg-h">空状态 / 骨架</h3><div class="grid-2">${emptyState("还没有速度测试","点右上角「新建速度测试」，测完的结果会显示在这里",{inline:true})}
       <div class="kpi"><div class="skeleton" style="height:12px;width:50%"></div><div class="skeleton" style="height:30px;width:70%;margin-top:12px"></div></div></div></div>
   </div>`;
@@ -2755,6 +3131,7 @@ CSelect.combo($("fModel"));
 readTheme();
 applyTheme(document.documentElement.dataset.theme||"dark",false);
 try{applyRailPin(localStorage.getItem("llm-bench-pro-rail")==="1",false)}catch(e){applyRailPin(false,false)}
+document.querySelectorAll("[data-vm-page]").forEach(g=>g.querySelectorAll("[data-vm]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.vm===(VIEWMODE[g.dataset.vmPage]||"chart")))));
 try{applyDensity(localStorage.getItem("llm-bench-pro-density")==="compact"?"compact":"normal",false)}catch(e){applyDensity("normal",false)}
 showView((location.hash||"#dash").slice(1));
 checkVersion().then(()=>{if(VIEW==="iq")renderIq()});
