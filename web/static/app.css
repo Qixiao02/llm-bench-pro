@@ -188,6 +188,7 @@ a:hover{text-decoration-color:currentColor}
 .stat-sub{margin-top:4px;font-size:var(--fs-12);color:var(--text-3);line-height:1.5}
 .stat.is-hero .stat-value{font-size:var(--fs-40)}
 .stat.is-wide{grid-column:1/-1}
+.ov-stats[style*="--cols:2"]>.stat:last-child:nth-child(odd){grid-column:1/-1}
 /* 分区面板: 每个章节一个面板, 面板里的小图不再各自带边框 */
 .sec{margin-top:var(--sp-5);padding:var(--sp-5);background:var(--surface-1);border:1px solid var(--border);border-radius:var(--r-lg);min-width:0}
 .sec:first-child{margin-top:0}
@@ -607,14 +608,30 @@ details.advanced>.form-grid{margin-top:var(--sp-3)}
 .sig.yes{color:var(--text-1)}
 .sig.no{color:var(--text-3)}
 
-/* 代码生成: 作品卡 */
-.work-toolbar{display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap;margin-bottom:var(--sp-3)}
-.work-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:var(--sp-3)}
-.work{display:flex;flex-direction:column;gap:10px;padding:var(--sp-4);background:var(--surface-1);border:1px solid var(--border);border-radius:var(--r-md);box-shadow:var(--shadow-card);min-width:0}
+/* 代码生成: 作品卡(标题行 / 一行问题摘要 / 检查细条 / 操作与星级) */
+.work-toolbar{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap;margin-bottom:var(--sp-3)}
+.work-sort{display:flex;align-items:center;gap:8px;font-size:var(--fs-13);color:var(--text-3);white-space:nowrap}
+.work-sort .cselect,.work-sort .select{min-width:210px}
+.work-sort .cselect-trigger{height:var(--h-md);font-size:var(--fs-13)}
+.work-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:var(--sp-3)}
+.work-pairs{display:flex;flex-direction:column;gap:var(--sp-3)}
+.work-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3)}
+.work{display:flex;flex-direction:column;gap:8px;padding:14px;background:var(--surface-1);border:1px solid var(--border);border-radius:var(--r-md);min-width:0}
 .work:hover{border-color:var(--border-strong)}
-.work-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--sp-2)}
-.work-name{font-size:var(--fs-16);font-weight:600;line-height:1.35}
+.work.is-empty{padding:0;border-style:dashed}
+.work-head{display:flex;align-items:center;gap:8px;min-width:0}
+.work-name{flex:1;min-width:0;font-size:var(--fs-14);font-weight:600;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.work-head .badge{flex:none}
 .work-meta{font-size:var(--fs-12);color:var(--text-3);margin-top:2px}
+.work .work-verdict{display:block;padding:0;background:none;font-size:var(--fs-13);color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.work-checks{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:var(--fs-12)}
+.dt-actions{display:inline-flex;gap:2px}
+/* 警示带: 一行说明 + 操作, 可收起 */
+.strip{display:flex;align-items:center;gap:10px;min-height:44px;margin-bottom:var(--sp-4);padding:6px 6px 6px 14px;border:1px solid color-mix(in srgb,var(--bad) 35%,transparent);
+  border-radius:var(--r-md);background:var(--bad-soft);font-size:var(--fs-13);color:var(--text-1)}
+.strip>.icon{flex:none;color:var(--bad)}
+.strip-text{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.strip .btn{flex:none}
 .work-verdict{display:flex;align-items:flex-start;gap:8px;font-size:var(--fs-13);line-height:1.5;padding:8px 10px;border-radius:8px;background:var(--surface-2)}
 .work-verdict .icon{margin-top:2px;width:15px;height:15px}
 .work-verdict.is-good{background:var(--good-soft)} .work-verdict.is-good .icon{color:var(--good)}
@@ -627,6 +644,7 @@ details.advanced>.form-grid{margin-top:var(--sp-3)}
 .work-fails .icon{color:var(--bad);width:14px;height:14px}
 .work-actions{display:flex;align-items:center;gap:6px;margin-top:auto;padding-top:var(--sp-2);border-top:1px solid var(--border);flex-wrap:wrap}
 .stars{display:inline-flex;margin-left:auto}
+.dt-table .stars{margin-left:0}
 .star{display:grid;place-items:center;width:26px;height:26px;border:0;border-radius:6px;background:transparent;color:var(--text-3);cursor:pointer;padding:0}
 .star .icon{width:16px;height:16px}
 .star.on{color:#E0A106}
@@ -863,5 +881,6 @@ details.advanced>.form-grid{margin-top:var(--sp-3)}
   .kpi{padding:var(--sp-3)}.kpi-value{font-size:22px}.kpi.is-hero .kpi-value{font-size:36px}
   .modal-backdrop{padding:0}
   .glossary-item{grid-template-columns:minmax(0,1fr)}
-  .work-grid{grid-template-columns:minmax(0,1fr)}
+  .work-grid,.work-pair{grid-template-columns:minmax(0,1fr)}
+  .strip-text{white-space:normal}
 }

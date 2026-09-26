@@ -2800,6 +2800,23 @@ function changeKind(it){
 const CHANGE_KINDS=[["raw","原样保存，一个字没改"],["trimmed","只去掉了代码前后的说明文字或代码块标记"],["stitched","把多轮接着写的内容拼接起来"],["rescued","思考失败，改为不思考重新生成"],["legacy","旧任务，没有保存原始输出"]];
 function tone2color(t){return t==="good"?C.goodMark:t==="bad"?C.badMark:t==="warn"?C.warnMark:C.axis}
 
+/* 作品排序(卡片与表格共用): 默认按题目顺序 */
+let GEN_SORT="default";
+const GEN_SORTS=[["default","按题目顺序"],["pass","检查通过项（少的在前）"],["lines","代码行数（多的在前）"],["tokens","输出 token（多的在前）"],["rounds","接着写的轮数（多的在前）"],["stars","人工星级（高的在前）"]];
+function genSortItems(list){
+  const key={pass:x=>x.it.error?-1:(x.it.total?x.it.pass/x.it.total:0),lines:x=>-(x.it.lines||0),tokens:x=>-(x.it.out_tokens||0),rounds:x=>-(x.it.continuations||0),stars:x=>-(x.it.stars||0)}[GEN_SORT];
+  if(!key)return list;
+  return list.map((x,i)=>[x,key(x),i]).sort((p,q)=>p[1]-q[1]||p[2]-q[2]).map(x=>x[0]);
+}
+const STRIP_CLOSED=new Set();
+function genStrip(a,s,ev,items){
+  if(!(s.v2&&(s.mode==="static"||s.mode==="mixed"))||STRIP_CLOSED.has(a.run_id))return "";
+  const why=ev.browser_error||(items.map(x=>x.eval&&x.eval.notes&&x.eval.notes[0]).find(Boolean))||"后台浏览器没有启动";
+  return `<div class="strip is-bad" role="status">${icon("x-circle")}<span class="strip-text"><b>${s.mode==="static"?"这些作品没有在浏览器里实际运行":`有 ${s.staticN} 件作品没有在浏览器里实际运行`}</b>，只检查了代码里的关键词，通过率不能代表作品真的能用。
+      <span class="faint" title="${esc(why)}">原因：${esc(why)}</span></span>
+    <button class="btn btn-secondary btn-sm" onclick="genReeval()">${icon("scan-check")}重新检查</button>
+    <button class="btn btn-ghost btn-icon btn-sm" data-strip-close="${esc(a.run_id)}" aria-label="收起提示" title="收起提示">${icon("x")}</button></div>`;
+}
 function renderGen(){
   if(!GEN_LOADED)return;
   const el=$("genResult");
@@ -2811,62 +2828,87 @@ function renderGen(){
   const items=a.items||[];
   const verdicts=items.map(it=>({it,v:genVerdict(it)}));
   const count=k=>verdicts.filter(x=>x.v.key===k).length;
-  /* ---- 提示 ---- */
+  /* ---- 提示(环境问题用一条警示带, 其他仍是提示框) ---- */
   let alerts="";
   if(a.status&&a.status!=="done")alerts+=alertBox("warn",`这个任务${esc(STATUS_NAME[a.status]||a.status)}${a.error?"："+esc(a.error):""}。下面只有已经完成的题，原计划 ${s.planned} 题。`);
-  if(!s.v2)alerts+=alertBox("warn","这个任务用的是旧版检查（只在代码里找关键词），分数不可信。点右上方「重新检查」按新方式在浏览器里实际运行，人工评分会保留。");
-  else if(s.mode==="static"||s.mode==="mixed"){
-    const why=ev.browser_error||(items.map(x=>x.eval&&x.eval.notes&&x.eval.notes[0]).find(Boolean))||"后台浏览器没有启动";
-    alerts+=alertBox("bad",`<b>${s.mode==="static"?"这些作品没有在浏览器里实际运行":`有 ${s.staticN} 件作品没有在浏览器里实际运行`}</b>，只检查了代码里有没有相关关键词，${s.mode==="static"?"下面的通过率":"这部分作品的通过率"}不能代表作品真的能用。<br>
-      原因：${esc(why)}<br>修复后（例如以普通权限重新启动服务）点「重新检查」即可，人工评分会保留。`,
-      `<button class="btn btn-secondary btn-sm" onclick="genReeval()">${icon("scan-check")}重新检查</button>`);
-  }
+  if(!s.v2)alerts+=alertBox("warn","这个任务用的是旧版检查（只在代码里找关键词），分数不可信。在「更多」里点「重新检查作品」按新方式在浏览器里实际运行，人工评分会保留。");
   if(s.v2&&s.mode==="browser"&&verLt(ev.eval_version,"1.1.0"))
-    alerts+=alertBox("warn",`这个任务的运行检查用的是 ${esc(ev.eval_version||"1.0")} 版规则：会把自带动画、鼠标悬停效果误判为“操作有反应”，输入“.”会丢字符，手机适配检查不生效。建议「重新检查」，人工评分会保留。`);
+    alerts+=alertBox("warn",`这个任务的运行检查用的是 ${esc(ev.eval_version||"1.0")} 版规则：会把自带动画、鼠标悬停效果误判为“操作有反应”，输入“.”会丢字符，手机适配检查不生效。建议重新检查，人工评分会保留。`);
   if(a.thinking_dropped)alerts+=alertBox("warn","模型服务不接受“开启思考”的参数，这个任务实际上可能没有思考。");
-  /* ---- 指标 ---- */
+  /* ---- 关键数字: 没有数据的不占位 ---- */
+  const passN=count("pass");
   const execLabel=s.mode==="static"?"只看代码的命中率":"实际运行检查通过率";
-  const kpis=`<div class="kpi-grid">
-    ${kpi("完成的作品",`${s.ok.length}<small> / ${s.planned}</small>`,"",{sub:items.length-s.ok.length?`${items.length-s.ok.length} 题没生成出来`:"全部生成出来了"})}
-    ${kpi(s.mode==="static"?execLabel:term("run",execLabel),s.exec==null?"—":fmt(s.exec,1),s.exec==null?"":"%",{sub:s.mode==="static"?"没有实际运行，仅供参考":s.mode==="mixed"?`只统计实际运行的 ${s.browserN} 件`:"打开、报错、白屏、动画和操作反应"})}
-    ${kpi(term("judge"),s.judge==null?"—":fmt(s.judge,1),s.judge==null?"":"/ 100",{sub:!ev.judge_model&&s.judge==null?"没有配置打分模型":`${s.judgeN} 件有分${s.judgeErr?`，${s.judgeErr} 件打分失败`:""}${ev.judge_model?" · "+esc(ev.judge_model):""}`})}
-    ${kpi("人工评分",s.stars==null?"—":fmt(s.stars,1),s.stars==null?"":"/ 5",{sub:s.starN?`已评 ${s.starN} 件`:"在下面的作品卡片上点星星"})}
-  </div>`;
+  let stats=stat("完成的作品",`${s.ok.length}<small>/ ${s.planned}</small>`,"",{sub:items.length-s.ok.length?`${items.length-s.ok.length} 题没生成出来`:"全部生成出来了"})+
+    stat("全部检查通过",`${passN}<small>件</small>`,"",{sub:items.length?`占 ${fmt(100*passN/items.length,0)}%`:""})+
+    stat(s.mode==="static"?execLabel:term("run",execLabel),s.exec==null?"—":fmt(s.exec,1),s.exec==null?"":"%",
+      {sub:s.mode==="static"?`<span class="warn">${icon("alert","icon-sm")} 没有实际运行，仅供参考</span>`:s.mode==="mixed"?`只统计实际运行的 ${s.browserN} 件`:"打开、报错、白屏、动画和操作反应"});
+  const missing=[];
+  if(s.judge!=null)stats+=stat(term("judge"),fmt(s.judge,1),"/ 100",{sub:`${s.judgeN} 件有分${s.judgeErr?`，${s.judgeErr} 件打分失败`:""}${ev.judge_model?" · "+esc(ev.judge_model):""}`});
+  else missing.push(ev.judge_model?`${TERMS.judge.name}：都没打出分`:`没有配置${TERMS.judge.name}`);
+  if(s.stars!=null)stats+=stat("人工平均星级",fmt(s.stars,1),"/ 5",{sub:`已评 ${s.starN} 件`});
+  else missing.push("还没有人工评分（在作品卡片或作品表里点星星）");
+  const nStats=3+(s.judge!=null)+(s.stars!=null);
   /* ---- 结论: 模型问题 vs 环境/框架问题 ---- */
   const modelIssues=["repeat","unfinished","error","blank","partial"].map(k=>[k,count(k)]).filter(x=>x[1]);
   const envIssues=["static","env"].map(k=>[k,count(k)]).filter(x=>x[1]);
   const ck={};items.forEach(it=>{const k=changeKind(it);ck[k]=(ck[k]||0)+1});
   const concl=[];
-  concl.push({tone:count("pass")===items.length?"good":"info",html:`${items.length} 件作品里，<b>${count("pass")}</b> 件全部检查通过。`});
+  concl.push({tone:passN===items.length?"good":"info",html:`${items.length} 件作品里，<b>${passN}</b> 件全部检查通过。`});
   if(modelIssues.length)concl.push({tone:"warn",html:"<b>模型自身的问题</b>："+modelIssues.map(([k,n])=>`${VERDICT_META[k].name} ${n} 件`).join("、")+"。"});
   if(count("fail"))concl.push({tone:"bad",html:`<b>${count("fail")}</b> 件没有生成出来（请求出错或没写出有效代码）。`});
   if(envIssues.length)concl.push({tone:"bad",html:"<b>评测环境的问题</b>（不能算在模型头上）："+envIssues.map(([k,n])=>`${VERDICT_META[k].name} ${n} 件`).join("、")+"。"});
   if(ck.legacy===items.length)concl.push({tone:"info",html:"这个任务生成于 2.3 之前，没有保存模型的原始输出，无法逐字核对框架有没有改动。之后的新任务会自动保存。"});
-  else concl.push({tone:"good",html:`框架有没有改动模型写的代码：<b>${ck.raw||0}</b> 件原样保存，<b>${ck.trimmed||0}</b> 件只去掉了代码前后的说明文字或代码块标记${ck.stitched?`，<b>${ck.stitched}</b> 件拼接了接着写的内容`:""}${ck.rescued?`，<b>${ck.rescued}</b> 件思考失败后改为不思考重新生成`:""}。除此之外保存的作品和模型输出逐字一致，每件作品的「生成过程」里可以看原始输出。`});
+  else concl.push({tone:"good",html:`框架有没有改动模型写的代码：<b>${ck.raw||0}</b> 件原样保存，<b>${ck.trimmed||0}</b> 件只去掉了代码前后的说明文字或代码块标记${ck.stitched?`，<b>${ck.stitched}</b> 件拼接了接着写的内容`:""}${ck.rescued?`，<b>${ck.rescued}</b> 件思考失败后改为不思考重新生成`:""}。除此之外保存的作品和模型输出逐字一致。`});
   if(s.mode==="browser"||s.mode==="mixed"){
     const ctlN=items.filter(it=>it.eval&&it.eval.control&&it.eval.control.reproduced).length;
     if(ctlN)concl.push({tone:"info",html:`报错的作品里有 <b>${ctlN}</b> 件在不加任何检测代码的干净环境里${term("control","重新运行")}也同样报错，确认是作品自身的 bug。`});
   }
-  /* ---- 作品卡片 ---- */
-  const cardHTML=({it,v})=>genCard(a,b,it,v);
-  const filters=[["all","全部",items.length],["issues","有问题的",items.length-count("pass")],...VERDICTS.map(([k,n])=>[k,n,count(k)]).filter(x=>x[2]&&x[0]!=="pass"),["pass","全部通过",count("pass")]];
+  /* ---- 问题出在哪: 两个进度条清单 + 表格 ---- */
+  const whyT={id:"gen-why-t",title:"作品情况（按最主要的问题归类）",columns:[{key:"name",label:"问题",type:"text",sticky:true},{key:"n",label:"件数",type:"int"},{key:"pct",label:"占比",unit:"%",type:"bar",color:C.text3,max:100,digits:0},
+      {key:"who",label:"算在谁头上",type:"text"},{key:"list",label:"作品",type:"text",wrap:true}],
+    rows:VERDICTS.filter(([k])=>count(k)).map(([k,n,tone,why])=>({name:n,n:count(k),pct:100*count(k)/Math.max(1,items.length),who:why,list:verdicts.filter(x=>x.v.key===k).map(x=>x.it.name).join("、")}))};
+  const chgT={id:"gen-chg-t",title:"框架对模型输出做过什么",columns:[{key:"name",label:"处理方式",type:"text",sticky:true,wrap:true},{key:"n",label:"件数",type:"int"},{key:"pct",label:"占比",unit:"%",type:"num",digits:0}],
+    rows:CHANGE_KINDS.filter(([k])=>ck[k]).map(([k,n])=>({name:n,n:ck[k],pct:100*ck[k]/Math.max(1,items.length)}))};
+  /* ---- 各难度: 汇总表为主 + 每档一张逐题进度条小卡 ---- */
+  const tiers=TIER_ORDER.filter(t=>[a,b].some(r=>r&&(r.items||[]).some(it=>(it.tags||[]).includes(t))));
+  const tierRows=tiers.map(t=>{const A=tierInfo(a,t),B=b?tierInfo(b,t):null;
+    const dist={};A.its.forEach(it=>{const k=genVerdict(it).key;if(k!=="pass")dist[k]=(dist[k]||0)+1});
+    return{name:tagName(t),n:A.its.length,avg:A.avg,avgB:B&&B.avg,pass:A.pass,fail:A.fail,
+      issues:Object.entries(dist).sort((p,q)=>q[1]-p[1]).map(([k,n])=>`${VERDICT_META[k].name} ${n}`).join(" · ")||"—"}});
+  const tierT={id:"gen-tier-t",title:"难度汇总",columns:[{key:"name",label:"难度",type:"text",sticky:true},{key:"n",label:"件数",type:"int"},
+      {key:"avg",label:b?"A 平均通过率":"平均通过率",unit:"%",type:"bar",color:C.a,max:100},...(b?[{key:"avgB",label:"B 平均通过率",unit:"%",type:"bar",color:C.b,max:100}]:[]),
+      {key:"pass",label:"全部通过",type:"int"},{key:"fail",label:"没生成出来",type:"int"},{key:"issues",label:"主要问题分布",type:"text",wrap:true}],rows:tierRows};
+  /* ---- 作品: 卡片 | 表格(作品表 + 检查矩阵) ---- */
+  const filters=[["all","全部",items.length],["issues","有问题的",items.length-passN],...VERDICTS.map(([k,n])=>[k,n,count(k)]).filter(x=>x[2]&&x[0]!=="pass"),["pass","全部通过",passN]];
   if(!filters.some(f=>f[0]===GEN_FILTER&&f[2]))GEN_FILTER="all";
-  const shown=verdicts.filter(x=>GEN_FILTER==="all"||(GEN_FILTER==="issues"?x.v.key!=="pass":x.v.key===GEN_FILTER));
-  el.innerHTML=`<div class="stack">${alerts}${summaryCard("结论",concl,`${esc(a.model||"")} · ${a.thinking?"思考模式":"不思考"} · ${esc(samplingTextGen(a))} · ${esc(evalMethodText(ev))} · 开始于 ${esc(timeText(a.started_utc))}`)}${kpis}</div>`+
-    sec("gen-why","问题出在哪","每件作品只按最主要的一个问题归类；红色是作品/模型的问题，灰色是评测环境的问题",
-      `<div class="grid-2">
+  const shown=genSortItems(verdicts.filter(x=>GEN_FILTER==="all"||(GEN_FILTER==="issues"?x.v.key!=="pass":x.v.key===GEN_FILTER)));
+  const itB=id=>b?(b.items||[]).find(x=>x.id===id):null;
+  const cards=shown.map(({it,v})=>b?`<div class="work-pair">${genCard(a,b,it,v,"A")}${itB(it.id)?genCard(b,a,itB(it.id),genVerdict(itB(it.id)),"B"):`<div class="work is-empty">${emptyState("B 没有这道题","",{inline:true})}</div>`}</div>`:genCard(a,b,it,v)).join("");
+  const worksMode=panelMode("gen-works");
+  const worksTools=`<div class="work-toolbar"><div class="filter-chips">${filters.map(([k,n,c])=>`<button type="button" class="filter-chip" data-gen-filter="${k}" aria-pressed="${k===GEN_FILTER}">${esc(n)} <b>${c}</b></button>`).join("")}</div>
+      <label class="work-sort"><span>排序</span><select class="select" id="genSort">${GEN_SORTS.map(([k,n])=>`<option value="${k}" ${k===GEN_SORT?"selected":""}>${esc(n)}</option>`).join("")}</select></label></div>`;
+  el.innerHTML=genStrip(a,s,ev,items)+overview(concl,stats,{cols:2,meta:`${esc(a.model||"")} · ${a.thinking?"思考模式":"不思考"} · ${esc(samplingTextGen(a))} · ${esc(evalMethodText(ev))} · 开始于 ${esc(timeText(a.started_utc))}`+
+      (missing.length?`<br>${missing.map(esc).join("；")}`:"")})+(alerts?`<div class="notes">${alerts}</div>`:"")+
+    panel({id:"gen-why",title:"问题出在哪",jump:"问题归因",desc:"每件作品只按最主要的一个问题归类；红色是作品/模型的问题，灰色是评测环境的问题。点一行可以筛选下面的作品",
+      chart:`<div class="grid-2">
         <div class="ccard"><div class="ccard-head"><div><h3 class="ccard-title">作品情况</h3><p class="ccard-desc">共 ${items.length} 件，鼠标放上去能看到是哪几件</p></div></div><div class="chart" id="genWhy"></div></div>
         <div class="ccard"><div class="ccard-head"><div><h3 class="ccard-title">框架有没有改动模型写的代码</h3><p class="ccard-desc">除这些处理外，保存的作品和模型写的逐字一致</p></div></div><div class="chart" id="genChange"></div>
           ${ck.legacy?`<p class="ccard-note">${ck.legacy===items.length?"这个任务":"其中 "+ck.legacy+" 件"}生成于 2.3 之前，没有保存模型原始输出；之后的新任务会自动保存，可以在作品的「生成过程」里逐字核对。</p>`:""}</div>
-      </div>`,"问题归因")+
-    sec("gen-tier","各难度的表现",`${s.mode==="static"?"只看代码的命中率（没有实际运行，仅供参考）":"实际运行检查的通过率"}，每张卡里按分数从高到低排列${b?"；右侧数字是 A / B":""}`,
-      tierCards(a,b,s.mode),"难度")+
-    sec("gen-works","作品",`点「预览」直接玩，「检查详情」看截图和每项检查，「生成过程」看模型的原始输出`,
-      `<div class="work-toolbar"><div class="filter-chips">${filters.map(([k,n,c])=>`<button type="button" class="filter-chip" data-gen-filter="${k}" aria-pressed="${k===GEN_FILTER}">${esc(n)} <b>${c}</b></button>`).join("")}</div></div>
-      <div class="work-grid">${shown.map(cardHTML).join("")||emptyState("没有符合条件的作品","",{inline:true})}</div>`,"作品");
+      </div>`,tables:[whyT,chgT],tcols:1})+
+    panel({id:"gen-tier",title:"各难度的表现",jump:"难度",desc:`${s.mode==="static"?"只看代码的命中率（没有实际运行，仅供参考）":"实际运行检查的通过率"}，每张卡里按分数从高到低排列${b?"；右侧数字是 A / B":""}`,
+      chart:dataTable(tierT)+tierCards(a,b,s.mode),tables:[tierT,genTaskTable(a,b)],tcols:1})+
+    `<section class="sec" id="gen-works" data-jump="作品" data-pv="${worksMode}">
+      <div class="sec-head"><div class="sec-head-text"><h2 class="sec-title">作品</h2><p class="sec-desc">点「预览」直接玩，「详情」看截图和每项检查，「过程」看模型的原始输出${b?"；每行左边是 A、右边是 B":""}</p></div>
+        <div class="sec-tools">${segHTML("data-pv-set",worksMode,[["chart","卡片","layers"],["table","表格","table"]])}
+          <button type="button" class="btn btn-ghost btn-icon btn-sm" data-pv-export title="导出作品表与检查矩阵（CSV）" aria-label="导出作品表">${icon("download")}</button></div></div>
+      ${worksTools}
+      <div class="pv-chart"><div class="${b?"work-pairs":"work-grid"}">${cards||emptyState("没有符合条件的作品","",{inline:true})}</div></div>
+      <div class="pv-table"><div class="dt-grid" style="--tcols:1">${dataTable(genWorksTable(a,b,shown))}${dataTable(genCheckMatrix(a,shown))}</div></div>
+    </section>`;
   disposeDetached();
   drawGenCharts(a,b,verdicts,ck);
   buildJump("genJump",el);
+  const gs=$("genSort");if(gs)CSelect.enhance(gs);
 }
 function samplingTextGen(r){
   const sm=r.sampling;
@@ -2874,27 +2916,73 @@ function samplingTextGen(r){
   const first=r.thinking?sm.think:sm.plain;
   return (sm.mode==="official"?"官方推荐采样":sm.mode==="legacy"?"旧版低温 T0.3":"自定义采样")+(first&&first.temperature!=null?`（temperature ${first.temperature}）`:"");
 }
-function genCard(a,b,it,v){
-  const tags=esc((it.tags||[]).map(tagName).join(" · "));
+function tierOf(it){const t=(it.tags||[]).find(x=>TIER_NAME[x]);return t?tagName(t):""}
+function starsHTML(run,it){
+  return `<span class="stars" role="group" aria-label="人工评分">${[1,2,3,4,5].map(i=>`<button type="button" class="star ${i<=(it.stars||0)?"on":""}" data-rate="${i}" data-run="${esc(run.run_id)}" data-item="${esc(it.id)}" aria-label="${i} 分" aria-pressed="${i===it.stars}">${icon("star")}</button>`).join("")}</span>`;
+}
+function workActions(run,b,it,compact){
+  const e=it.eval,hasTrace=!!it.trace||!!it.rounds;
+  return [it.file&&!it.error?`<button class="btn btn-secondary btn-sm" data-gen="preview" data-run="${esc(run.run_id)}" data-item="${esc(it.id)}">${icon("play")}预览</button>`:"",
+    e?`<button class="btn btn-ghost btn-sm" data-gen="detail" data-run="${esc(run.run_id)}" data-item="${esc(it.id)}">${icon("image")}详情</button>`:"",
+    hasTrace?`<button class="btn btn-ghost btn-sm" data-gen="trace" data-run="${esc(run.run_id)}" data-item="${esc(it.id)}">${icon("layers")}过程</button>`:"",
+    !compact&&b&&!it.error?`<button class="btn btn-ghost btn-sm" data-gen="compare" data-run="${esc(run.run_id)}" data-item="${esc(it.id)}">${icon("columns")}并排</button>`:""].join("");
+}
+/* 作品卡: 标题行(名称 + 难度 + 状态) / 一行问题摘要 / 检查细条 / 操作与星级 */
+function genCard(a,b,it,v,tag){
   const meta=VERDICT_META[v.key]||{tone:"neutral"};
-  const tone=meta.tone==="neutral"?"":` is-${meta.tone}`;
-  const ic={good:"check-circle",bad:"x-circle",warn:"alert",neutral:"ban"}[meta.tone]||"info";
-  const e=it.eval,checks=e?e.checks||[]:[],fails=checks.filter(c=>!c.pass),j=e&&e.judge;
-  const judgeBadge=j&&j.score!=null?`<span class="badge" title="AI 看图打分${j.stale?"（基于旧截图）":""}">${icon("sparkle")}<b class="score ${scoreCls(j.score)}">${fmt(j.score,0)}</b>${j.stale?" 旧":""}</span>`:(j&&j.error?`<span class="badge is-bad">打分失败</span>`:"");
-  const metaLine=[tags,it.lines?`${fmtInt(it.lines)} 行`:"",it.continuations?`接着写 ${it.continuations} 轮`:"",it.out_tokens?`输出 ${fmtInt(it.out_tokens)} token`:""].filter(Boolean).join(" · ");
-  const body=it.error?"":(e?`<div class="row" style="gap:10px"><span class="checkbar">${checks.map(c=>`<i class="${c.pass?"":"fail"}" title="${esc((c.pass?"通过："+plainCheck(c):"没通过："+failText(c))+(c.detail?"\n"+c.detail:""))}"></i>`).join("")}</span>
-      <span class="score ${scoreCls(it.exec_score)}">${e.method==="static"?"代码关键词":"运行检查"} ${it.pass}/${it.total}</span></div>
-      ${fails.length&&v.key!=="partial"?`<div class="work-fails">${fails.slice(0,3).map(c=>`<div>${icon("x-circle","icon-sm")} ${esc(failText(c))}</div>`).join("")}${fails.length>3?`<div class="faint">还有 ${fails.length-3} 项没通过</div>`:""}</div>`:""}`:"");
-  const hasTrace=!!it.trace;
-  return `<div class="work"><div class="work-head"><div style="min-width:0"><div class="work-name">${esc(it.name)}</div><div class="work-meta">${metaLine}</div></div>${judgeBadge}</div>
-    <div class="work-verdict${tone}">${icon(ic)}<span>${esc(v.text)}</span></div>${body}
-    <div class="work-actions">
-      ${it.file&&!it.error?`<button class="btn btn-secondary btn-sm" data-gen="preview" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}">${icon("play")}预览</button>`:""}
-      ${e?`<button class="btn btn-ghost btn-sm" data-gen="detail" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}">${icon("image")}检查详情</button>`:""}
-      ${hasTrace||it.rounds?`<button class="btn btn-ghost btn-sm" data-gen="trace" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}">${icon("layers")}生成过程</button>`:""}
-      ${b&&!it.error?`<button class="btn btn-ghost btn-sm" data-gen="compare" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}">${icon("columns")}并排对比</button>`:""}
-      ${it.error?"":`<span class="stars" role="group" aria-label="人工评分">${[1,2,3,4,5].map(i=>`<button type="button" class="star ${i<=(it.stars||0)?"on":""}" data-rate="${i}" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}" aria-label="${i} 分" aria-pressed="${i===it.stars}">${icon("star")}</button>`).join("")}</span>`}
-    </div></div>`;
+  const tone=meta.tone==="neutral"?"plain":meta.tone;
+  const ic={good:"check",bad:"x",warn:"alert",neutral:"ban"}[meta.tone]||"minus";
+  const e=it.eval,checks=e?e.checks||[]:[],j=e&&e.judge;
+  const judgeBadge=j&&j.score!=null?`<span class="badge" title="AI 看图打分${j.stale?"（基于旧截图）":""}">${icon("sparkle")}<b class="score ${scoreCls(j.score)}">${fmt(j.score,0)}</b></span>`:(j&&j.error?`<span class="badge is-bad">打分失败</span>`:"");
+  const metaLine=[it.lines?`${fmtInt(it.lines)} 行`:"",it.continuations?`接着写 ${it.continuations} 轮`:"",it.out_tokens?`${fmtInt(it.out_tokens)} token`:""].filter(Boolean).join(" · ");
+  return `<div class="work"><div class="work-head">${tag?`<span class="run-tag" style="background:${tag==="A"?C.a:C.b}">${tag}</span>`:""}<span class="work-name">${esc(it.name)}</span>
+      <span class="badge">${esc(tierOf(it)||"—")}</span>${judgeBadge}<span class="badge is-${tone} work-status">${icon(ic)}${esc(meta.name||"")}</span></div>
+    <div class="work-verdict" title="${esc(v.text)}">${esc(v.text)}</div>
+    ${it.error?"":`<div class="work-checks"><span class="checkbar">${checks.map(c=>`<i class="${c.pass?"":"fail"}" title="${esc((c.pass?"通过："+plainCheck(c):"没通过："+failText(c))+(c.detail?"\n"+c.detail:""))}"></i>`).join("")}</span>
+      ${e?`<span class="score ${scoreCls(it.exec_score)}">${e.method==="static"?"代码关键词":"运行检查"} ${it.pass}/${it.total}</span>`:""}<span class="faint">${metaLine}</span></div>`}
+    <div class="work-actions">${workActions(a,b,it)}${it.error?"":starsHTML(a,it)}</div></div>`;
+}
+/* 作品表(与卡片共用筛选和排序) */
+function genWorksTable(a,b,shown){
+  const itB=id=>b?(b.items||[]).find(x=>x.id===id):null;
+  const vStatus=(it)=>{const v=genVerdict(it),m=VERDICT_META[v.key]||{tone:"neutral",name:""};return{tone:m.tone==="neutral"?"neutral":m.tone,text:m.name,tip:v.text}};
+  return{id:"gen-works-t",title:"作品表",pageSize:100,rowKey:x=>x.it.id,
+    columns:[{key:"name",label:"作品",type:"text",sticky:true,get:x=>x.it.name},{key:"tier",label:"难度",type:"text",get:x=>tierOf(x.it)},
+      {key:"status",label:b?"A 主要问题":"主要问题",type:"status",get:x=>vStatus(x.it)},
+      {key:"pass",label:b?"A 检查通过":"检查通过",type:"html",get:x=>x.it.error||!x.it.eval?"—":`<span class="dt-barcell"><span class="dt-meter"><i style="width:${x.it.total?100*x.it.pass/x.it.total:0}%;background:${x.it.pass===x.it.total?C.goodMark:C.a}"></i></span><span class="dt-num">${x.it.pass}/${x.it.total}</span></span>`,
+        sortValue:x=>x.it.error||!x.it.total?null:x.it.pass/x.it.total,text:(v,x)=>x.it.total?`${x.it.pass}/${x.it.total}`:""},
+      ...(b?[{key:"statusB",label:"B 主要问题",type:"status",get:x=>{const y=itB(x.it.id);return y?vStatus(y):{tone:"neutral",text:"没有这题"}}},
+        {key:"passB",label:"B 检查通过",type:"text",align:"right",get:x=>{const y=itB(x.it.id);return y&&y.total?`${y.pass}/${y.total}`:"—"},sortValue:x=>{const y=itB(x.it.id);return y&&y.total?y.pass/y.total:null}},
+        {key:"dpass",label:"B 比 A 多过",unit:"项",type:"int",get:x=>{const y=itB(x.it.id);return y&&!y.error&&!x.it.error&&y.total&&x.it.total?y.pass-x.it.pass:null}}]:[]),
+      {key:"lines",label:"行数",type:"int",get:x=>x.it.lines||null},{key:"rounds",label:"接着写",unit:"轮",type:"int",get:x=>x.it.continuations||0},
+      {key:"tok",label:"输出",unit:"token",type:"int",get:x=>x.it.out_tokens||null},
+      {key:"judge",label:"AI 分",type:"num",digits:0,get:x=>typeof x.it.judge_score==="number"?x.it.judge_score:null},
+      {key:"stars",label:"人工星级",type:"html",get:x=>x.it.error?"—":starsHTML(a,x.it),sortValue:x=>x.it.stars||0,text:(v,x)=>x.it.stars?String(x.it.stars):""},
+      {key:"act",label:"",type:"html",noSort:true,get:x=>`<span class="dt-actions">${workActions(a,null,x.it,true)}</span>`}],
+    rows:shown,note:b?"B 列按同一道题对齐":""};
+}
+/* 检查矩阵: 作品 × 通用检查项(✓ / ✗ / —), 题目专属的交互与功能检查合成一列 */
+const MATRIX_CHECKS=[["load","能打开"],["nonblank","不白屏"],["no_error","没报错"],["animated","有动画"],["responsive","手机适配"],["self_contained","不依赖外网"],["complete","代码完整"]];
+function genCheckMatrix(a,shown){
+  const st=(it,id)=>{const c=it.eval&&(it.eval.checks||[]).find(x=>x.id===id);return !c?{tone:"neutral",text:"—"}:c.pass?{tone:"good",text:"过",tip:plainCheck(c)}:{tone:"bad",text:"没过",tip:failText(c)}};
+  const own=it=>{const cs=(it.eval&&it.eval.checks||[]).filter(c=>/^(step|f\d)/.test(c.id));return cs.length?{p:cs.filter(c=>c.pass).length,n:cs.length}:null};
+  return{id:"gen-matrix-t",title:"检查矩阵（作品 × 检查项）",pageSize:100,rowKey:x=>x.it.id,
+    columns:[{key:"name",label:"作品",type:"text",sticky:true,get:x=>x.it.name},
+      ...MATRIX_CHECKS.map(([id,label])=>({key:"c_"+id,label,type:"status",align:"center",get:x=>x.it.error?{tone:"neutral",text:"—"}:st(x.it,id),tip:CHECK_PLAIN[id]})),
+      {key:"own",label:"题目专属检查",type:"html",align:"right",get:x=>{const o=own(x.it);return o?`<span class="${o.p===o.n?"good":o.p?"":"bad"}">${o.p}/${o.n}</span>`:"—"},
+        sortValue:x=>{const o=own(x.it);return o?o.p/o.n:null},text:(v,x)=>{const o=own(x.it);return o?`${o.p}/${o.n}`:""},tip:"按题目模拟的操作和功能检查"}],
+    rows:shown,note:"✓ 过 / ✗ 没过 / — 这件作品没做这项检查"};
+}
+/* 各难度逐题得分(表格视图) */
+function genTaskTable(a,b){
+  const runs=[{tag:"A",r:a},b?{tag:"B",r:b}:null].filter(Boolean);
+  const ids=[...new Set(runs.flatMap(x=>(x.r.items||[]).map(it=>it.id)))];
+  const find=(r,id)=>(r.items||[]).find(z=>z.id===id);
+  return{id:"gen-task-t",title:"逐题得分",columns:[{key:"name",label:"题目",type:"text",sticky:true},{key:"tier",label:"难度",type:"text"},
+      ...runs.map((x,i)=>({key:"s_"+i,label:runs.length>1?x.tag:"得分",group:runs.length>1?"得分（%）":"",unit:runs.length>1?"":"%",type:"bar",color:i?C.b:C.a,max:100}))],
+    rows:ids.map(id=>{const cat=TASK_CATALOG.find(z=>z.id===id),first=runs.map(x=>find(x.r,id)).find(Boolean);
+      const row={name:cat?cat.name:(first&&first.name)||id,tier:first?tierOf(first):""};
+      runs.forEach((x,i)=>{const it=find(x.r,id);row["s_"+i]=it&&!it.error?it.exec_score:null});return row})};
 }
 function tierInfo(r,t){
   const its=(r.items||[]).filter(it=>(it.tags||[]).includes(t));
@@ -2920,7 +3008,9 @@ function drawGenCharts(a,b,verdicts,ck){
   const vRows=vk.map(([k,n,tone])=>{const c=verdicts.filter(x=>x.v.key===k).length;
     return{k,name:n,values:[c],colors:[tone2color(tone)],right:`${c} 件 · ${Math.round(100*c/total)}%`}});
   meterChart("genWhy",{rows:vRows,max:total,nameWidth:140,tip:r=>{const names=verdicts.filter(x=>x.v.key===r.k).map(x=>x.it.name);
-    return tt(r.name,[[r.colors[0],VERDICT_META[r.k].why,r.right]],names.slice(0,10).join("、")+(names.length>10?" …":""))}});
+    return tt(r.name,[[r.colors[0],VERDICT_META[r.k].why,r.right]],names.slice(0,10).join("、")+(names.length>10?" …":"")+" · 点击筛选")}});
+  const why=CHARTS.get("genWhy");
+  if(why){why.off("click");why.on("click",q=>{const r=vRows[q.dataIndex];if(!r)return;GEN_FILTER=r.k;renderGen();const w=$("gen-works");if(w)w.scrollIntoView({block:"start"})})}
   /* 框架处理 */
   const kc={raw:C.goodMark,trimmed:C.series[0],stitched:C.series[4],rescued:C.warnMark,legacy:C.axis};
   const cRows=CHANGE_KINDS.filter(([k])=>ck[k]).map(([k,n])=>({name:n,values:[ck[k]],colors:[kc[k]],right:`${ck[k]} 件 · ${Math.round(100*ck[k]/total)}%`}));
@@ -2942,7 +3032,12 @@ function drawGenCharts(a,b,verdicts,ck){
         const it=(a.items||[]).find(z=>z.id===r.id);return tt(r.name,lines,it?(VERDICT_META[genVerdict(it).key]||{}).name:"")}});
   });
 }
+$("genResult").addEventListener("change",e=>{
+  if(e.target.id==="genSort"){GEN_SORT=e.target.value;renderGen()}
+});
 $("genResult").addEventListener("click",e=>{
+  const sc=e.target.closest("[data-strip-close]");
+  if(sc){STRIP_CLOSED.add(sc.dataset.stripClose);const st=sc.closest(".strip");if(st)st.remove();return}
   const f=e.target.closest("[data-gen-filter]");
   if(f){GEN_FILTER=f.dataset.genFilter;renderGen();const w=$("gen-works");if(w)w.scrollIntoView({block:"start"});return}
   const rate=e.target.closest("[data-rate]");
