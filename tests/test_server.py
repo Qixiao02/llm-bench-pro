@@ -243,6 +243,28 @@ class TestServer(ServerCase):
         finally:
             bankman.BANKS = old
 
+    def test_migrate_legacy_dirs(self):
+        """2.9 之前 results/、works/ 在项目根: 启动时搬进 data/, 重名不覆盖。"""
+        root = temp_dir()
+        data = os.path.join(root, "data")
+        os.makedirs(os.path.join(root, "results"))
+        open(os.path.join(root, "results", "iq_x.json"), "w").close()
+        os.makedirs(os.path.join(root, "works", "gen_a"))
+        open(os.path.join(root, "works", "gen_a", "snake.html"), "w").close()
+        notes = server.migrate_legacy_dirs(root, data)
+        self.assertEqual([attention for _, attention in notes], [False, False])
+        self.assertTrue(os.path.isfile(os.path.join(data, "results", "iq_x.json")))
+        self.assertTrue(os.path.isfile(os.path.join(data, "works", "gen_a", "snake.html")))
+        self.assertFalse(os.path.exists(os.path.join(root, "results")) or os.path.exists(os.path.join(root, "works")))
+        os.makedirs(os.path.join(root, "works", "gen_a"))  # 两边都有: 不重名的搬过去, 重名的留在原处并提示
+        os.makedirs(os.path.join(root, "works", "gen_b"))
+        notes = server.migrate_legacy_dirs(root, data)
+        self.assertTrue(os.path.isdir(os.path.join(data, "works", "gen_b")))
+        self.assertTrue(os.path.isdir(os.path.join(root, "works", "gen_a")))
+        self.assertEqual(len(notes), 1)
+        self.assertTrue(notes[0][1])
+        self.assertEqual(server.migrate_legacy_dirs(temp_dir(), data), [])  # 没有旧目录: 什么都不做
+
     def test_resume_rejects_old_version(self):
         doc = iq_doc("iq_20260103_000000_old")
         doc.update(iq_version="1.2.0", status="cancelled")

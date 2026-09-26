@@ -38,8 +38,9 @@ import sinks  # noqa: E402
 import store  # noqa: E402
 from version import APP_VERSION  # noqa: E402
 
-RESULTS = os.path.join(ROOT, "results")  # 旧版 JSON 结果: 启动时自动导入库(仅新增)
-WORKS = os.path.join(ROOT, "works")
+DATA = os.path.join(ROOT, "data")        # 运行数据(不入库): 数据库 / 结果 JSON / 生成作品 / 回放与场景文件
+RESULTS = os.path.join(DATA, "results")  # 命令行跑出的或从别的机器拷回的 JSON 结果: 启动时自动导入库(仅新增)
+WORKS = os.path.join(DATA, "works")      # 生成作品, 页面地址 /works/…
 
 # 预览与评测共用 geneval.STORAGE_SHIM_JS。垫片必须出现在作品自己的第一个 <script> 之前,
 # 否则脚本在垫片安装前读 localStorage, 沙箱里会直接抛 SecurityError。
@@ -71,9 +72,9 @@ _WORKS_CSP = (
 )
 WEB = os.path.join(ROOT, "web")
 UI = os.path.join(WEB, "index.html")
-REPLAY_DIR = os.path.join(ROOT, "data", "replay")      # 真实请求回放池(内容寻址 replay-<sha12>.jsonl)
-SCN_TASKS_DIR = os.path.join(ROOT, "data", "scenario", "tasks")    # 自定义任务集(内容寻址 scn-<sha12>.jsonl)
-SCN_IMAGES_DIR = os.path.join(ROOT, "data", "scenario", "images")  # 图片理解场景的图片包(img-<sha12>/<n>.<ext>)
+REPLAY_DIR = os.path.join(DATA, "replay")      # 真实请求回放池(内容寻址 replay-<sha12>.jsonl)
+SCN_TASKS_DIR = os.path.join(DATA, "scenario", "tasks")    # 自定义任务集(内容寻址 scn-<sha12>.jsonl)
+SCN_IMAGES_DIR = os.path.join(DATA, "scenario", "images")  # 图片理解场景的图片包(img-<sha12>/<n>.<ext>)
 _RUN_ID_RE = re.compile(r"^(run|iq|gen)_[A-Za-z0-9_.-]+$")
 _STATIC_TYPES = {".css": "text/css; charset=utf-8", ".js": "application/javascript; charset=utf-8",
                  ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png"}
@@ -1168,6 +1169,34 @@ def parse_args(argv=None):
     return ap.parse_args(argv)
 
 
+def migrate_legacy_dirs(root=ROOT, data=DATA):
+    """2.9 之前 results/、works/ 放在项目根, 现统一放 data/ 下。启动时搬过去: 目标不存在则整体改名;
+    两边都有则逐项搬, 重名的不覆盖、留在原处。返回 [(说明, 是否需要人工处理)]。"""
+    notes = []
+    for name in ("results", "works"):
+        old, new = os.path.join(root, name), os.path.join(data, name)
+        if not os.path.isdir(old):
+            continue
+        try:
+            if not os.path.exists(new):
+                os.makedirs(data, exist_ok=True)
+                os.rename(old, new)
+                notes.append(("%s/ 已搬到 data/%s/" % (name, name), False))
+                continue
+            left = [e for e in os.listdir(old) if os.path.exists(os.path.join(new, e))]
+            for e in os.listdir(old):
+                if e not in left:
+                    shutil.move(os.path.join(old, e), os.path.join(new, e))
+            if left:
+                notes.append(("%s/ 里有 %d 项和 data/%s/ 重名，没有搬动，请手动核对后删除旧目录" % (name, len(left), name), True))
+            else:
+                os.rmdir(old)
+                notes.append(("%s/ 已并入 data/%s/" % (name, name), False))
+        except OSError as e:
+            notes.append(("%s/ 搬到 data/ 失败（%s）。请关掉占用这些文件的程序后重启服务，或手动搬到 data/%s/" % (name, e, name), True))
+    return notes
+
+
 def main(argv=None):
     args = parse_args(argv)
     CONFIG.update(host=args.host, port=args.port, token=args.token)
@@ -1177,6 +1206,7 @@ def main(argv=None):
         print("✗ 无法监听 %s:%d（%s）\n  端口可能已被占用，常见原因是已有 LLM Bench Pro 在运行。"
               "\n  请先关闭旧进程，或换一个端口：python run.py %d" % (args.host, args.port, e, args.port + 1))
         sys.exit(1)
+    moved = migrate_legacy_dirs()
     db = store.default_db()
     store.init(db)
     imported = store.import_dir(RESULTS, only_new=True)
@@ -1184,6 +1214,8 @@ def main(argv=None):
     shown = "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host
     print("LLM Bench Pro %s => http://%s:%d%s  (db: %s)" % (APP_VERSION, shown, args.port,
                                                             "/?token=***" if args.token else "", db))
+    for text, attention in moved:
+        print("  %s 目录调整：%s" % ("⚠" if attention else "·", text))
     if args.host not in ("127.0.0.1", "localhost", "::1") and not args.token:
         print("  ⚠ 正在监听 %s 且未设置访问令牌：局域网内任何人都可以发起测试、查看结果。建议加 --token" % args.host)
     if imported["inserted"] or imported["errors"] or stale:

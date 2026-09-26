@@ -1,21 +1,23 @@
-# 运行产物(不入库)
-results/
-results_export/
-works/
+# 运行数据(程序自动创建, 不入库)
 data/
 *.db
 *.db-wal
 *.db-shm
+# 2.9 之前的数据位置(服务启动时会自动搬进 data/)
+results/
+results_export/
+works/
+
+# Python 缓存
 __pycache__/
 *.pyc
 .pytest_cache/
 
-# 本地环境
+# 本地环境与工具目录
 .env
 *.log
-
-# 测试期临时
 .playwright-mcp/
+.zcode/
 
 # 覆盖率产物
 coverage.txt

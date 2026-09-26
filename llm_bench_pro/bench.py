@@ -1074,7 +1074,7 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
     global _REQ_EXTRA, _CANCEL
     _REQ_EXTRA = {"ignore_eos": True} if fixed_output else {}
     _CANCEL = cancel
-    outdir = outdir or os.path.join(ROOT, "results")
+    outdir = outdir or os.path.join(ROOT, "data", "results")
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
     if suite != "custom":
         cfg = copy.deepcopy(SUITES[suite])  # 深拷贝: 下方覆盖项不得污染常驻进程里的全局套件
@@ -1192,7 +1192,7 @@ def main():
     ap.add_argument("--suite", choices=list(SUITES) + ["custom"], default="standard")
     ap.add_argument("--metrics-url", default=None, help="vLLM /metrics 地址 (框架指标抓取)")
     ap.add_argument("--tag", default="", help="运行标签, 如 '1.6.5 vs 1.6.3'")
-    ap.add_argument("--outdir", default=os.path.join(ROOT, "results"), help="结果目录 (默认项目根 results/, 与 UI 一致)")
+    ap.add_argument("--outdir", default=os.path.join(ROOT, "data", "results"), help="结果目录 (默认 data/results/, 页面服务启动时自动导入)")
     ap.add_argument("--custom", default=None, help="自定义套件 JSON 文件 (suite=custom 时)")
     ap.add_argument("--conc-ladder", default=None, help="自定义并发阶梯, 逗号分隔, 如 1,2,4,8")
     ap.add_argument("--matrix-conc", type=int, default=None, help="提示词阶梯x并发的并发路数 (默认 4)")

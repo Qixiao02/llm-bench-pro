@@ -48,7 +48,7 @@ python run.py --host 0.0.0.0 --token 自定义令牌   # 局域网访问, 用 ht
 - 正式测量前按"实际会跑的 (输入长度, 并发) 组合"预热一轮（结果丢弃），避免引擎按 batch shape 的编译/冷启动拖慢首格；场景/矩阵格遇基础设施型失败（如实例卡死）会等服务恢复后**整格重跑**（最多 3 次），每轮失败在结果与报告中全量披露
 - 新建测试在右侧面板里填写，运行日志也在面板里；关掉面板后，侧栏和页头会显示“进行中”，点一下重新打开
 - 运行中的任务可在日志栏点「停止」：不再开始新请求，已完成的结果保留；能力评测停止或中断后可「续跑」，只补做未完成的题
-- 工具条右侧可删除所选运行（代码生成会一并删除作品文件）；删除后 `results/` 中的同名 JSON 不会在重启时被重新导入
+- 工具条右侧可删除所选运行（代码生成会一并删除作品文件）；删除后 `data/results/` 中的同名 JSON 不会在重启时被重新导入
 - 性能测试与其他测试同时访问同一模型端点时，启动前会要求确认（同时运行会污染吞吐与延迟数据）
 - 性能页自动给出数据提示，如并发增加时聚合吞吐下降、投机解码只在单并发生效、请求失败等
 - 暗色为默认主题，侧栏底部可切换亮色；时间按浏览器本地时区显示；运行中的任务在刷新页面后会自动恢复日志跟踪
@@ -74,12 +74,18 @@ llm-bench-pro/
 ├── web/
 │   ├── index.html          # 页面结构与图标
 │   └── static/             # app.css(设计 token/组件) · app.js(逻辑与 ECharts 图表) · vendor/echarts.min.js
-├── tests/                  # 标准库 unittest: 判分/统计/存储/服务/性能引擎/生成评测
+├── tests/                  # 标准库 unittest: 判分/统计/存储/服务/性能引擎/生成评测; js/ 为前端逻辑断言
 ├── banks/                  # 题库版本资产(iq-<日期>-<hash>.json, 多版本共存)
-├── data/llm_bench.db       # 运行结果库(gitignore, 可用 $LLM_BENCH_DB 改路径)
-├── results/                # 旧版/CLI 产出的 JSON 结果(gitignore, 服务启动时自动导入库)
-└── works/                  # 生成作品 HTML 与检测截图(gitignore)
+└── data/                   # 运行数据(gitignore, 程序自动创建)
+    ├── llm_bench.db        # 结果库, 页面上的所有测试都在这里(可用 $LLM_BENCH_DB 改路径)
+    ├── results/            # 命令行跑出的 JSON 结果; 从别的机器拷来的结果也放这里, 服务启动时自动入库
+    ├── works/              # 代码生成的作品 HTML、检测截图、模型原始输出(页面地址 /works/…)
+    ├── replay/             # 上传的真实请求回放文件
+    ├── scenario/           # 上传的自定义任务集与图片包
+    └── export/             # `store export` 默认导出位置
 ```
+
+代码只放在 `llm_bench_pro/`、`web/`、`tests/`，运行产生的一切都在 `data/` 下。2.9 之前 `results/`、`works/` 在项目根，服务启动时会自动搬进 `data/`（重名的不覆盖，会在启动输出里提示）。
 
 ## 生成测试评测口径
 
@@ -98,7 +104,7 @@ llm-bench-pro/
 
 - **采样**：默认按官方推荐（思考 temperature 0.6 / top_p 0.95，不思考 0.7 / 0.8，top_k 20，seed 42）；旧版统一 0.3，接近贪心，小模型写长文件容易陷入无限重复。新建面板可改为旧版口径或自定义
 - **重复输出检测**：流式生成时检测逐字循环（严格周期）和内容高度雷同（8000 字符窗口压缩率连续 3 次低于 0.13；正常作品实测不低于 0.19），命中立即停止且不再续写，作品标注“陷入重复输出”
-- **原始输出留档**：每题逐轮保存模型原始输出、思考长度、结束原因、token 和拼接方式到 `works/<run>/<题>.gen.json`；作品卡片「生成过程」里可查看每一轮原文（重复部分标红），并用大白话列出框架做过的全部处理（去掉说明文字/代码块标记、拼接续写等）。除列出的处理外，保存的作品与模型输出逐字一致
+- **原始输出留档**：每题逐轮保存模型原始输出、思考长度、结束原因、token 和拼接方式到 `data/works/<run>/<题>.gen.json`；作品卡片「生成过程」里可查看每一轮原文（重复部分标红），并用大白话列出框架做过的全部处理（去掉说明文字/代码块标记、拼接续写等）。除列出的处理外，保存的作品与模型输出逐字一致
 
 已有运行可在页面点「重新检查」，或命令行：
 
@@ -123,12 +129,12 @@ python -m llm_bench_pro.geneval --run gen_20260914_xxx --judge-base http://host:
 - 能力评测逐题增量保存(每 20 题提交一次), 性能测试按阶段提交, 代码生成按作品提交
 - 性能列表接口只返回摘要, 页面按需加载单次运行详情
 - 人工打星为单行更新, 生成测试运行中也可打星
-- 服务启动时自动导入 `results/` 中库里还没有的 JSON(旧数据零迁移成本)
+- 服务启动时自动导入 `data/results/` 中库里还没有的 JSON(旧数据零迁移成本)
 
 ```bash
-python -m llm_bench_pro.store import            # 导入 results/*.json (幂等, --force 覆盖内容变化者)
-python -m llm_bench_pro.store check             # 校验库与 results/*.json 往返等价
-python -m llm_bench_pro.store export --out dir  # 导出为 JSON (--kind perf|iq|gen / --run RUN_ID)
+python -m llm_bench_pro.store import            # 导入 data/results/*.json (幂等, --force 覆盖内容变化者)
+python -m llm_bench_pro.store check             # 校验库与 data/results/*.json 往返等价
+python -m llm_bench_pro.store export            # 导出为 JSON 到 data/export/ (--out 目录 / --kind perf|iq|gen / --run RUN_ID)
 python -m llm_bench_pro.store stale             # 手动标记心跳超时的运行为 interrupted
 ```
 
@@ -160,7 +166,7 @@ python -m llm_bench_pro.bench --url http://host:8011 --model NAME \
     --replay-file real.jsonl --replay-conc 8,16 --replay-rates 2,5
 ```
 
-默认输出 `results/<run_id>.json`(拷回本机 `results/` 后服务启动即自动入库); `--sink db` 直接写库, `--sink both` 两者都写, `--db PATH` 指定库。
+默认输出 `data/results/<run_id>.json`(拷回本机 `data/results/` 后服务启动即自动入库); `--sink db` 直接写库, `--sink both` 两者都写, `--db PATH` 指定库。
 默认发送 `ignore_eos` 固定输出长度(每次生成满 max_tokens, 保证不同后端吞吐可比), `--no-fixed-output` 关闭; 端点不支持时自动关闭并在结果中注明。
 
 ## 测试

@@ -719,6 +719,13 @@ class TestGenFramework23(unittest.TestCase):
             for d in dirs.values():
                 shutil.rmtree(d, ignore_errors=True)
 
+    def test_work_path_maps_logical_paths(self):
+        """作品条目记逻辑路径 works/<run>/<文件>(即页面地址), 磁盘上在 data/works/ 下。"""
+        self.assertTrue(gen.WORKS.endswith(os.path.join("data", "works")))
+        want = os.path.join(gen.WORKS, "gen_x", "a.html")
+        self.assertEqual(gen.work_path("works/gen_x/a.html"), want)
+        self.assertEqual(gen.work_path("works\\gen_x\\a.html"), want)
+
 
 if __name__ == "__main__":
     unittest.main()

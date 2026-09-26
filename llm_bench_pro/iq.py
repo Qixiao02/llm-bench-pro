@@ -717,7 +717,7 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
            sampling=None, budgets=None, cancel=None, resume=None):
     """跑能力评测。逐题增量保存; cancel(threading.Event)置位后停止派发新题并以 cancelled 状态收尾;
     resume 传入同版本运行文档时: 请求失败的题会重新作答, 其余已有结果的题跳过。sink 默认写 outdir/<run_id>.json。"""
-    outdir = outdir or os.path.join(ROOT, "results")
+    outdir = outdir or os.path.join(ROOT, "data", "results")
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
     sink = sink or sinks.JsonFileSink(outdir)
     if resume:

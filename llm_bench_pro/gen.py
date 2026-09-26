@@ -31,7 +31,13 @@ GEN_VERSION = "2.3.0"
 STREAM_IDLE_TIMEOUT = 300  # 流式响应两次数据之间的最长等待(秒)
 _STREAM_OPTIONAL = ("stream_options", "continue_final_message", "add_generation_prompt")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
-WORKS = os.path.join(ROOT, "works")
+WORKS = os.path.join(ROOT, "data", "works")  # 作品落盘目录; 条目里记逻辑路径 works/<run>/<文件>(即页面地址 /works/…)
+
+
+def work_path(rel):
+    """作品条目里的逻辑路径 works/<run>/<文件> → 磁盘路径。"""
+    parts = (rel or "").replace("\\", "/").split("/")
+    return os.path.join(WORKS, *parts[1:]) if parts[0] == "works" else os.path.join(ROOT, *parts)
 
 GEN_TASKS = [
     # ---- 普通: 视觉动画 ----
@@ -646,12 +652,12 @@ def plog(msg):
 def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
             framework=None, fw_version=None, thinking=False, sink=None, judge=None, browsers=2, cancel=None,
             sampling=None):
-    """跑生成测试。作品落 works/<run_id>/; 每件作品生成后即做运行检测(+可选视觉评审);
+    """跑生成测试。作品落 data/works/<run_id>/; 每件作品生成后即做运行检测(+可选视觉评审);
     元数据经 sink (默认 outdir/<run_id>.json); 返回落地位置。judge: {base, model, api_key}
     cancel: threading.Event, 置位后不再开始新题, 已完成作品保留, 状态记为 cancelled。
-    sampling: None/"official" | "legacy" | dict, 见 resolve_sampling。每题的原始输出逐轮保存在 works/<run_id>/<题>.gen.json。"""
+    sampling: None/"official" | "legacy" | dict, 见 resolve_sampling。每题的原始输出逐轮保存在 data/works/<run_id>/<题>.gen.json。"""
     sampling_record(sampling)  # 参数有误时在开始前报错
-    outdir = outdir or os.path.join(ROOT, "results")
+    outdir = outdir or os.path.join(ROOT, "data", "results")
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
     if task_ids is not None:
         task_ids = set(normalize_task_ids(task_ids))
@@ -692,7 +698,7 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
                "changes": changes}
         doc.update(trace)
         rel = "works/%s/%s.gen.json" % (run_id, task["id"])
-        path = os.path.join(ROOT, rel)
+        path = work_path(rel)
         try:
             with open(path + ".tmp", "w", encoding="utf-8") as f:
                 json.dump(doc, f, ensure_ascii=False)
@@ -869,7 +875,7 @@ def reevaluate(run_id, judge=None, only=None, db_path=None, browsers=2, log=None
     def one(it):
         if cancel is not None and cancel.is_set():
             return
-        path = os.path.join(ROOT, it["file"])
+        path = work_path(it["file"])
         if not os.path.isfile(path):
             log("  ✗ [%s] 作品文件缺失: %s" % (it["name"], it["file"]))
             return
