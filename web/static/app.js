@@ -145,7 +145,7 @@ function readTheme(){
      surface:v("--surface-1"),surface2:v("--surface-2"),border:v("--border"),borderStrong:v("--border-strong"),
      good:v("--good"),bad:v("--bad"),warn:v("--warn"),primary:v("--primary-fg"),
      goodMark:v("--good-mark"),warnMark:v("--warn-mark"),badMark:v("--bad-mark"),track:v("--chart-track"),
-     font:v("--font-sans"),mono:v("--font-mono")||v("--font-sans")};
+     heatHi:v("--heat-hi"),font:v("--font-sans"),mono:v("--font-mono")||v("--font-sans")};
 }
 function withAlpha(hex,a){const h=String(hex).replace("#","");return h.length===6?"#"+h+Math.round(a*255).toString(16).padStart(2,"0"):hex}
 function applyTheme(t,persist){
@@ -162,7 +162,7 @@ $("themeBtn").onclick=()=>applyTheme(document.documentElement.dataset.theme==="d
    导航 / 抽屉 / 弹窗 / 通用点击
    ============================================================ */
 let VIEW="dash";
-const VIEWS={dash:"viewDash",cmp:"viewCmp",iq:"viewIq",gen:"viewGen"};
+const VIEWS={dash:"viewDash",cmp:"viewCmp",iq:"viewIq",gen:"viewGen",styleguide:"viewSg"};
 function showView(v){
   if(!VIEWS[v])v="dash";
   VIEW=v;
@@ -174,6 +174,7 @@ function showView(v){
   if(v==="cmp")renderCmp();
   if(v==="iq"){loadBanks();loadIqResults();}
   if(v==="gen"){renderTaskChips();loadGenResults();}
+  if(v==="styleguide")renderStyleguide();
   window.scrollTo(0,0);
 }
 function redrawVisible(){
@@ -181,6 +182,7 @@ function redrawVisible(){
   else if(VIEW==="cmp")renderCmp();
   else if(VIEW==="iq")renderIq();
   else if(VIEW==="gen")renderGen();
+  else if(VIEW==="styleguide")renderStyleguide();
 }
 /* 新建测试用右侧抽屉: 同一时间只开一个, 结果页保持可见 */
 const DRAWERS=["launcher","iqLauncher","genLauncher"];
@@ -2614,6 +2616,50 @@ async function epRemove(id){
   manageEndpoints();
 }
 Object.keys(EP_SEL).forEach(page=>{const sel=$(EP_SEL[page]);if(sel)sel.addEventListener("change",()=>onEpSelect(page))});
+
+/* ============================================================
+   样式自检: 令牌色块 / 字号 / 基础组件(地址 #styleguide)
+   ============================================================ */
+function renderStyleguide(){
+  const cs=getComputedStyle(document.documentElement),v=n=>cs.getPropertyValue(n).trim();
+  const sw=(name,label)=>`<div class="sg-sw"><i style="background:var(${name})"></i><span class="sg-sw-name">${esc(label||name)}</span><span class="sg-sw-val">${esc(v(name))}</span></div>`;
+  const group=(title,names)=>`<div class="sg-group"><h3 class="sg-h">${esc(title)}</h3><div class="sg-sws">${names.map(n=>Array.isArray(n)?sw(n[0],n[1]):sw(n)).join("")}</div></div>`;
+  const heat=[0,.2,.4,.6,.8,1].map(t=>`<i style="background:${mix(C.surface,C.heatHi||C.series[4],t)}"></i>`).join("");
+  $("sgBody").innerHTML=`<div class="stack">
+    ${group("中性灰阶",["--n-0","--n-1","--n-2","--n-3","--n-4","--n-5","--n-6","--n-7","--n-8","--n-9"])}
+    ${group("界面语义",[["--bg","背景"],["--surface-1","面板"],["--surface-2","表头 / 悬停"],["--surface-3","按下"],["--border","描边"],["--border-strong","强描边"],["--text-1","正文"],["--text-2","次要文字"],["--text-3","说明文字"],["--text-4","占位 / 禁用"],["--accent","交互色"],["--accent-ink","交互色上的文字"]])}
+    ${group("数据系列（A B C D E F）",["--series-1","--series-2","--series-3","--series-4","--series-5","--series-6"])}
+    ${group("状态",[["--good","好 · 文字"],["--good-soft","好 · 底色"],["--good-mark","好 · 图形"],["--warn","警告 · 文字"],["--warn-soft","警告 · 底色"],["--warn-mark","警告 · 图形"],["--bad","差 · 文字"],["--bad-soft","差 · 底色"],["--bad-mark","差 · 图形"],["--info","进行中 · 文字"],["--info-soft","进行中 · 底色"]])}
+    <div class="sg-group"><h3 class="sg-h">热力表顺序色阶</h3><div class="sg-heat">${heat}</div></div>
+    <div class="sg-group"><h3 class="sg-h">字号阶梯</h3><div class="sg-type">
+      ${[["40","首屏主数字",40,650],["28","关键数字",28,650],["20","页面标题",20,650],["16","面板标题",16,600],["14","正文",14,400],["13","次要文字",13,400],["12","说明 / 表头",12,500]]
+        .map(([k,t,px,w])=>`<div><span class="sg-sw-val">${k}px</span><span style="font-size:${px}px;font-weight:${w};line-height:1.2">${t} 1,774.6</span></div>`).join("")}</div></div>
+    <div class="sg-group"><h3 class="sg-h">按钮</h3><div class="row">
+      <button class="btn btn-primary">${icon("plus")}新建速度测试</button><button class="btn btn-secondary">${icon("file-down")}导出报告</button>
+      <button class="btn btn-ghost">${icon("refresh")}刷新</button><button class="btn btn-danger">${icon("trash")}删除</button>
+      <button class="btn btn-primary is-loading" disabled>${icon("loader")}开始中</button><button class="btn btn-secondary btn-sm">小按钮</button>
+      <button class="btn btn-ghost btn-icon" aria-label="更多">${icon("sliders")}</button></div></div>
+    <div class="sg-group"><h3 class="sg-h">分段切换 / 筛选片 / 选择片</h3><div class="row">
+      <span class="seg" role="group"><button class="seg-btn" aria-pressed="true">${icon("gauge")}图表</button><button class="seg-btn" aria-pressed="false">${icon("table")}表格</button></span>
+      <span class="seg" role="group"><button class="seg-btn" aria-pressed="false">标准</button><button class="seg-btn" aria-pressed="true">紧凑</button></span>
+      <span class="filter-chips"><button class="filter-chip" aria-pressed="true">全部 <b>924</b></button><button class="filter-chip" aria-pressed="false">没答对 <b>177</b></button></span>
+      <label class="chip"><input type="checkbox" checked>${icon("check")}<span>贪吃蛇</span></label><label class="chip-check"><input type="checkbox">看图回答</label></div></div>
+    <div class="sg-group"><h3 class="sg-h">徽标 / 变化 / 测试标签</h3><div class="row">
+      <span class="badge">默认</span><span class="badge is-good">${icon("check")}通过</span><span class="badge is-warn">${icon("alert")}没答完</span><span class="badge is-bad">${icon("x")}失败</span><span class="badge is-info">进行中</span>
+      ${deltaPill(100,112,1,{prefix:"B "})}${deltaPill(100,90,1,{prefix:"B "})}${deltaPill(100,100.4,1,{prefix:"B "})}
+      <span class="run-tag" style="background:var(--series-1)">A</span><span class="run-tag" style="background:var(--series-2)">B</span><span class="run-tag" style="background:var(--series-3)">C</span></div></div>
+    <div class="sg-group"><h3 class="sg-h">提示框</h3>
+      ${alertBox("info","这次测试由旧版评测程序生成，分数口径不同。")}${alertBox("warn","有 17 题没答完（写到长度上限被停下）。")}
+      ${alertBox("bad","后台浏览器没有启动，只检查了代码。",`<button class="btn btn-secondary btn-sm">${icon("scan-check")}重新检查</button>`)}${alertBox("good","全部检查通过。")}</div>
+    <div class="sg-group"><h3 class="sg-h">表单</h3><div class="form-grid" style="max-width:640px">
+      <div class="field"><label for="sgIn">服务地址</label><input class="input" id="sgIn" placeholder="http://127.0.0.1:8000"><span class="help">OpenAI 兼容接口的地址</span></div>
+      <div class="field"><label for="sgSel">测试规模</label><select class="select" id="sgSel"><option>标准：约 12 分钟（推荐）</option><option>完整：约 35 分钟</option></select></div>
+      <div class="field"><span class="label">思考模式</span><label class="check"><input type="checkbox" checked>让模型先思考再回答</label></div></div></div>
+    <div class="sg-group"><h3 class="sg-h">空状态 / 骨架</h3><div class="grid-2">${emptyState("还没有速度测试","点右上角「新建速度测试」，测完的结果会显示在这里",{inline:true})}
+      <div class="kpi"><div class="skeleton" style="height:12px;width:50%"></div><div class="skeleton" style="height:30px;width:70%;margin-top:12px"></div></div></div></div>
+  </div>`;
+  const sel=$("sgSel");if(sel)CSelect.enhance(sel);
+}
 
 /* ============================================================
    启动
