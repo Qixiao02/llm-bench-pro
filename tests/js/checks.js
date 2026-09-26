@@ -161,6 +161,25 @@ T("GEN_SANDBOX: 放行脚本/弹窗, 始终不放行 same-origin", () => {
 T("renderIq 有异常兜底包装(渲染错误不会静默白屏)", () => {
   assert.ok(typeof renderIq === "function" && typeof _renderIq === "function" && renderIq !== _renderIq);
 });
+T("逐题查看: 作答状态与筛选口径(对照只看双方都正常作答的题)", () => {
+  assert.equal(qbState(null), "none");
+  assert.equal(qbState({ok: true}), "ok");
+  assert.equal(qbState({ok: false, err: "timeout"}), "err");
+  assert.equal(qbState({ok: false, trunc: true}), "trunc");
+  assert.equal(qbState({ok: false}), "wrong");
+  const ok = {ok: true}, bad = {ok: false}, cut = {ok: false, trunc: true}, err = {ok: false, err: "x"};
+  assert.ok(qbPass("all", ok) && qbPass("ok", ok) && !qbPass("ok", bad));
+  assert.ok(qbPass("bad", bad) && qbPass("bad", cut) && qbPass("bad", err));   /* 没答对 = 答错 + 没答完 + 请求失败 */
+  assert.ok(qbPass("trunc", cut) && !qbPass("trunc", bad) && qbPass("err", err) && !qbPass("err", bad));
+  assert.ok(qbPass("vs-a", ok, bad) && !qbPass("vs-a", ok, ok) && !qbPass("vs-a", ok, err) && !qbPass("vs-a", ok, null));
+  assert.ok(qbPass("vs-b", bad, ok) && !qbPass("vs-b", err, ok));
+  assert.ok(qbPass("vs-none", bad, cut) && !qbPass("vs-none", bad, err));
+});
+T("逐题查看: MMLU 学科名换成中文, 未知的去下划线", () => {
+  assert.equal(subTopic("high_school_physics"), "高中物理");
+  assert.equal(subTopic("brand_new_subject"), "brand new subject");
+  assert.equal(subTopic(""), "");
+});
 T("maskKey: API Key 掩码显示", () => {
   assert.equal(maskKey("sk-1234567890abcdef"), "sk-1…cdef");
   assert.equal(maskKey(""), "—");

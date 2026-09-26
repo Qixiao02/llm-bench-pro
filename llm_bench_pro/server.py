@@ -229,9 +229,133 @@ def iq_wrong(run_id, sid, limit=300):
         rows.append({"idx": it.get("idx"), "q": (q.get("q") or "")[:600], "choices": q.get("choices"),
                      "answer": q.get("answer"), "checks": q.get("checks"), "pred": it.get("pred"),
                      "trunc": bool(it.get("trunc")), "err": it.get("err"), "finish": it.get("finish"),
-                     "out": it.get("out"), "tail": it.get("tail"), "sub": q.get("sub")})
+                     "out": it.get("out"), "tail": it.get("tail") or (it.get("resp") or "")[-240:], "sub": q.get("sub")})
     return {"ok": True, "run_id": run_id, "sid": sid, "iq_version": doc.get("iq_version"),
             "bank_found": bool(sub_items), "rows": rows}
+
+
+def _valid_iq_id(x):
+    return isinstance(x, str) and x.startswith("iq_") and bool(_RUN_ID_RE.match(x))
+
+
+def _bank_subjects(bank_id):
+    """题集各科目 {sid: subject}; 题集文件缺失或损坏时为空。"""
+    if not re.match(r"^[A-Za-z0-9._-]+$", bank_id or ""):
+        return {}
+    try:
+        return {s["id"]: s for s in bankman.load_bank(bank_id)["subjects"]}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+
+
+def _rec_summary(it):
+    """逐题列表里的作答摘要; 回答原文不在列表里, 由 /api/iq-answer 按需加载。"""
+    r = {"ok": bool(it.get("ok"))}
+    for k in ("pred", "trunc", "err", "finish", "out", "rc", "mt"):
+        if it.get(k) not in (None, "", False):
+            r[k] = it[k]
+    if "err" in r:
+        r["err"] = str(r["err"])[:200]
+    tail = str(it.get("tail") or "")
+    if it.get("resp"):
+        r["has"] = "resp"
+    elif "resp" in it or tail.startswith("（无正文"):
+        r["has"] = "empty"  # 模型没有给出正式回答(只有思考或空内容)
+    elif tail:
+        r["has"] = "tail"  # 旧版: 只有答错的题存了回答最后 240 字
+    return r
+
+
+def iq_items(run_id, cmp_ids=""):
+    """逐题查看: 主运行答过的每道题(题干/选项/标准答案/检查规则) + 主运行与对比运行每题的作答摘要。
+    对比运行的题集不同时不逐题对照(same_bank=False, 不返回记录)。"""
+    if not _valid_iq_id(run_id):
+        return {"ok": False, "error": "非法 run_id"}
+    ids = list(dict.fromkeys(x for x in (cmp_ids or "").split(",") if x and x != run_id))[:5]
+    if not all(_valid_iq_id(x) for x in ids):
+        return {"ok": False, "error": "非法对比 run_id"}
+    doc = store.get_run(run_id)
+    if not doc:
+        return {"ok": False, "error": "run 不存在"}
+    bank_id = doc.get("bank_id") or ""
+    subs = _bank_subjects(bank_id)
+    order = {sid: i for i, sid in enumerate(subs)}
+    mine = [it for it in doc.get("items", []) if isinstance(it.get("idx"), int)]
+    keys = sorted({(it.get("sid"), it["idx"]) for it in mine}, key=lambda k: (order.get(k[0], len(order)), str(k[0]), k[1]))
+    questions = []
+    for sid, idx in keys:
+        sub = subs.get(sid) or {}
+        items = sub.get("items") or []
+        q = items[idx] if 0 <= idx < len(items) else None
+        row = {"sid": sid, "idx": idx}
+        if q:
+            row["q"] = q.get("q") or ""
+            for k in ("choices", "answer", "sub"):
+                if q.get(k) is not None:
+                    row[k] = q[k]
+            if sub.get("type") == "instruct":
+                row["rules"] = [iq.rule_info(ck) for ck in iq.instruct_rules(q)]
+        questions.append(row)
+    summ = {s.get("id"): s for s in doc.get("subjects") or []}
+    subjects = []
+    for sid in dict.fromkeys(k[0] for k in keys):
+        b, s = subs.get(sid) or {}, summ.get(sid) or {}
+        subjects.append({"id": sid, "name": b.get("name") or s.get("name") or sid, "type": b.get("type") or s.get("type")})
+
+    def recs(d):
+        return {"%s|%s" % (it.get("sid"), it["idx"]): _rec_summary(it) for it in d.get("items", []) if isinstance(it.get("idx"), int)}
+    runs = {run_id: {"same_bank": True, "recs": recs({"items": mine})}}
+    for rid in ids:
+        d = store.get_run(rid)
+        if not d:
+            runs[rid] = {"missing": True, "same_bank": False, "recs": {}}
+            continue
+        same = d.get("bank_id") == bank_id
+        runs[rid] = {"same_bank": same, "recs": recs(d) if same else {}}
+    return {"ok": True, "run_id": run_id, "bank_id": bank_id, "bank_found": bool(subs), "iq_version": doc.get("iq_version"),
+            "subjects": subjects, "questions": questions, "runs": runs}
+
+
+def iq_answer(ids, sid, idx):
+    """某道题在各次运行里的回答原文(按需加载) + 发给模型的原文(仅当前评测版本) + 按要求作答题的逐条检查结果。"""
+    ids = list(dict.fromkeys(x for x in (ids or "").split(",") if x))[:6]
+    if not ids or not all(_valid_iq_id(x) for x in ids):
+        return {"ok": False, "error": "非法 run_id"}
+    try:
+        idx = int(idx)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "非法题号"}
+    head = store.get_run(ids[0], items=False)
+    if not head:
+        return {"ok": False, "error": "run 不存在"}
+    sub = _bank_subjects(head.get("bank_id")).get(sid) or {}
+    items = sub.get("items") or []
+    q = items[idx] if 0 <= idx < len(items) else None
+    stype = sub.get("type")
+    prompt = iq.PROMPTS[stype](q)[0] if q and stype in iq.PROMPTS and head.get("iq_version") == iq.IQ_VERSION else None
+    answers = {}
+    for rid in ids:
+        recs = store.get_iq_records(rid, sid, idx)
+        if not recs:
+            continue
+        it = recs[-1]
+        a = {"ok": bool(it.get("ok")), "rc": it.get("rc") or 0}
+        for k in ("finish", "out", "err", "pred", "trunc", "rtail"):
+            if it.get(k) not in (None, "", False):
+                a[k] = it[k]
+        tail = str(it.get("tail") or "")
+        if "resp" in it:
+            a["text"], a["full"] = it["resp"] or "", True  # 新版每题留档; 空串 = 没有正式回答
+        elif tail.startswith("（无正文"):
+            a["text"], a["full"] = "", True
+        elif tail:
+            a["text"], a["full"] = tail, len(tail) < 240  # 旧版只存结尾 240 字, 不足 240 字即为全文
+        elif not it.get("err"):
+            a["kept"] = False  # 旧版没有保存这题的回答
+        if q and stype == "instruct" and a.get("full") and a.get("text"):
+            a["rules"] = iq.instruct_detail(a["text"], q)
+        answers[rid] = a
+    return {"ok": True, "sid": sid, "idx": idx, "type": stype, "prompt": prompt, "answers": answers}
 
 
 def iq_compare(a_id, b_id):
@@ -468,6 +592,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/iq-results": lambda: self._json(store.list_runs("iq", items=q("full") == "1")),
             "/api/gen-results": lambda: self._json(store.list_runs("gen")),
             "/api/iq-wrong": lambda: self._json(iq_wrong(q("id"), q("sid"))),
+            "/api/iq-items": lambda: self._json(iq_items(q("id"), q("cmp"))),
+            "/api/iq-answer": lambda: self._json(iq_answer(q("ids"), q("sid"), q("idx"))),
             "/api/iq-compare": lambda: self._json(iq_compare(q("a"), q("b"))),
             "/api/banks": lambda: self._json(bankman.list_banks()),
             "/api/status": lambda: self._json(JOBS["perf"].snapshot()),

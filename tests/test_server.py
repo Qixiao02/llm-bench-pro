@@ -184,6 +184,65 @@ class TestServer(ServerCase):
         self.assertIsNone(store.get_run(b["run_id"]))
         self.assertEqual(self.request("POST", "/api/run-delete", {"run_id": "../x"})[0], 400)
 
+    def test_iq_items_and_answer(self):
+        import bankman
+        import iq
+        bdir = temp_dir()
+        bank = {"bank_id": "tb-items", "subjects": [
+            {"id": "s", "name": "S", "type": "mcq", "items": [
+                {"q": "q0", "choices": list("abcd"), "answer": "B", "sub": "anatomy"},
+                {"q": "q1", "choices": list("abcd"), "answer": "A"},
+                {"q": "q2", "choices": list("abcd"), "answer": "C"}]},
+            {"id": "ins", "name": "I", "type": "instruct", "items": [{"q": "用不超过50个字介绍量子计算。", "checks": []}]}]}
+        with open(os.path.join(bdir, "tb-items.json"), "w", encoding="utf-8") as f:
+            json.dump(bank, f, ensure_ascii=False)
+        old = bankman.BANKS
+        bankman.BANKS = bdir
+        try:
+            a = iq_doc("iq_20260104_000000_a")
+            a.update(bank_id="tb-items", iq_version=iq.IQ_VERSION)
+            a["items"][0]["resp"] = "B"
+            a["items"].append({"sid": "ins", "idx": 0, "ok": False, "in": 1, "out": 30, "finish": "stop", "resp": "量" * 60})
+            b = iq_doc("iq_20260104_000000_b")
+            b.update(bank_id="tb-items")
+            b["items"][0]["ok"] = False
+            c = iq_doc("iq_20260104_000000_c")  # 题集不同
+            for doc in (a, b, c):
+                sinks.SqliteSink().save(doc)
+            st, _, d = self.request("GET", "/api/iq-items?id=%s&cmp=%s,%s" % (a["run_id"], b["run_id"], c["run_id"]))
+            self.assertEqual(st, 200)
+            self.assertTrue(d["ok"] and d["bank_found"])
+            self.assertEqual([(q["sid"], q["idx"]) for q in d["questions"]], [("s", 0), ("s", 1), ("s", 2), ("ins", 0)])
+            self.assertEqual({k: d["questions"][0][k] for k in ("q", "answer", "sub")}, {"q": "q0", "answer": "B", "sub": "anatomy"})
+            self.assertEqual(d["questions"][3]["rules"], [{"text": "不超过 50 个字"}])
+            self.assertEqual([s["type"] for s in d["subjects"]], ["mcq", "instruct"])
+            ra = d["runs"][a["run_id"]]["recs"]
+            self.assertEqual(ra["s|0"], {"ok": True, "pred": "B", "finish": "stop", "out": 1, "has": "resp"})
+            self.assertEqual((ra["s|1"]["trunc"], ra["s|1"]["has"]), (True, "tail"))
+            self.assertEqual(ra["s|2"]["err"], "timeout")
+            self.assertNotIn("量" * 60, json.dumps(d, ensure_ascii=False))  # 列表不带回答原文
+            self.assertFalse(d["runs"][b["run_id"]]["recs"]["s|0"]["ok"])
+            self.assertEqual(d["runs"][c["run_id"]], {"same_bank": False, "recs": {}})
+
+            st, _, d = self.request("GET", "/api/iq-answer?ids=%s,%s&sid=s&idx=0" % (a["run_id"], b["run_id"]))
+            self.assertEqual((d["answers"][a["run_id"]]["text"], d["answers"][a["run_id"]]["full"]), ("B", True))
+            self.assertIs(d["answers"][b["run_id"]]["kept"], False)  # 旧版没保存答对题的回答
+            self.assertIn("只输出正确选项的字母", d["prompt"])
+            st, _, d = self.request("GET", "/api/iq-answer?ids=%s&sid=ins&idx=0" % a["run_id"])
+            self.assertEqual(d["answers"][a["run_id"]]["rules"], [{"text": "不超过 50 个字", "pass": False, "actual": "实际 60 字"}])
+            st, _, d = self.request("GET", "/api/iq-answer?ids=%s&sid=s&idx=0" % b["run_id"])
+            self.assertIsNone(d["prompt"])  # 其他评测版本: 提示模板可能不同, 不给原文
+            for path in ("/api/iq-items?id=../x", "/api/iq-items?id=%s&cmp=../y" % a["run_id"],
+                         "/api/iq-answer?ids=%s&sid=s&idx=zz" % a["run_id"], "/api/iq-answer?ids=&sid=s&idx=0"):
+                self.assertFalse(self.request("GET", path)[2]["ok"], path)
+            bankman.BANKS = temp_dir()  # 题集文件缺失: 仍返回对错记录
+            st, _, d = self.request("GET", "/api/iq-items?id=%s" % a["run_id"])
+            self.assertFalse(d["bank_found"])
+            self.assertNotIn("q", d["questions"][0])
+            self.assertEqual(len(d["runs"][a["run_id"]]["recs"]), 4)
+        finally:
+            bankman.BANKS = old
+
     def test_resume_rejects_old_version(self):
         doc = iq_doc("iq_20260103_000000_old")
         doc.update(iq_version="1.2.0", status="cancelled")

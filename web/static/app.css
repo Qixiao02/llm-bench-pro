@@ -442,6 +442,81 @@ details.advanced>.form-grid{margin-top:var(--sp-3)}
 .filter-chip:hover{border-color:var(--border-strong);color:var(--text-1)}
 .filter-chip[aria-pressed="true"]{background:var(--primary-soft);border-color:var(--primary-fg);color:var(--text-1)}
 
+/* 逐题查看(能力测试) */
+.qb{display:flex;flex-direction:column;gap:var(--sp-3)}
+.qb-loading{padding:var(--sp-6) 0;text-align:center}
+.qb-bar{display:flex;gap:var(--sp-2);flex-wrap:wrap;align-items:center}
+.qb-bar>.select{flex:0 1 340px;min-width:220px}
+.qb-search{position:relative;flex:1 1 260px;min-width:200px;display:flex;align-items:center}
+.qb-search .icon{position:absolute;left:12px;width:16px;height:16px;color:var(--text-3);pointer-events:none}
+.qb-search .input{padding-left:36px}
+.qb-vs{display:flex;align-items:center;gap:var(--sp-2);flex:0 1 300px;font-size:var(--fs-13);color:var(--text-3);white-space:nowrap}
+.qb-note{font-size:var(--fs-12);color:var(--text-3)}
+.qb-sep{width:1px;height:20px;background:var(--border-strong);align-self:center;margin:0 6px}
+.qb-list{display:flex;flex-direction:column;gap:var(--sp-3)}
+.qb-pager{display:flex;align-items:center;justify-content:center;gap:var(--sp-3);font-size:var(--fs-13);color:var(--text-3)}
+.qb-pager:empty{display:none}
+.qb-link{color:var(--primary-fg);text-decoration:underline dotted;text-underline-offset:3px}
+.qb-link:hover{text-decoration-style:solid}
+.qcard{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--r-md);box-shadow:var(--shadow-card);
+  padding:var(--sp-4);display:flex;flex-direction:column;gap:var(--sp-3);min-width:0}
+.qcard-head{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
+.qcard-where{font-size:var(--fs-13);font-weight:600;color:var(--text-1)}
+.qcard-topic{font-size:var(--fs-12);color:var(--text-2);padding:1px 8px;border-radius:999px;background:var(--surface-2);border:1px solid var(--border)}
+.qcard-verdicts{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
+.qv{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 10px 0 8px;border-radius:999px;font-size:var(--fs-12);font-weight:600;
+  background:var(--surface-2);color:var(--text-2);white-space:nowrap}
+.qv .run-tag{width:18px;height:18px;font-size:11px;border-radius:5px;margin-left:-3px}
+.qv.is-good{background:var(--good-soft);color:var(--good)}
+.qv.is-bad{background:var(--bad-soft);color:var(--bad)}
+.qv.is-warn{background:var(--warn-soft);color:var(--warn)}
+.qcard-q{font-size:var(--fs-14);line-height:1.75;color:var(--text-1);white-space:pre-wrap;word-break:break-word}
+.qcard-q.is-clamp{display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;overflow:hidden}
+.qb-more{align-self:flex-start;margin-top:calc(-1 * var(--sp-2));padding:0;border:0;background:none;color:var(--primary-fg);font-size:var(--fs-13);cursor:pointer}
+.qchoices{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.qchoices li{display:flex;align-items:flex-start;flex-wrap:wrap;gap:6px var(--sp-2);padding:6px 10px;border:1px solid var(--border);border-radius:var(--r-sm);
+  background:var(--surface-2);font-size:var(--fs-14);line-height:1.6}
+.qchoices li.is-answer{background:var(--good-soft);border-color:color-mix(in srgb,var(--good) 40%,transparent)}
+.qchoices li.is-wrong{background:var(--bad-soft);border-color:color-mix(in srgb,var(--bad) 40%,transparent)}
+.qchoice-key{flex:none;display:grid;place-items:center;width:22px;height:22px;margin-top:1px;border-radius:6px;background:var(--surface-1);
+  border:1px solid var(--border);font-size:var(--fs-12);font-weight:700;color:var(--text-2)}
+.qchoice-text{flex:1 1 220px;min-width:0;white-space:pre-wrap;word-break:break-word;color:var(--text-1)}
+.qchoice-marks{flex:none;display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
+.qmark{display:inline-flex;align-items:center;gap:3px;height:22px;padding:0 8px;border-radius:999px;background:var(--surface-1);
+  font-size:var(--fs-12);font-weight:600;white-space:nowrap}
+.qmark.is-good{color:var(--good)}
+.qmark.is-bad{color:var(--bad)}
+.qans{display:flex;flex-wrap:wrap;gap:6px 28px}
+.qans-row{display:flex;align-items:baseline;gap:10px;min-width:0}
+.qans-k{flex:none;font-size:var(--fs-12);color:var(--text-3)}
+.qans-v{font-size:var(--fs-14);font-weight:600;color:var(--text-1);word-break:break-word}
+.qans-v.is-good{color:var(--good)}
+.qans-v.is-bad{color:var(--bad)}
+.qrules{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.qrule{display:inline-flex;align-items:center;min-height:26px;padding:2px 10px;border-radius:999px;background:var(--surface-2);border:1px solid var(--border);
+  font-size:var(--fs-13);color:var(--text-1)}
+.qrule[title]{cursor:help}
+.qcard-err{display:flex;align-items:flex-start;gap:6px;font-size:var(--fs-13);color:var(--bad);word-break:break-all}
+.qcard-err .icon{flex:none;margin-top:3px}
+.qcard-foot{display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap;font-size:var(--fs-12);color:var(--text-3)}
+.qcard-foot .btn{margin-left:-8px}
+.qcard-foot .btn[aria-expanded="true"]{background:var(--primary-soft);color:var(--primary-fg)}
+.qresp{display:flex;flex-direction:column;gap:var(--sp-3);padding-top:var(--sp-3);border-top:1px dashed var(--border)}
+.qresp[hidden]{display:none}
+.qresp-block{display:flex;flex-direction:column;gap:6px;min-width:0}
+.qresp-head{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;font-size:var(--fs-13);font-weight:600;color:var(--text-2)}
+.qresp-head .faint{font-weight:400}
+.qresp-text{margin:0;max-height:360px;overflow:auto;padding:10px 12px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface-2);
+  font:12.5px/1.7 var(--font-mono);color:var(--text-1);white-space:pre-wrap;word-break:break-word}
+.qresp-note{font-size:var(--fs-12);color:var(--text-3)}
+.qresp-more>summary{cursor:pointer;font-size:var(--fs-13);color:var(--primary-fg);user-select:none}
+.qresp-more[open]>summary{margin-bottom:6px}
+.qrule-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;font-size:var(--fs-13)}
+.qrule-list li{display:flex;align-items:center;gap:6px}
+.qrule-list li.is-good{color:var(--good)}
+.qrule-list li.is-bad{color:var(--bad)}
+.qrule-list .faint{color:var(--text-3)}
+
 /* ============================================================
    5. 页面块
    ============================================================ */

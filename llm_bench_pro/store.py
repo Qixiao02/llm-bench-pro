@@ -503,6 +503,14 @@ def get_run(run_id, items=True, db_path=None, conn=None):
             conn.close()
 
 
+def get_iq_records(run_id, sid, idx, db_path=None):
+    """某次能力评测某道题的作答记录(按写入顺序), 走 (run_id, sid, idx) 索引, 不加载整次运行。"""
+    with session(db_path) as conn:
+        rows = conn.execute("SELECT * FROM iq_items WHERE run_id=? AND sid=? AND idx=? ORDER BY seq",
+                            (run_id, sid, idx)).fetchall()
+    return [_rebuild_iq_item(r) for r in rows]
+
+
 def rate_gen_item(run_id, task_id, stars, db_path=None):
     """单行 UPDATE, 与后台增量写入无竞态 (SqliteSink 从不写 stars)。返回是否命中。"""
     with session(db_path) as conn, write_tx(conn):

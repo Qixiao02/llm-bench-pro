@@ -187,7 +187,8 @@ class TestRunLifecycle(unittest.TestCase):
             import json
             doc = load_json(sink.path)
             self.assertEqual(doc["overall"]["truncated"], 3)
-            self.assertTrue(doc["items"][0]["tail"].startswith("（无正文"))
+            self.assertEqual(doc["items"][0]["resp"], "")          # 空串 = 没有正式回答
+            self.assertEqual(doc["items"][0]["rtail"], "x" * 50)   # 答错时留思考结尾
             self.assertEqual(doc["sampling"]["temperature"], 0.6)
             self.assertIn("macro_acc", doc["overall"])
         finally:
@@ -227,6 +228,55 @@ class TestRunLifecycle(unittest.TestCase):
     def test_resume_rejects_other_version(self):
         with self.assertRaises(ValueError):
             iq.run_iq("http://x", "m", bank=_bank(), resume={"iq_version": "1.0.0", "items": [], "subjects": []})
+
+
+class TestAnswerArchive(unittest.TestCase):
+    """逐题查看: 回答留档、思考结尾、按要求作答题逐条规则。"""
+
+    def test_think_part_and_clip(self):
+        self.assertEqual(iq.think_part("<think>abc</think>def"), "abc")
+        self.assertEqual(iq.think_part("abc</think>def"), "abc")          # 模板预置开标签
+        self.assertEqual(iq.think_part("<think>still thinking"), "still thinking")  # 思考被截断
+        self.assertEqual(iq.think_part("plain"), "")
+        self.assertEqual(iq.clip_text("short"), "short")
+        out = iq.clip_text("a" * 3000 + "b" * 4000 + "c" * 4000)
+        self.assertTrue(out.startswith("a" * 2000) and out.endswith("c" * 4000))
+        self.assertIn("中间省略 5000 字", out)
+
+    def test_run_keeps_answers(self):
+        def h(method, path, body):
+            if body["messages"][0]["content"].startswith("one"):
+                return 200, chat_reply("1 + 4 = 5\n#### 5"), None
+            return 200, chat_reply("x" * 8000 + "\n#### 7", reasoning="r" * 2000), None
+        m = MockServer(h)
+        try:
+            import sinks
+            sink = sinks.JsonFileSink(temp_dir())
+            bank = {"bank_id": "tb", "subjects": [{"id": "m", "name": "M", "type": "math",
+                                                   "items": [{"q": "one", "answer": "5"}, {"q": "two", "answer": "8"}]}]}
+            iq.run_iq(m.url + "/v1/chat/completions", "m", bank=bank, sink=sink)
+            items = {it["idx"]: it for it in load_json(sink.path)["items"]}
+            self.assertEqual(items[0]["resp"], "1 + 4 = 5\n#### 5")     # 答对的题也留档
+            self.assertNotIn("rtail", items[0])
+            self.assertFalse(items[1]["ok"])
+            self.assertIn("中间省略", items[1]["resp"])                  # 过长: 截取头尾
+            self.assertTrue(items[1]["resp"].endswith("#### 7"))
+            self.assertEqual(items[1]["rtail"], "r" * iq.RTAIL_KEEP)
+            self.assertNotIn("tail", items[1])
+        finally:
+            m.close()
+
+    def test_instruct_detail_matches_judge(self):
+        texts = ["北京", "好", "3.14", "A\nB\nC", '{"ok": true}', '{"name": "a", "age": 1}', "春天来了，花都开了。",
+                 "因为下雨所以带伞", "1 2 3 4 5", "x" * 70, ""]
+        for item in bankman.ifeval_zh_items():
+            for text in texts:
+                det = iq.instruct_detail(text, item)
+                self.assertEqual(iq.judge_instruct(text, item), all(r["pass"] for r in det), (item["q"], text))
+        det = iq.instruct_detail("量" * 60, {"q": "用不超过50个字介绍量子计算。"})
+        self.assertEqual(det, [{"text": "不超过 50 个字", "pass": False, "actual": "实际 60 字"}])
+        self.assertEqual(iq.rule_info({"t": "regex", "v": "^81$"}), {"text": "格式符合题目要求", "tech": "^81$"})
+        self.assertEqual(iq.rule_text({"t": "json_keys", "v": ["name", "age"]}), "是合法的 JSON，且包含 name、age")
 
 
 class TestReviewRegressions(unittest.TestCase):

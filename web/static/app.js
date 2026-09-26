@@ -1,6 +1,6 @@
 "use strict";
 /* LLM Bench Pro 前端逻辑 (零依赖经典脚本; 图表用本地内置的 ECharts) */
-const UI_VERSION="2.8.0";  /* 与 llm_bench_pro/version.py 保持一致 */
+const UI_VERSION="2.9.0";  /* 与 llm_bench_pro/version.py 保持一致 */
 /* ============================================================
    基础工具
    ============================================================ */
@@ -1691,7 +1691,7 @@ function _renderIq(){
       (v==null?`<td class="na">—</td>`:`<td class="${best!=null&&v.acc===best?"best":""}" ${i?`data-sig-cell="${esc(series[i].r.run_id)}|${esc(sub.id)}"`:""}>${fmt(v.acc,1)}%${series.length===1?`<span class="sub">误差范围 ${fmt(v.ci_lo,1)}–${fmt(v.ci_hi,1)}</span>`:""}</td>`)+
       tokCell(v,vals[0],i===0)).join("")+
       `<td class="${(sub.truncated||sub.errors)?"down":"faint"}">${sub.truncated==null?"—":`${sub.truncated} / ${sub.errors||0}`}</td>
-      <td>${sub.correct<sub.n?`<button class="btn btn-ghost btn-sm" data-iq-wrong="${esc(sub.id)}" data-run="${esc(a.run_id)}">看错题（${sub.n-sub.correct}）</button>`:""}</td></tr>`;
+      <td><button class="btn btn-ghost btn-sm" data-qb-go="${esc(sub.id)}" data-qb-filter="${sub.correct<sub.n?"bad":"all"}">${sub.correct<sub.n?`看错题（${sub.n-sub.correct}）`:"看题目"}</button></td></tr>`;
   });
   const overall=series.map(s=>s.r.overall&&s.r.overall.acc);
   const bestAll=series.length>1?Math.max(...overall.filter(v=>v!=null)):null;
@@ -1704,13 +1704,16 @@ function _renderIq(){
   const summ=summaryCard("结论",concl,`题集 ${esc(a.bank_id||"")} · ${esc(budgetText(a))} · 开始于 ${esc(timeText(a.started_utc))}`);
   el.innerHTML=`<div class="stack">${series.length===1?`<div class="hero-row">${tiles}${summ}</div>${alerts}`:`<div class="score-row">${tiles}</div>${alerts}${summ}`}</div>`+
     sec("iq-subj","各科得分","按 A 的成绩从高到低排列；只看一次测试时，横线表示"+term("ci"),
-      `<div class="grid-2" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr)">${ccard("iqBars","各科正确率",{desc:"越高越好",h:barH})}
+      `<div class="grid-2" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr)">${ccard("iqBars","各科正确率",{desc:"越高越好 · 点柱子可以看这一科的题",h:barH})}
         ${ccard("iqRadar","能力分布",{desc:"越往外越好",h:Math.min(460,Math.max(340,barH))})}</div>`,"各科得分")+
     sec("iq-cost","花了多少 token","同样的正确率，用的 token 越少越省时省钱",ccard("iqTok","平均每题输出多少 token",{desc:"越少越省",h:barH}),"token 花费")+
-    sec("iq-detail","逐科明细",series.length>1?"加粗的是这一科最高分；比 A 的“差异是否可信”显示在每个格子下方":"点「看错题」可以看模型答错的题和它的回答",t,"逐科明细");
+    sec("iq-detail","逐科明细",series.length>1?"加粗的是这一科最高分；比 A 的“差异是否可信”显示在每个格子下方":"点「看错题」直接跳到下面这一科答错的题",t,"逐科明细")+
+    sec("iq-items","逐题查看",series.length>1?"每道题的题目、标准答案和各次测试的答案；可以只看两次结果不一样的题":"每道题的题目、标准答案和模型的答案；点「看回答」可以看模型的原话",
+      `<div class="qb" id="qb"></div>`,"逐题查看");
   disposeDetached();
   drawIqCharts(series);
   buildJump("iqJump",el);
+  qbInit(series);
   /* 差异是否可信: 同一批题逐题比较, 结果异步填入 */
   series.slice(1).forEach(s=>iqCompare(a.run_id,s.r.run_id).then(d=>{
     const card=document.querySelector(`[data-sig-card="${CSS.escape(s.r.run_id)}"]`);
@@ -1719,7 +1722,8 @@ function _renderIq(){
     if(!d.same_bank){card.textContent="题集不同，无法逐题比较";return}
     if(!d.overall.n||d.overall.significant==null){card.textContent="没有双方都正常作答的共同题目，无法比较";return}
     const o=d.overall;
-    card.innerHTML=`<span class="sig ${o.significant?"yes":"no"}">${o.significant?"差异可信":"差异不明显，可能是随机波动"}</span> · 只有 A 答对 ${o.a_only} 题，只有 ${esc(s.tag)} 答对 ${o.b_only} 题`;
+    const go=(f,txt)=>`<a href="javascript:void 0" class="qb-link" data-qb-go="" data-qb-filter="${f}" data-qb-vs="${esc(s.r.run_id)}" title="在「逐题查看」里列出这些题">${txt}</a>`;
+    card.innerHTML=`<span class="sig ${o.significant?"yes":"no"}">${o.significant?"差异可信":"差异不明显，可能是随机波动"}</span> · ${go("vs-a",`只有 A 答对 ${o.a_only} 题`)}，${go("vs-b",`只有 ${esc(s.tag)} 答对 ${o.b_only} 题`)}`;
     card.title=`${TERMS.sig.tech}：共同题目 ${o.n} 道，p = ${fmtP(o.p)}`;
     Object.entries(d.subjects).forEach(([sid,x])=>{
       const cell=document.querySelector(`[data-sig-cell="${CSS.escape(s.r.run_id+"|"+sid)}"]`);
@@ -1743,7 +1747,7 @@ function drawIqCharts(series){
       return{type:"group",children:[{type:"line",shape:{x1:p1[0],y1:p1[1],x2:p2[0],y2:p2[1]},style:st},
         {type:"line",shape:{x1:p1[0],y1:p1[1]-h/2,x2:p1[0],y2:p1[1]+h/2},style:st},{type:"line",shape:{x1:p2[0],y1:p2[1]-h/2,x2:p2[0],y2:p2[1]+h/2},style:st}]};
     }});
-  setChart("iqBars",baseOption({
+  const barsInst=setChart("iqBars",baseOption({
     color:series.map(s=>s.color),legend:legendOf(series.map(s=>s.tag),"rect"),
     grid:{left:4,right:16,top:series.length>1?40:12,bottom:4,containLabel:true},
     xAxis:axisValue({min:0,max:100,fmt:v=>v+"%"}),yAxis:axisCat(names,{inverse:true,labelWidth:150,labelColor:C.text2}),
@@ -1752,6 +1756,7 @@ function drawIqCharts(series){
       return tt(sub.name,series.map(s=>{const x=(s.r.subjects||[]).find(y=>y.id===sub.id);
         return [s.color,s.tag,x?`${fmt(x.acc,1)}%（${x.correct}/${x.n}）`:"—"]}),series.length===1?`误差范围 ${fmt(sub.ci_lo,1)}–${fmt(sub.ci_hi,1)}%`:"")}}),
     series:barSeries}));
+  if(barsInst){barsInst.off("click");barsInst.on("click",p=>{if(p.seriesType==="bar"&&subs[p.dataIndex])qbGo(subs[p.dataIndex].id,"all")})}
   /* 能力分布: 雷达 */
   setChart("iqRadar",baseOption({
     color:series.map(s=>s.color),legend:legendOf(series.map(s=>s.tag)),
@@ -1764,27 +1769,217 @@ function drawIqCharts(series){
   barChart("iqTok",{cats:names,horizontal:true,unit:"token",digits:0,catLabelWidth:150,labels:series.length===1,
     series:series.map(s=>({name:s.tag,color:s.color,data:subs.map(sub=>valOf(s,sub,x=>x.n?x.out_tokens/x.n:null))}))});
 }
-$("iqResult").addEventListener("click",async e=>{
-  const b=e.target.closest("[data-iq-wrong]");if(!b)return;
-  const sid=b.dataset.iqWrong,r=IQ_RUNS[b.dataset.run],sub=(r.subjects||[]).find(x=>x.id===sid);
-  b.disabled=true;
+/* ---- 逐题查看: 题目 / 标准答案 / 各次测试的答案; 回答原文点开时才加载 ---- */
+const MMLU_ZH={abstract_algebra:"抽象代数",anatomy:"解剖学",astronomy:"天文学",business_ethics:"商业伦理",clinical_knowledge:"临床知识",
+  college_biology:"大学生物",college_chemistry:"大学化学",college_computer_science:"大学计算机",college_mathematics:"大学数学",
+  college_medicine:"大学医学",college_physics:"大学物理",computer_security:"计算机安全",conceptual_physics:"概念物理",
+  econometrics:"计量经济学",electrical_engineering:"电气工程",elementary_mathematics:"初等数学",formal_logic:"形式逻辑",
+  global_facts:"全球常识",high_school_biology:"高中生物",high_school_chemistry:"高中化学",high_school_computer_science:"高中计算机",
+  high_school_european_history:"高中欧洲史",high_school_geography:"高中地理",high_school_government_and_politics:"高中政治",
+  high_school_macroeconomics:"高中宏观经济",high_school_mathematics:"高中数学",high_school_microeconomics:"高中微观经济",
+  high_school_physics:"高中物理",high_school_psychology:"高中心理学",high_school_statistics:"高中统计",high_school_us_history:"高中美国史",
+  high_school_world_history:"高中世界史",human_aging:"人类衰老",human_sexuality:"人类性学",international_law:"国际法",
+  jurisprudence:"法理学",logical_fallacies:"逻辑谬误",machine_learning:"机器学习",management:"管理学",marketing:"市场营销",
+  medical_genetics:"医学遗传学",miscellaneous:"综合常识",moral_disputes:"道德争议",moral_scenarios:"道德情境",nutrition:"营养学",
+  philosophy:"哲学",prehistory:"史前史",professional_accounting:"专业会计",professional_law:"专业法律",professional_medicine:"专业医学",
+  professional_psychology:"专业心理学",public_relations:"公共关系",security_studies:"安全研究",sociology:"社会学",
+  us_foreign_policy:"美国外交政策",virology:"病毒学",world_religions:"世界宗教"};
+const subTopic=s=>s?(MMLU_ZH[s]||String(s).replace(/_/g," ")):"";
+const QB_STATE={ok:["答对","good","check"],wrong:["答错","bad","x"],trunc:["没答完","warn","clock"],err:["请求失败","bad","alert"],none:["没做这题","","minus"]};
+const QB_PAGE=20;
+const QB={key:"",main:"",data:null,loading:null,err:"",series:[],subj:"",filter:"all",vs:"",q:"",page:0};
+const qbKey=q=>q.sid+"|"+q.idx;
+function qbState(rec){return !rec?"none":rec.ok?"ok":rec.err?"err":rec.trunc?"trunc":"wrong"}
+/* 筛选: bad=没答对(含没答完、请求失败); vs-* 与对照测试逐题比较, 口径同「差异是否可信」(只看双方都正常作答的题) */
+function qbPass(f,a,x){
+  if(f==="all")return true;
+  if(!a)return false;
+  if(f==="ok")return a.ok;
+  if(f==="bad")return !a.ok;
+  if(f==="trunc")return !a.ok&&!!a.trunc&&!a.err;
+  if(f==="err")return !!a.err;
+  if(!x||a.err||x.err)return false;
+  if(f==="vs-a")return a.ok&&!x.ok;
+  if(f==="vs-b")return !a.ok&&x.ok;
+  if(f==="vs-none")return !a.ok&&!x.ok;
+  return true;
+}
+function qbInit(series){
+  QB.series=series;
+  const main=series[0].r.run_id,cmp=series.slice(1).map(s=>s.r.run_id),key=[main,...cmp].join("|");
+  if(QB.key!==key){
+    if(QB.main!==main)Object.assign(QB,{subj:"",filter:"all",q:""});
+    if(!cmp.includes(QB.vs))QB.vs=cmp[0]||"";
+    if(!cmp.length&&QB.filter.startsWith("vs-"))QB.filter="all";
+    Object.assign(QB,{key,main,data:null,err:"",page:0});
+    const p=QB.loading=getJSON(`/api/iq-items?id=${encodeURIComponent(main)}&cmp=${encodeURIComponent(cmp.join(","))}`)
+      .then(d=>{
+        if(QB.loading!==p)return;
+        if(!d||!d.ok)throw new Error((d&&d.error)||"加载失败");
+        d.questions.forEach(q=>q._hay=[q.q,...(q.choices||[]),q.choices?null:q.answer,q.sub,subTopic(q.sub)].filter(v=>v!=null).join("\n").toLowerCase());
+        d.subjMap=Object.fromEntries(d.subjects.map(s=>[s.id,s]));
+        QB.data=d;
+      })
+      .catch(e=>{if(QB.loading===p)QB.err=/HTTP 404/.test(e.message)?"服务端还是旧版本，重启服务后才能逐题查看":e.message})
+      .finally(()=>{if(QB.loading===p){QB.loading=null;qbRender()}});
+  }
+  qbRender();
+}
+function qbRender(){
+  const box=$("qb");if(!box)return;
+  if(QB.err){box.innerHTML=emptyState("没能加载题目",QB.err,{iconName:"alert",inline:true});return}
+  const d=QB.data;
+  if(!d){box.innerHTML=`<div class="qb-loading faint">正在加载题目…</div>`;return}
+  if(QB.subj&&!d.subjMap[QB.subj])QB.subj="";
+  const recsA=d.runs[QB.main].recs,cmp=QB.series.slice(1);
+  const other=cmp.filter(s=>!(d.runs[s.r.run_id]||{}).same_bank);
+  const subjOpt=s=>{
+    const qs=d.questions.filter(q=>q.sid===s.id),bad=qs.filter(q=>!(recsA[qbKey(q)]||{}).ok).length;
+    return `<option value="${esc(s.id)}" ${s.id===QB.subj?"selected":""}>${esc(shortSub(s.name))}（${qs.length} 题，${bad?`没答对 ${bad}`:"全对"}）</option>`;
+  };
+  box.innerHTML=`${d.bank_found?"":alertBox("warn",`找不到题集文件（banks/${esc(d.bank_id)}.json），只能看到每题的对错和模型的答案，看不到题目内容`)}
+    <div class="qb-bar">
+      <select class="select" id="qbSubj" aria-label="科目"><option value="">全部科目（${d.questions.length} 题）</option>${d.subjects.map(subjOpt).join("")}</select>
+      <label class="qb-search">${icon("search")}<input class="input" id="qbSearch" type="search" placeholder="搜索题目或选项里的文字" value="${esc(QB.q)}"></label>
+      ${cmp.length>1?`<label class="qb-vs"><span>和谁对照</span><select class="select" id="qbVs">${cmp.map(s=>`<option value="${esc(s.r.run_id)}" ${s.r.run_id===QB.vs?"selected":""}>${esc(s.tag)} · ${esc(s.r.model||"")}</option>`).join("")}</select></label>`:""}
+    </div>
+    ${other.length?`<div class="qb-note">${esc(other.map(s=>s.tag).join("、"))} 用的题集和 A 不一样，不能逐题对照</div>`:""}
+    <div class="filter-chips" id="qbChips"></div>
+    <div class="qb-list" id="qbList"></div>
+    <div class="qb-pager" id="qbPager"></div>`;
+  qbRenderList();
+}
+function qbRenderList(){
+  const d=QB.data,list=$("qbList");if(!d||!list)return;
+  const recsA=d.runs[QB.main].recs,vs=d.runs[QB.vs],recsX=vs&&vs.same_bank?vs.recs:null;
+  const needle=QB.q.trim().toLowerCase();
+  const scope=d.questions.filter(q=>(!QB.subj||q.sid===QB.subj)&&(!needle||q._hay.includes(needle)));
+  const pass=(f,q)=>qbPass(f,recsA[qbKey(q)],recsX&&recsX[qbKey(q)]);
+  const vsTag=(QB.series.find(s=>s.r.run_id===QB.vs)||{}).tag||"B";
+  const A=QB.series.length>1?"A ":"";  /* 对照模式下注明指 A 的结果 */
+  const chips=[["all","全部"],["ok",A+"答对"],["bad",A+"没答对"],["trunc","其中没答完"],["err","其中请求失败"]]
+    .concat(recsX?[["vs-a","只有 A 答对"],["vs-b",`只有 ${vsTag} 答对`],["vs-none","都没答对"]]:[]);
+  if(!chips.some(c=>c[0]===QB.filter))QB.filter="all";
+  const cnt={};chips.forEach(([f])=>cnt[f]=scope.filter(q=>pass(f,q)).length);
+  $("qbChips").innerHTML=chips.filter(([f])=>!["trunc","err"].includes(f)||cnt[f]||f===QB.filter)
+    .map(([f,label])=>`${f==="vs-a"?`<span class="qb-sep" aria-hidden="true"></span>`:""}<button type="button" class="filter-chip" data-qb-filter="${f}" aria-pressed="${f===QB.filter}">${esc(label)} <b>${cnt[f]}</b></button>`).join("");
+  const rows=scope.filter(q=>pass(QB.filter,q));
+  const pages=Math.max(1,Math.ceil(rows.length/QB_PAGE));
+  QB.page=Math.min(Math.max(0,QB.page),pages-1);
+  const view=rows.slice(QB.page*QB_PAGE,(QB.page+1)*QB_PAGE);
+  list.innerHTML=view.length?view.map(qbCard).join(""):
+    emptyState(needle?"没有找到相关的题":"这里没有题",needle?"换个关键词试试":"换一个筛选条件看看",{iconName:needle?"search":"inbox",inline:true});
+  /* 实际没被截断的题目去掉「展开全文」 */
+  list.querySelectorAll(".qcard-q.is-clamp").forEach(el=>{
+    if(el.scrollHeight>el.clientHeight+2)return;
+    el.classList.remove("is-clamp");
+    const more=el.nextElementSibling;if(more&&more.hasAttribute("data-qb-more"))more.remove();
+  });
+  $("qbPager").innerHTML=pages>1?`<button type="button" class="btn btn-secondary btn-sm" data-qb-page="${QB.page-1}" ${QB.page?"":"disabled"}>上一页</button>
+    <span>第 ${QB.page+1} / ${pages} 页 · 共 ${rows.length} 题</span>
+    <button type="button" class="btn btn-secondary btn-sm" data-qb-page="${QB.page+1}" ${QB.page<pages-1?"":"disabled"}>下一页</button>`:
+    (rows.length?`<span>共 ${rows.length} 题</span>`:"");
+}
+function qbCard(q){
+  const d=QB.data,sub=d.subjMap[q.sid]||{},key=qbKey(q),multi=QB.series.length>1;
+  const runs=QB.series.map(s=>{const R=d.runs[s.r.run_id]||{};return{s,same:!!R.same_bank,rec:R.same_bank?(R.recs||{})[key]:null}}).filter(r=>r.same);
+  const tagOf=r=>multi?`<span class="run-tag" style="background:${r.s.color}">${esc(r.s.tag)}</span>`:"";
+  const whose=(r,what)=>multi?esc(r.s.tag)+" "+what:"模型"+what;
+  const predOf=r=>r.rec&&r.rec.pred!=null?String(r.rec.pred):null;
+  const verdicts=runs.map(r=>{const [label,tone,ic]=QB_STATE[qbState(r.rec)];
+    return `<span class="qv${tone?" is-"+tone:""}">${tagOf(r)}${icon(ic,"icon-sm")}${label}</span>`}).join("");
+  const long=q.q!=null&&(q.q.length>420||q.q.split("\n").length>7);
+  let body=q.q==null?`<div class="qcard-q faint">（题集文件里找不到这道题）</div>`:
+    `<div class="qcard-q${long?" is-clamp":""}">${esc(q.q)}</div>${long?`<button type="button" class="qb-more" data-qb-more>展开全文</button>`:""}`;
+  const answered=runs.filter(r=>r.rec&&!r.rec.err);
+  if(Array.isArray(q.choices)){
+    const gold=String(q.answer||"").toUpperCase();
+    body+=`<ol class="qchoices">${q.choices.map((c,j)=>{
+      const L="ABCD"[j],isAns=L===gold;
+      const picked=answered.filter(r=>(predOf(r)||"").toUpperCase()===L);
+      const marks=(isAns?`<span class="qmark is-good">${icon("check","icon-sm")}标准答案</span>`:"")+
+        picked.map(r=>`<span class="qmark ${isAns?"is-good":"is-bad"}">${whose(r,"选了")}</span>`).join("");
+      return `<li class="${isAns?"is-answer":picked.length?"is-wrong":""}"><span class="qchoice-key">${L}</span><span class="qchoice-text">${esc(c)}</span>${marks?`<span class="qchoice-marks">${marks}</span>`:""}</li>`;
+    }).join("")}</ol>`;
+    const odd=answered.filter(r=>!/^[A-D]$/i.test(predOf(r)||""));  /* 没按要求只答字母 */
+    if(odd.length)body+=`<div class="qans">${odd.map(r=>`<div class="qans-row"><span class="qans-k">${whose(r,"的答案")}</span><span class="qans-v is-bad">${predOf(r)!=null?esc(predOf(r)):"没看出选了哪个"}</span></div>`).join("")}</div>`;
+  }else if(q.rules||sub.type==="instruct"){
+    body+=`<div class="qrules"><span class="qans-k">要求</span>${(q.rules||[]).map(r=>`<span class="qrule"${r.tech?` title="检查规则：${esc(r.tech)}"`:""}>${esc(r.text)}</span>`).join("")}</div>`;
+  }else{
+    body+=`<div class="qans"><div class="qans-row"><span class="qans-k">标准答案</span><span class="qans-v mono">${esc(q.answer??"—")}</span></div>`+
+      answered.map(r=>`<div class="qans-row"><span class="qans-k">${whose(r,"的答案")}</span><span class="qans-v mono ${r.rec.ok?"is-good":"is-bad"}">${predOf(r)!=null?esc(predOf(r)):"没看出最终答案"}</span></div>`).join("")+`</div>`;
+  }
+  body+=runs.filter(r=>r.rec&&r.rec.err).map(r=>`<div class="qcard-err">${icon("alert","icon-sm")}<span>${multi?esc(r.s.tag)+" ":""}请求失败：${esc(r.rec.err)}</span></div>`).join("");
+  const meta=answered.map(r=>{const x=r.rec,p=[];
+    if(x.out!=null)p.push(`输出 ${fmtInt(x.out)} token`);
+    if(x.rc)p.push(`思考 ${fmtInt(x.rc)} 字`);
+    if(x.finish==="length")p.push("写到长度上限被停下");
+    return p.length?(multi?r.s.tag+"：":"")+p.join(" · "):""}).filter(Boolean).join("　");
+  const hasText=runs.some(r=>r.rec&&r.rec.has),canPrompt=!!d.bank_found&&d.iq_version===SERVER.iq_version;
+  const btn=hasText||canPrompt?`<button type="button" class="btn btn-ghost btn-sm" data-qb-ans="${esc(key)}" aria-expanded="false">${icon("eye")}${hasText?"看回答":"看发给模型的原文"}</button>`:"";
+  return `<article class="qcard"><header class="qcard-head"><span class="qcard-where">${esc(shortSub(sub.name||q.sid))} · 第 ${q.idx+1} 题</span>${q.sub?`<span class="qcard-topic">${esc(subTopic(q.sub))}</span>`:""}<span class="qcard-verdicts">${verdicts}</span></header>
+    ${body}${btn||meta?`<footer class="qcard-foot">${btn}<span>${esc(meta)}</span></footer>`:""}<div class="qresp" hidden></div></article>`;
+}
+async function qbToggleAnswer(btn){
+  const box=btn.closest(".qcard").querySelector(".qresp");
+  const open=box.hidden;box.hidden=!open;btn.setAttribute("aria-expanded",String(open));
+  if(!open||box.dataset.loaded)return;
+  box.innerHTML=`<div class="qresp-note">正在加载…</div>`;
+  const key=btn.dataset.qbAns,i=key.lastIndexOf("|");
+  const runs=QB.series.filter(s=>(QB.data.runs[s.r.run_id]||{}).same_bank);
   try{
-    const d=await getJSON(`/api/iq-wrong?id=${encodeURIComponent(b.dataset.run)}&sid=${encodeURIComponent(sid)}`);
-    if(!d.ok){toast(d.error,"error");return}
-    const status=x=>x.err?`<span class="badge is-bad">请求失败</span>`:x.trunc?`<span class="badge is-warn">没答完</span>`:`<span class="badge">答错</span>`;
-    const rows=d.rows.map(x=>`<tr>
-      <td>${x.idx+1}</td>
-      <td class="text-left" style="min-width:320px;max-width:560px;white-space:normal">${esc(x.q||"（题集文件缺失，无法显示题目）")}
-        ${x.choices?`<span class="sub">${x.choices.map((c,i)=>esc("ABCD"[i]+". "+String(c).slice(0,80))).join("　")}</span>`:""}</td>
-      <td class="text-left">${esc(x.answer!=null?String(x.answer):(x.checks?"按规则检查":"—"))}</td>
-      <td class="text-left">${x.pred!=null?esc(x.pred):'<span class="faint">没识别出答案</span>'}</td>
-      <td class="text-left">${status(x)}${x.out!=null?`<span class="sub">输出 ${x.out} token${x.finish?" · "+esc(x.finish):""}</span>`:""}</td>
-      <td class="text-left mono" style="min-width:240px;max-width:420px;white-space:pre-wrap;font-size:12px">${esc(x.err||x.tail||"")}</td></tr>`).join("");
-    const legacy=verLt(d.iq_version,"1.2.0")?alertBox("info",`这次测试由 ${esc(d.iq_version)} 版评测程序生成，没有记录模型的答案和回答结尾，只能看到题目和请求失败信息。`):"";
-    Modal.open(`${sub?sub.name:sid} · 没答对的 ${d.rows.length} 题`,legacy+(rows?`<div class="table-wrap" style="max-height:none"><table class="table"><thead><tr><th>#</th><th class="text-left">题目</th><th class="text-left">标准答案</th><th class="text-left">模型的答案</th><th class="text-left">情况</th><th class="text-left">模型回答的结尾</th></tr></thead><tbody>${rows}</tbody></table></div>`:emptyState("没有答错的题","",{inline:true})),
-      {badges:`<span class="badge">${esc(iqLabel(r))}</span>`});
-  }catch(err){toast("加载错题失败："+err.message,"error")}
-  finally{b.disabled=false}
+    const d=await getJSON(`/api/iq-answer?ids=${encodeURIComponent(runs.map(s=>s.r.run_id).join(","))}&sid=${encodeURIComponent(key.slice(0,i))}&idx=${encodeURIComponent(key.slice(i+1))}`);
+    if(!d.ok)throw new Error(d.error||"加载失败");
+    box.innerHTML=qbAnswerHtml(d,runs);box.dataset.loaded="1";
+  }catch(e){box.innerHTML=`<div class="qresp-note">加载失败：${esc(e.message)}</div>`}
+}
+function qbAnswerHtml(d,runs){
+  const multi=QB.series.length>1;
+  const kept=runs.filter(s=>{const a=d.answers[s.r.run_id];return a&&a.kept!==false});
+  const prompt=open=>d.prompt?`<details class="qresp-more"${open?" open":""}><summary>发给模型的原文</summary><pre class="qresp-text">${esc(d.prompt)}</pre></details>`:"";
+  /* 旧版测试没保存这题的回答: 一句话说明, 直接展开发给模型的原文 */
+  if(!kept.length)return `<div class="qresp-note">这次测试没有保存这道题的回答（之前的版本只保存答错题回答的最后 240 字，新的测试会保存每道题的完整回答）</div>${prompt(true)}`;
+  return runs.map(s=>{
+    const a=d.answers[s.r.run_id];
+    const head=`<div class="qresp-head">${multi?`<span class="run-tag" style="background:${s.color}">${esc(s.tag)}</span>${esc(s.r.model||"")} 的回答`:"模型的回答"}${a&&a.finish?`<span class="faint">· ${esc(a.finish==="stop"?"正常结束":a.finish==="length"?"写到长度上限被停下":a.finish)}</span>`:""}</div>`;
+    if(!a)return `<div class="qresp-block">${head}<div class="qresp-note">这次测试没有做这道题</div></div>`;
+    let body;
+    if(a.err)body=`<div class="qcard-err">${icon("alert","icon-sm")}<span>请求失败：${esc(a.err)}</span></div>`;
+    else if(a.kept===false)body=`<div class="qresp-note">这次测试没有保存这道题的回答</div>`;
+    else if(!a.text)body=`<div class="qresp-note">没有给出正式回答：${a.finish==="length"?`思考了 ${fmtInt(a.rc)} 字还没想完，就写到了长度上限`:a.rc?`只输出了思考内容（${fmtInt(a.rc)} 字）`:"模型返回了空内容"}</div>`;
+    else body=`<pre class="qresp-text">${a.full?"":"…"}${esc(a.text)}</pre>`+
+      (a.full?"":`<div class="qresp-note">这次测试只保存了回答的最后 240 字；新的测试会保存完整回答</div>`);
+    if(a.rules)body+=`<ul class="qrule-list">${a.rules.map(r=>`<li class="${r.pass?"is-good":"is-bad"}"${r.tech?` title="检查规则：${esc(r.tech)}"`:""}>${icon(r.pass?"check":"x","icon-sm")}${esc(r.text)}${r.actual?`<span class="faint">（${esc(r.actual)}）</span>`:""}</li>`).join("")}</ul>`;
+    if(a.rtail)body+=`<details class="qresp-more"><summary>看思考过程的最后一段（一共思考了 ${fmtInt(a.rc)} 字）</summary><pre class="qresp-text">${a.rtail.length<(a.rc||0)?"…":""}${esc(a.rtail)}</pre></details>`;
+    return `<div class="qresp-block">${head}${body}</div>`;
+  }).join("")+prompt(false);
+}
+function qbGo(sid,filter,vs){
+  if(vs)QB.vs=vs;
+  Object.assign(QB,{subj:sid||"",filter:filter||"all",q:"",page:0});
+  if(QB.data)qbRender();
+  const t=$("iq-items");if(t)t.scrollIntoView({behavior:"smooth",block:"start"});
+}
+let qbTimer=null;
+$("iqResult").addEventListener("click",e=>{
+  const go=e.target.closest("[data-qb-go]");
+  if(go){e.preventDefault();qbGo(go.dataset.qbGo,go.dataset.qbFilter,go.dataset.qbVs);return}
+  const chip=e.target.closest("#qbChips [data-qb-filter]");
+  if(chip){QB.filter=chip.dataset.qbFilter;QB.page=0;qbRenderList();return}
+  const pg=e.target.closest("[data-qb-page]");
+  if(pg){QB.page=+pg.dataset.qbPage;qbRenderList();const t=$("qbChips");if(t)t.scrollIntoView({block:"start"});return}
+  const ans=e.target.closest("[data-qb-ans]");if(ans){qbToggleAnswer(ans);return}
+  const more=e.target.closest("[data-qb-more]");
+  if(more){const on=more.previousElementSibling.classList.toggle("is-clamp");more.textContent=on?"展开全文":"收起";}
+});
+$("iqResult").addEventListener("change",e=>{
+  if(e.target.id==="qbSubj"){QB.subj=e.target.value;QB.page=0;qbRenderList()}
+  else if(e.target.id==="qbVs"){QB.vs=e.target.value;QB.page=0;qbRenderList()}
+});
+$("iqResult").addEventListener("input",e=>{
+  if(e.target.id!=="qbSearch")return;
+  clearTimeout(qbTimer);
+  qbTimer=setTimeout(()=>{QB.q=e.target.value;QB.page=0;qbRenderList()},200);
 });
 
 /* ============================================================

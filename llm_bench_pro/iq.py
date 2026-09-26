@@ -147,6 +147,28 @@ def strip_think(text):
     return text.strip()
 
 
+def think_part(raw):
+    """正文里内嵌的思考内容(<think>…</think>, 或模板预置开标签时 </think> 之前的部分)。"""
+    m = re.search(r"<think>(.*?)(?:</think>|$)", raw or "", re.S)
+    if m:
+        return m.group(1)
+    i = (raw or "").rfind("</think>")
+    return raw[:i] if i >= 0 else ""
+
+
+RESP_KEEP = 6000   # 每题留档的回答最多字数: 超出时保留开头 2000 + 结尾 4000(答案通常在结尾)
+RESP_HEAD = 2000
+RTAIL_KEEP = 1500  # 答错时留档思考内容的最后这么多字
+
+
+def clip_text(text, keep=RESP_KEEP, head=RESP_HEAD):
+    """过长文本保留开头与结尾, 中间注明省略了多少字。"""
+    text = text or ""
+    if len(text) <= keep:
+        return text
+    return text[:head] + "\n…（中间省略 %d 字）…\n" % (len(text) - keep) + text[-(keep - head):]
+
+
 def resolve_sampling(thinking, sampling=None):
     """采样参数(幂等)。official/None: 思考模式 temperature 0.6 / top_p 0.95 / top_k 20(Qwen3 官方推荐, 思考时贪心解码易陷入重复),
     非思考模式贪心; greedy: 一律贪心; dict: 自定义 temperature/top_p/top_k。temperature>0 时固定 seed 便于复现。"""
@@ -178,7 +200,7 @@ def _context_fit(detail, prompt_tokens_guess):
 
 
 def ask(url, model, prompt, max_tokens, thinking, headers, sampling=None):
-    """单题请求。返回 {content, finish, usage, reasoning_chars, max_tokens}。
+    """单题请求。返回 {content, finish, usage, reasoning_chars, reasoning_tail, max_tokens}。
     思考模式 max_tokens 提到 THINK_MAX_TOKENS; 端点报超上下文时按报错中的上下文长度收缩(解析不到才减半), 并按端点缓存。"""
     mt = max(max_tokens, THINK_MAX_TOKENS) if thinking else max_tokens
     guess = len(prompt.encode("utf-8")) // 2 + 64  # 保守估计的输入 token 数(偏大)
@@ -211,7 +233,8 @@ def ask(url, model, prompt, max_tokens, thinking, headers, sampling=None):
         reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
         content = strip_think(raw)
         return {"content": content, "finish": ch.get("finish_reason") or "", "usage": d.get("usage") or {},
-                "reasoning_chars": len(reasoning) + max(0, len(raw) - len(content)), "max_tokens": mt}
+                "reasoning_chars": len(reasoning) + max(0, len(raw) - len(content)), "max_tokens": mt,
+                "reasoning_tail": (reasoning or think_part(raw))[-RTAIL_KEEP:]}
 
 
 # ---------------------------------------------------------------- 提示模板
@@ -481,39 +504,87 @@ def judge_math500(resp, item):
 _IFEVAL_RULES = {x["q"]: x["checks"] for x in bankman.ifeval_zh_items()}
 
 
+def instruct_rules(item):
+    """题目的检查规则: 以代码内置规则为准(题集文件里的是构建时的副本)。"""
+    return _IFEVAL_RULES.get(item.get("q"), item.get("checks", []))
+
+
+def _rule_ok(text, ck):
+    t, v = ck.get("t"), ck.get("v")
+    try:
+        if t == "max_chars":
+            return len(text) <= v
+        if t == "min_chars":
+            return len(text) >= v
+        if t == "max_words":
+            return len(text.split()) <= v
+        if t == "contains":
+            return v in text
+        if t == "not_contains":
+            return v not in text
+        if t == "starts_with":
+            return text.startswith(v)
+        if t == "ends_with":
+            return text.endswith(v)
+        if t == "line_count":
+            return text.count("\n") + 1 == v
+        if t == "regex":
+            return bool(re.search(v, text))
+        if t in ("json_keys", "json_equals"):
+            obj = json.loads(re.sub(r"^```[A-Za-z]*\s*|\s*```$", "", text).strip())
+            if t == "json_keys":
+                return isinstance(obj, dict) and all(k in obj for k in v)
+            return obj == v
+    except Exception:
+        return False
+    return True
+
+
 def judge_instruct(resp, item):
     text = (resp or "").strip()
-    for ck in _IFEVAL_RULES.get(item.get("q"), item.get("checks", [])):
-        t, v = ck.get("t"), ck.get("v")
-        try:
-            if t == "max_chars" and len(text) > v:
-                return False
-            if t == "min_chars" and len(text) < v:
-                return False
-            if t == "max_words" and len(text.split()) > v:
-                return False
-            if t == "contains" and v not in text:
-                return False
-            if t == "not_contains" and v in text:
-                return False
-            if t == "starts_with" and not text.startswith(v):
-                return False
-            if t == "ends_with" and not text.endswith(v):
-                return False
-            if t == "line_count" and text.count("\n") + 1 != v:
-                return False
-            if t == "regex" and not re.search(v, text):
-                return False
-            if t in ("json_keys", "json_equals"):
-                raw = re.sub(r"^```[A-Za-z]*\s*|\s*```$", "", text).strip()
-                obj = json.loads(raw)
-                if t == "json_keys" and not (isinstance(obj, dict) and all(k in obj for k in v)):
-                    return False
-                if t == "json_equals" and obj != v:
-                    return False
-        except Exception:
-            return False
-    return True
+    return all(_rule_ok(text, ck) for ck in instruct_rules(item))
+
+
+def rule_text(ck):
+    """检查规则的大白话说明。"""
+    t, v = ck.get("t"), ck.get("v")
+    plain = {"max_chars": "不超过 %s 个字", "min_chars": "至少 %s 个字", "max_words": "不超过 %s 个英文单词",
+             "contains": "必须包含“%s”", "not_contains": "不能出现“%s”", "starts_with": "以“%s”开头",
+             "ends_with": "以“%s”结尾", "line_count": "正好 %s 行"}
+    if t in plain:
+        return plain[t] % (v,)
+    if t == "regex":
+        return "格式符合题目要求"  # 具体正则见 rule_info()["tech"]
+    if t == "json_keys":
+        return "是合法的 JSON，且包含 %s" % "、".join(map(str, v))
+    if t == "json_equals":
+        return "JSON 内容等于 %s" % json.dumps(v, ensure_ascii=False)
+    return "%s %s" % (t, v)
+
+
+def rule_info(ck):
+    """{text: 大白话, tech: 格式类规则的正则(供悬停查看)}。"""
+    row = {"text": rule_text(ck)}
+    if ck.get("t") == "regex":
+        row["tech"] = ck.get("v")
+    return row
+
+
+def instruct_detail(resp, item):
+    """逐条检查结果 [{text, tech?, pass, actual?}]: 字数/单词数/行数类规则附上实际数量。"""
+    text = (resp or "").strip()
+    out = []
+    for ck in instruct_rules(item):
+        row = dict(rule_info(ck), **{"pass": _rule_ok(text, ck)})
+        t = ck.get("t")
+        if t in ("max_chars", "min_chars"):
+            row["actual"] = "实际 %d 字" % len(text)
+        elif t == "max_words":
+            row["actual"] = "实际 %d 个单词" % len(text.split())
+        elif t == "line_count":
+            row["actual"] = "实际 %d 行" % (text.count("\n") + 1)
+        out.append(row)
+    return out
 
 
 JUDGES = {"mcq": judge_mcq, "math": judge_math, "math500": judge_math500, "instruct": judge_instruct}
@@ -774,8 +845,9 @@ def _run_subjects(url, model, headers, subjects, limit_per_subject, conc, thinki
                 rec["pred"] = str(pred)[:60]
             if r["finish"] == "length" and not rec["ok"]:
                 rec["trunc"] = True  # 达到输出上限且答错: 通常是思考未结束
-            if not rec["ok"]:
-                rec["tail"] = content[-240:] if content else ("（无正文，思考 %d 字）" % r["reasoning_chars"])
+            rec["resp"] = clip_text(content)  # 回答留档(空串 = 没有正式回答), 页面「逐题查看」按需加载
+            if not rec["ok"] and r.get("reasoning_tail"):
+                rec["rtail"] = r["reasoning_tail"]  # 答错时留思考的最后一段, 便于看出卡在哪
             return rec
 
         ex = ThreadPoolExecutor(max_workers=conc)
