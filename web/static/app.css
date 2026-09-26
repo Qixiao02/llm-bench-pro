@@ -193,7 +193,7 @@ a:hover{text-decoration-color:currentColor}
 .sec:first-child{margin-top:0}
 .sec-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap;margin-bottom:var(--sp-4)}
 .sec-title{font-size:var(--fs-16);font-weight:650;line-height:1.35}
-.sec-desc{margin-top:2px;font-size:var(--fs-13);color:var(--text-3);max-width:96ch;line-height:1.55}
+.sec-desc{margin-top:2px;font-size:var(--fs-13);color:var(--text-3);max-width:130ch;line-height:1.55}
 .sec-tools{display:flex;align-items:center;gap:var(--sp-2);flex:none}
 .sec .ccard{background:transparent;border:0;border-radius:0;padding:0;box-shadow:none}
 .sec .grid-2,.sec .grid-3{gap:var(--sp-5) var(--sp-6)}
@@ -760,6 +760,14 @@ details.advanced>.form-grid{margin-top:var(--sp-3)}
 .pv-chart+.pv-table,.pv-chart>*+.dt,.pv-chart>.dt+*{margin-top:var(--sp-4)}
 .bar-vm .seg-btn{height:26px}
 
+/* 速度测试: 出字间隔表 + 区间点图并排; 业务场景 / 回放的分块 */
+.side-row{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:var(--sp-5);align-items:start}
+.scn-list{display:flex;flex-direction:column;gap:var(--sp-5)}
+.scn-block{display:flex;flex-direction:column;gap:var(--sp-3)}
+.sub-h-note{display:block;margin-top:2px;font-size:var(--fs-12);font-weight:400;color:var(--text-3)}
+.notes{margin-top:var(--sp-4)}
+.notes .alert{margin-bottom:0}
+
 /* 样式自检 */
 .sg-group{display:flex;flex-direction:column;gap:10px;padding:var(--sp-4);background:var(--surface-1);border:1px solid var(--border);border-radius:var(--r-lg)}
 .sg-h{font-size:var(--fs-13);font-weight:600;color:var(--text-2)}
@@ -794,7 +802,7 @@ details.advanced>.form-grid{margin-top:var(--sp-3)}
   .bar .bar-export{width:var(--h-sm);padding:0}
 }
 @media (max-width:1100px){
-  .dt-grid{grid-template-columns:minmax(0,1fr)}
+  .dt-grid,.side-row{grid-template-columns:minmax(0,1fr)}
   .detail-layout,.score-row,.hero-row,.tier-cols{grid-template-columns:minmax(0,1fr)}.tier-col{display:contents}
   .ov{grid-template-columns:minmax(0,1fr)}
 }
