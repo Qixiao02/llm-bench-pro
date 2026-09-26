@@ -860,7 +860,7 @@ details.advanced.is-step{margin-top:0;border-top:0;padding-top:0}
   .bar .bar-export{width:var(--h-sm);padding:0}
 }
 @media (max-width:1100px){
-  .dt-grid,.side-row{grid-template-columns:minmax(0,1fr)}
+  .dt-grid,.side-row,.side-row.is-rev{grid-template-columns:minmax(0,1fr)}
   .detail-layout,.score-row,.hero-row,.tier-cols{grid-template-columns:minmax(0,1fr)}.tier-col{display:contents}
   .ov{grid-template-columns:minmax(0,1fr)}
 }

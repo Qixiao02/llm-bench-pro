@@ -1,6 +1,6 @@
 "use strict";
 /* LLM Bench Pro 前端逻辑 (零依赖经典脚本; 图表用本地内置的 ECharts) */
-const UI_VERSION="2.9.0";  /* 与 llm_bench_pro/version.py 保持一致 */
+const UI_VERSION="3.0.0";  /* 与 llm_bench_pro/version.py 保持一致 */
 /* ============================================================
    基础工具
    ============================================================ */
