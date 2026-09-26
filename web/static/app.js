@@ -144,7 +144,7 @@ function readTheme(){
      grid:v("--chart-grid"),axis:v("--chart-axis"),text:v("--text-3"),text2:v("--text-2"),text1:v("--text-1"),text3:v("--text-3"),
      surface:v("--surface-1"),surface2:v("--surface-2"),border:v("--border"),borderStrong:v("--border-strong"),
      good:v("--good"),bad:v("--bad"),warn:v("--warn"),primary:v("--primary-fg"),
-     goodMark:v("--good-mark"),warnMark:v("--warn-mark"),badMark:v("--bad-mark"),
+     goodMark:v("--good-mark"),warnMark:v("--warn-mark"),badMark:v("--bad-mark"),track:v("--chart-track"),
      font:v("--font-sans"),mono:v("--font-mono")||v("--font-sans")};
 }
 function withAlpha(hex,a){const h=String(hex).replace("#","");return h.length===6?"#"+h+Math.round(a*255).toString(16).padStart(2,"0"):hex}
@@ -542,7 +542,7 @@ function baseOption(extra){
     animation:false,  // 与离线报告一致; 交互感由浮层/图例承担
     textStyle:{fontFamily:C.font,fontSize:12,color:C.text2},
     grid:{left:4,right:16,top:36,bottom:4,containLabel:true},
-    tooltip:{trigger:"axis",confine:true,backgroundColor:C.surface,borderColor:C.borderStrong,borderWidth:1,padding:[8,12],
+    tooltip:{trigger:"axis",confine:true,transitionDuration:0,backgroundColor:C.surface,borderColor:C.borderStrong,borderWidth:1,padding:[8,12],
       textStyle:{color:C.text1,fontFamily:C.font,fontSize:12},extraCssText:"border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18)",
       axisPointer:{type:"line",lineStyle:{color:C.axis,width:1}}},
   },extra||{});
@@ -578,6 +578,35 @@ function axisFmtFor(series){
   const mx=Math.max(0,...series.flatMap(s=>s.data.map(v=>Math.abs(Array.isArray(v)?v[1]:v)||0)));
   return mx>=10000?(v=>v===0?"0":(v/1000).toFixed(v%1000?1:0)+"k"):(v=>Math.abs(v)>=1000?Math.round(v).toLocaleString():fmtAxis(v));
 }
+/* 两色按比例混合(得到不透明的中间色), 用于同一色相由浅到深的顺序色 */
+function mix(c1,c2,t){
+  const h=x=>{const m=String(x||"").replace("#","");return m.length===6?[0,2,4].map(i=>parseInt(m.slice(i,i+2),16)):null};
+  const a=h(c1),b=h(c2);if(!a||!b)return c1;
+  return "#"+a.map((v,i)=>Math.round(v*(1-t)+b[i]*t).toString(16).padStart(2,"0")).join("");
+}
+/* 进度条清单: 每行 = 名称 + 带底槽的横条 + 右侧对齐的数值文字; 没有坐标轴, 高度随行数变化, 只有一两行也不空。
+   rows: [{name, values:[每个系列的值], colors?:[每个系列的颜色], right:"右侧文字"}]; series: [{name,color}] */
+function meterChart(id,{rows,series,max,nameWidth=150,tip}){
+  const el=$(id);if(!el)return;
+  const S=series&&series.length?series:[{name:"",color:C.a}],multi=S.length>1,rowH=multi?40:30;
+  el.style.height=Math.max(44,rows.length*rowH+(multi?34:6))+"px";
+  if(!rows.length){chartEmpty(id);return}
+  const mx=max||Math.max(1,...rows.flatMap(r=>r.values.map(v=>v||0)));
+  setChart(id,{animation:false,textStyle:{fontFamily:C.font},
+    legend:multi?legendOf(S.map(x=>x.name),"rect"):{show:false},
+    grid:{left:0,right:0,top:multi?30:2,bottom:2,containLabel:true},
+    xAxis:{type:"value",max:mx,show:false},
+    yAxis:[{type:"category",inverse:true,data:rows.map(r=>r.name),axisLine:{show:false},axisTick:{show:false},
+        axisLabel:{color:C.text1,fontSize:13,width:nameWidth,overflow:"truncate",margin:14}},
+      {type:"category",inverse:true,position:"right",data:rows.map(r=>r.right||""),axisLine:{show:false},axisTick:{show:false},
+        axisLabel:{color:C.text2,fontSize:12,fontWeight:600,margin:14}}],
+    tooltip:Object.assign(baseOption().tooltip,{trigger:"item",formatter:q=>{const r=rows[q.dataIndex];
+      return tip?tip(r,q.seriesIndex):tt(r.name,[[q.color,S[q.seriesIndex].name||"",r.right||String(q.value)]])}}),
+    series:S.map((x,si)=>({name:x.name,type:"bar",yAxisIndex:0,barWidth:multi?9:12,barGap:"70%",
+      showBackground:true,backgroundStyle:{color:C.track,borderRadius:6},
+      itemStyle:{color:x.color,borderRadius:6},
+      data:rows.map(r=>({value:r.values[si],itemStyle:{color:(r.colors&&r.colors[si])||x.color,borderRadius:6}}))}))});
+}
 function chartEmpty(id,text){
   const inst=chartInst(id);if(!inst)return;
   inst.setOption({graphic:{type:"text",left:"center",top:"middle",style:{text:text||"没有数据",fill:C.text3,fontSize:13,fontFamily:C.font}},
@@ -607,7 +636,8 @@ function lineChart(id,{cats,series,unit,digits=1,yName,xName,area=false,tip}){
 function barChart(id,{cats,series,unit,digits=1,yName,horizontal=false,labels=false,tip,height,catLabelWidth}){
   if(!series.some(s=>s.data.some(v=>v!=null))){chartEmpty(id);return}
   const cat=axisCat(cats,{inverse:horizontal,labelWidth:catLabelWidth});
-  const val=axisValue({name:yName||unit,fmt:axisFmtFor(series)});
+  const af=axisFmtFor(series);
+  const val=horizontal?axisValue({fmt:v=>af(v)+(unit==="%"?"%":"")}):axisValue({name:yName||unit,fmt:af});
   const lab=labels?(p=>p.value==null?"":fmt(p.value,digits)):null;
   setChart(id,baseOption({
     color:series.map(s=>s.color),
@@ -961,6 +991,12 @@ const CMP_EXTRA=[
     sub:m=>m.olLast?`实际完成 ${fmt(m.olLast.completed_rps,2)} / 目标 ${m.olLast.rate} 个/秒`:""},
 ];
 /* 两次测试的参照档位是否一致(例如"请求最多时"一个是 64 个、一个是 16 个就不可比) */
+/* 参照档位的大白话, 例如"同时 16 个请求"、"输入 16K" */
+function refText(k,m){
+  try{const r=k.ref(m);if(r==null)return "";
+    return {ttft:`同时 ${r} 个请求`,pmax:`输入 ${r}`,ttftmax:`输入 ${r}`,scnreq:`同时 ${r} 个请求`,rps:`同时 ${r} 个请求`,inf:`${r} 个/秒`}[k.key]||String(r)}
+  catch(e){return ""}
+}
 function sameRef(k,ma,mb){if(!k.ref)return true;try{return k.ref(ma)===k.ref(mb)}catch(e){return false}}
 function safeVal(f,m){try{const v=f(m);return v==null||!isFinite(v)?null:v}catch(e){return null}}
 function safeSub(k,m){try{return k.sub?k.sub(m):""}catch(e){return""}}
@@ -1038,7 +1074,10 @@ function perfKpis(a,b){
     const va=safeVal(k.val,ma),vb=mb?safeVal(k.val,mb):null;
     if(va==null&&vb==null)return "";
     const tip=k.term&&TERMS[k.term]?TERMS[k.term].name+"（"+TERMS[k.term].tech+"）："+TERMS[k.term].desc:"";
-    return kpi(esc(metricLabel(k,ma)),metricVal(k,va),k.unit,{tip,sub:esc(safeSub(k,ma))+(mb?`<br>B：${metricVal(k,vb)} ${esc(k.unit)}`:""),delta:mb?deltaPill(va,vb,k.dir,{prefix:"B "}):""});
+    const same=!mb||sameRef(k,ma,mb);
+    const delta=!mb?"":same?deltaPill(va,vb,k.dir,{prefix:"B "}):`<span class="delta flat" title="A 是${esc(refText(k,ma))}，B 是${esc(refText(k,mb))}">档位不同</span>`;
+    return kpi(esc(metricLabel(k,ma)),metricVal(k,va),k.unit,{tip,delta,
+      sub:esc(safeSub(k,ma))+(mb?`<br>B：${metricVal(k,vb)} ${esc(k.unit)}${same?"":`（B 是${esc(refText(k,mb))}，不可比）`}`:"")});
   }).join("");
 }
 function dataDetails(html,title="查看具体数字"){
@@ -1154,16 +1193,18 @@ function decodeSection(a,b,p){
         fmt(s.tps),fmt(s.best),fmt(s.tpot,2),fmt(s.p50),fmt(s.p95),fmt(s.p99),fmt(s.jit),fmt(s.burst,2)])});
   }
   const tbl=table(["内容",`${term("decode")}（token/秒）`,"最快一次","平均每个 token（毫秒）",`${term("itl")} 一般`,"较慢","最慢",term("jitter","波动")+"（毫秒）",term("burst")],rows);
-  return sec(p+"-decode","单个请求写得多快、稳不稳",`只有 1 个请求时的${term("decode")}和${term("itl")}；${term("burst")}明显大于 1 通常表示开了投机解码`,
-    `<div class="grid-2">${ccard(p+"DecTps",term("decode"),{desc:"每秒写多少 token · 越高越好"})}
-      ${ccard(p+"DecItl",term("itl")+"（毫秒）",{desc:`${term("pct","一般 / 较慢 / 最慢")}三种情况 · 越短越平滑`})}</div>`+dataDetails(tbl),"单个请求");
+  const sp=["zh","en"].map(l=>{const s2=decodeStats(da.cases.find(c=>c.lang===l));return s2?`${l==="zh"?"中文":"英文"} <b>${fmt(s2.tps)}</b>`:""}).filter(Boolean).join("、");
+  return sec(p+"-decode","单个请求写得多快、稳不稳",`只有 1 个请求时每秒能写 ${sp} 个 token；下面是${term("itl")}，越短看起来越流畅。${term("burst")}明显大于 1 通常表示开了投机解码`,
+    ccard(p+"DecItl",term("itl")+"（毫秒）",{desc:`${term("pct","一般 / 较慢 / 最慢")}三种情况，颜色越深越慢 · 越短越好`,h:300})+dataDetails(tbl),"单个请求");
 }
 function drawDecode(a,b,p){
   const runs=runSeries(a,b,r=>phase(r,"decode"));if(!runs.length)return;
   const st=(x,lang)=>decodeStats(x.ph.cases.find(c=>c.lang===lang));
-  barChart(p+"DecTps",{cats:["中文","英文"],unit:"token/秒",labels:true,series:runs.map(x=>({name:x.tag,color:x.color,data:["zh","en"].map(l=>{const s=st(x,l);return s?s.tps:null})}))});
-  const cats=["中文 · 一般","中文 · 较慢","中文 · 最慢","英文 · 一般","英文 · 较慢","英文 · 最慢"];
-  barChart(p+"DecItl",{cats,unit:"毫秒",series:runs.map(x=>({name:x.tag,color:x.color,data:["zh","en"].flatMap(l=>{const s=st(x,l);return s?[s.p50,s.p95,s.p99]:[null,null,null]})}))});
+  const cats=[],v={p50:[],p95:[],p99:[]};
+  [["zh","中文"],["en","英文"]].forEach(([l,ln])=>runs.forEach(x=>{const s2=st(x,l);if(!s2)return;
+    cats.push(runs.length>1?`${ln} · ${x.tag}`:ln);v.p50.push(s2.p50);v.p95.push(s2.p95);v.p99.push(s2.p99)}));
+  barChart(p+"DecItl",{cats,unit:"毫秒",labels:true,series:[{name:"一般",color:mix(C.a,C.surface,.58),data:v.p50},
+    {name:"较慢",color:mix(C.a,C.surface,.28),data:v.p95},{name:"最慢",color:C.a,data:v.p99}]});
 }
 
 /* ---------- 旧版测试的长上下文阶段 ---------- */
@@ -1364,7 +1405,7 @@ function cmpRows(a,b){
   const ma=perfCtx(a),mb=perfCtx(b);
   return [...PERF_METRICS,...CMP_EXTRA].map(k=>{
     const va=safeVal(k.val,ma),vb=safeVal(k.val,mb),same=sameRef(k,ma,mb),d=same?pctChange(va,vb):null;
-    return{k,label:metricLabel(k,ma),va,vb,d,same,refB:same?"":metricLabel(k,mb),gain:d==null?null:d*k.dir};  /* gain>0 表示 B 更好 */
+    return{k,label:metricLabel(k,ma),va,vb,d,same,refB:same?"":refText(k,mb),gain:d==null?null:d*k.dir};  /* gain>0 表示 B 更好 */
   }).filter(x=>x.va!=null||x.vb!=null);
 }
 async function renderCmp(){
@@ -1396,9 +1437,9 @@ async function renderCmp(){
   const kpis=rows.map(x=>{
     const dg=x.k.digits??1,f=v=>v==null?"—":(dg===0?fmtInt(v):fmt(v,dg));
     const tip=x.k.term&&TERMS[x.k.term]?TERMS[x.k.term].name+"（"+TERMS[x.k.term].tech+"）："+TERMS[x.k.term].desc:"";
-    return `<div class="kpi"${tip?` title="${esc(tip)}"`:""}><div class="kpi-head"><span class="kpi-label">${esc(x.label)}</span>${x.same?deltaPill(x.va,x.vb,x.k.dir):`<span class="delta flat" title="B 的对应项是「${esc(x.refB)}」">档位不同</span>`}</div>
+    return `<div class="kpi"${tip?` title="${esc(tip)}"`:""}><div class="kpi-head"><span class="kpi-label">${esc(x.label)}</span>${x.same?deltaPill(x.va,x.vb,x.k.dir):`<span class="delta flat" title="B 是${esc(x.refB)}">档位不同</span>`}</div>
       <div class="kpi-value" style="font-size:22px">${f(x.va)}<span class="faint" style="font-size:14px;font-weight:400"> → </span>${f(x.vb)}<small>${esc(x.k.unit)}</small></div>
-      <div class="kpi-sub">A → B · ${x.k.dir<0?"越低越好":"越高越好"}${x.same?"":` · B 是「${esc(x.refB)}」，不可比`}</div></div>`;
+      <div class="kpi-sub">A → B · ${x.k.dir<0?"越低越好":"越高越好"}${x.same?"":` · B 是${esc(x.refB)}，不可比`}</div></div>`;
   }).join("");
   const diff=table(["指标","方向","A","B","差值","变化"],rows.map(x=>{
     const dg=x.k.digits??1,dd=x.va!=null&&x.vb!=null&&x.same?x.vb-x.va:null;
@@ -2020,10 +2061,13 @@ function renderGen(){
   const shown=verdicts.filter(x=>GEN_FILTER==="all"||(GEN_FILTER==="issues"?x.v.key!=="pass":x.v.key===GEN_FILTER));
   el.innerHTML=`<div class="stack">${alerts}${summaryCard("结论",concl,`${esc(a.model||"")} · ${a.thinking?"思考模式":"不思考"} · ${esc(samplingTextGen(a))} · ${esc(evalMethodText(ev))} · 开始于 ${esc(timeText(a.started_utc))}`)}${kpis}</div>`+
     sec("gen-why","问题出在哪","每件作品只按最主要的一个问题归类；红色是作品/模型的问题，灰色是评测环境的问题",
-      `<div class="grid-2">${ccard("genWhy","作品按主要问题分类",{desc:"单位：件",h:Math.max(220,VERDICTS.filter(([k])=>count(k)).length*34+40)})}
-        ${ccard("genChange","框架对模型输出做了什么",{desc:"除这些处理外，保存的作品和模型写的逐字一致",h:Math.max(220,CHANGE_KINDS.filter(([k])=>ck[k]).length*34+40)})}</div>`,"问题归因")+
-    sec("gen-tier","各难度的表现",`${s.mode==="static"?"只看代码的命中率（没有实际运行）":"实际运行检查的平均通过率"}${b?"，和 B 对比":""}`,
-      `<div class="grid-2">${ccard("genTier",s.mode==="static"?"平均命中率":"平均通过率",{desc:"越高越好"})}${ccard("genTask","每道题的通过率",{desc:"按难度分组，越高越好",h:Math.max(300,items.length*(b?22:16)+60)})}</div>`,"难度")+
+      `<div class="grid-2">
+        <div class="ccard"><div class="ccard-head"><div><h3 class="ccard-title">作品情况</h3><p class="ccard-desc">共 ${items.length} 件，鼠标放上去能看到是哪几件</p></div></div><div class="chart" id="genWhy"></div></div>
+        <div class="ccard"><div class="ccard-head"><div><h3 class="ccard-title">框架有没有改动模型写的代码</h3><p class="ccard-desc">除这些处理外，保存的作品和模型写的逐字一致</p></div></div><div class="chart" id="genChange"></div>
+          ${ck.legacy?`<p class="ccard-note">${ck.legacy===items.length?"这个任务":"其中 "+ck.legacy+" 件"}生成于 2.3 之前，没有保存模型原始输出；之后的新任务会自动保存，可以在作品的「生成过程」里逐字核对。</p>`:""}</div>
+      </div>`,"问题归因")+
+    sec("gen-tier","各难度的表现",`${s.mode==="static"?"只看代码的命中率（没有实际运行，仅供参考）":"实际运行检查的通过率"}，每张卡里按分数从高到低排列${b?"；右侧数字是 A / B":""}`,
+      tierCards(a,b,s.mode),"难度")+
     sec("gen-works","作品",`点「预览」直接玩，「检查详情」看截图和每项检查，「生成过程」看模型的原始输出`,
       `<div class="work-toolbar"><div class="filter-chips">${filters.map(([k,n,c])=>`<button type="button" class="filter-chip" data-gen-filter="${k}" aria-pressed="${k===GEN_FILTER}">${esc(n)} <b>${c}</b></button>`).join("")}</div></div>
       <div class="work-grid">${shown.map(cardHTML).join("")||emptyState("没有符合条件的作品","",{inline:true})}</div>`,"作品");
@@ -2059,35 +2103,51 @@ function genCard(a,b,it,v){
       ${it.error?"":`<span class="stars" role="group" aria-label="人工评分">${[1,2,3,4,5].map(i=>`<button type="button" class="star ${i<=(it.stars||0)?"on":""}" data-rate="${i}" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}" aria-label="${i} 分" aria-pressed="${i===it.stars}">${icon("star")}</button>`).join("")}</span>`}
     </div></div>`;
 }
+function tierInfo(r,t){
+  const its=(r.items||[]).filter(it=>(it.tags||[]).includes(t));
+  return{its,avg:avgOf(its.filter(x=>!x.error).map(x=>x.exec_score)),pass:its.filter(x=>genVerdict(x).key==="pass").length,fail:its.filter(x=>x.error).length};
+}
+function tierCards(a,b,mode){
+  const tiers=TIER_ORDER.filter(t=>[a,b].some(r=>r&&(r.items||[]).some(it=>(it.tags||[]).includes(t))));
+  const cards=tiers.map((t,i)=>{
+    const A=tierInfo(a,t),B=b?tierInfo(b,t):null;
+    const notes=[`${A.its.length} 题`,A.pass?`${A.pass} 题全部通过`:"",A.fail?`${A.fail} 题没生成出来`:""].filter(Boolean).join(" · ");
+    return `<div class="ccard" style="order:${i}"><div class="tier-head"><div><h3 class="ccard-title">${esc(tagName(t))}</h3><p class="ccard-desc">${esc(notes)}</p></div>
+      <div class="tier-score"><div class="tier-num">${A.avg==null?"—":fmt(A.avg,1)}<small>%</small></div>
+        <div class="tier-sub">${B?`B ${B.avg==null?"—":fmt(B.avg,1)+"%"}`:(mode==="static"?"平均命中率":"平均通过率")}</div></div></div>
+      <div class="chart" id="genTier${i}"></div></div>`;
+  });
+  /* 两列各自往下排(左: 第 1、3 张; 右: 第 2、4 张), 卡片高度不被同一行拉齐, 不留空白; 窄屏按原顺序排成一列 */
+  return `<div class="tier-cols"><div class="tier-col">${cards.filter((c,i)=>i%2===0).join("")}</div><div class="tier-col">${cards.filter((c,i)=>i%2===1).join("")}</div></div>`;
+}
 function drawGenCharts(a,b,verdicts,ck){
-  /* 问题分类 */
+  const total=Math.max(1,verdicts.length);
+  /* 作品情况: 按主要问题 */
   const vk=VERDICTS.filter(([k])=>verdicts.some(x=>x.v.key===k));
-  if(vk.length){
-    setChart("genWhy",baseOption({grid:{left:4,right:40,top:8,bottom:4,containLabel:true},
-      xAxis:axisValue({fmt:v=>Math.round(v)===v?String(v):""}),yAxis:axisCat(vk.map(x=>x[1]),{inverse:true,labelColor:C.text2}),
-      tooltip:Object.assign(baseOption().tooltip,{trigger:"item",formatter:p=>{const [k,n,,why]=vk[p.dataIndex];
-        const names=verdicts.filter(x=>x.v.key===k).map(x=>x.it.name);
-        return tt(n,[["",why,p.value+" 件"]],names.slice(0,8).join("、")+(names.length>8?" …":""))}}),
-      series:[{type:"bar",barMaxWidth:20,data:vk.map(([k,,tone])=>({value:verdicts.filter(x=>x.v.key===k).length,itemStyle:{color:tone2color(tone),borderRadius:[0,4,4,0]}})),
-        label:{show:true,position:"right",color:C.text2,fontSize:12,formatter:p=>p.value+" 件"}}]}));
-  }else chartEmpty("genWhy");
-  const kinds=CHANGE_KINDS.filter(([k])=>ck[k]);
-  setChart("genChange",baseOption({grid:{left:4,right:40,top:8,bottom:4,containLabel:true},
-    xAxis:axisValue({fmt:v=>Math.round(v)===v?String(v):""}),yAxis:axisCat(kinds.map(x=>x[1]),{inverse:true,labelColor:C.text2,labelWidth:230}),
-    tooltip:Object.assign(baseOption().tooltip,{trigger:"item",formatter:p=>tt(kinds[p.dataIndex][1],[["","作品",p.value+" 件"]])}),
-    series:[{type:"bar",barMaxWidth:20,data:kinds.map(([k],i)=>({value:ck[k],itemStyle:{color:k==="legacy"?C.axis:C.series[i%C.series.length],borderRadius:[0,4,4,0]}})),
-      label:{show:true,position:"right",color:C.text2,fontSize:12,formatter:p=>p.value+" 件"}}]}));
-  /* 各难度 / 每道题 */
+  const vRows=vk.map(([k,n,tone])=>{const c=verdicts.filter(x=>x.v.key===k).length;
+    return{k,name:n,values:[c],colors:[tone2color(tone)],right:`${c} 件 · ${Math.round(100*c/total)}%`}});
+  meterChart("genWhy",{rows:vRows,max:total,nameWidth:140,tip:r=>{const names=verdicts.filter(x=>x.v.key===r.k).map(x=>x.it.name);
+    return tt(r.name,[[r.colors[0],VERDICT_META[r.k].why,r.right]],names.slice(0,10).join("、")+(names.length>10?" …":""))}});
+  /* 框架处理 */
+  const kc={raw:C.goodMark,trimmed:C.series[0],stitched:C.series[4],rescued:C.warnMark,legacy:C.axis};
+  const cRows=CHANGE_KINDS.filter(([k])=>ck[k]).map(([k,n])=>({name:n,values:[ck[k]],colors:[kc[k]],right:`${ck[k]} 件 · ${Math.round(100*ck[k]/total)}%`}));
+  meterChart("genChange",{rows:cRows,max:total,nameWidth:250});
+  /* 各难度: 每张小卡一张进度条清单, 按分数从高到低 */
   const runs=[{tag:"A",color:C.a,r:a},b?{tag:"B",color:C.b,r:b}:null].filter(Boolean);
-  const tierAvg=(r,t)=>avgOf((r.items||[]).filter(x=>!x.error&&(x.tags||[]).includes(t)).map(x=>x.exec_score));
-  const tiers=TIER_ORDER.filter(t=>runs.some(x=>(x.r.items||[]).some(it=>!it.error&&(it.tags||[]).includes(t))));
-  barChart("genTier",{cats:tiers.map(tagName),unit:"%",labels:true,series:runs.map(x=>({name:x.tag,color:x.color,data:tiers.map(t=>tierAvg(x.r,t))}))});
-  const order=TASK_CATALOG.map(t=>t.id);
-  const ids=[...new Set(runs.flatMap(x=>(x.r.items||[]).map(it=>it.id)))].sort((p,q)=>order.indexOf(p)-order.indexOf(q));
-  const nameOf=id=>{const t=TASK_CATALOG.find(x=>x.id===id);return t?`${tagName(t.tier)} · ${t.name}`:id};
-  barChart("genTask",{cats:ids.map(nameOf),horizontal:true,unit:"%",digits:0,catLabelWidth:170,
-    series:runs.map(x=>({name:x.tag,color:x.color,data:ids.map(id=>{const it=(x.r.items||[]).find(z=>z.id===id);return it&&!it.error?it.exec_score:null})})),
-    tip:{sub:(i,ps)=>runs.map(x=>{const it=(x.r.items||[]).find(z=>z.id===ids[i]);return it?`${x.tag}：${(VERDICT_META[genVerdict(it).key]||{}).name||""}`:""}).filter(Boolean).join(" · ")}});
+  const tiers=TIER_ORDER.filter(t=>runs.some(x=>(x.r.items||[]).some(it=>(it.tags||[]).includes(t))));
+  const scoreOf=(r,id)=>{const it=(r.items||[]).find(z=>z.id===id);return !it?undefined:(it.error?null:it.exec_score)};
+  const pct=v=>v===undefined?"—":v==null?"没生成出来":Math.round(v)+"%";
+  tiers.forEach((t,i)=>{
+    const ids=[...new Set(runs.flatMap(x=>(x.r.items||[]).filter(it=>(it.tags||[]).includes(t)).map(it=>it.id)))];
+    ids.sort((p,q)=>(scoreOf(a,q)??-1)-(scoreOf(a,p)??-1));
+    const rows=ids.map(id=>{const cat=TASK_CATALOG.find(z=>z.id===id);
+      const vals=runs.map(x=>scoreOf(x.r,id));
+      return{id,name:cat?cat.name:id,values:vals.map(v=>v==null?null:v),right:runs.length>1?vals.map(pct).join(" / "):pct(vals[0])}});
+    meterChart("genTier"+i,{rows,max:100,series:runs.map(x=>({name:x.tag,color:x.color})),nameWidth:130,
+      tip:r=>{const lines=runs.map(x=>{const it=(x.r.items||[]).find(z=>z.id===r.id);
+        return [x.color,x.tag,it?(it.error?"没生成出来":`${fmt(it.exec_score,0)}%（${it.pass}/${it.total} 项）`):"没有这道题"]});
+        const it=(a.items||[]).find(z=>z.id===r.id);return tt(r.name,lines,it?(VERDICT_META[genVerdict(it).key]||{}).name:"")}});
+  });
 }
 $("genResult").addEventListener("click",e=>{
   const f=e.target.closest("[data-gen-filter]");
