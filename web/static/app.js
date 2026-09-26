@@ -126,12 +126,20 @@ const TERMS={
 /* 页面上的名词: 大白话 + 悬停显示专业说法 */
 function term(key,label){
   const t=TERMS[key];if(!t)return esc(label||key);
-  return `<span class="term" title="${esc(t.tech+"：" +t.desc)}">${esc(label||t.name)}</span>`;
+  return `<span class="term" data-term="${esc(key)}" title="${esc(t.tech+"：" +t.desc+"（点击查看名词解释）")}">${esc(label||t.name)}</span>`;
 }
-function showGlossary(){
-  Modal.open("名词解释",`<p class="muted" style="margin-bottom:12px">页面上尽量用大白话；把鼠标放在带虚线下划线的词上，也能看到这里的解释。</p>
-    <div class="glossary">${Object.values(TERMS).map(t=>`<div class="glossary-item"><div><div class="glossary-name">${esc(t.name)}</div>
-      <div class="glossary-tech">${esc(t.tech)}</div></div><div class="glossary-desc">${esc(t.desc)}</div></div>`).join("")}</div>`,{wide:true});
+/* 名词解释: 左边词、右边解释; 顶部搜索; 从页面上的词点进来时定位并高亮 */
+function showGlossary(focus){
+  Modal.open("名词解释",`<div class="gl-top"><label class="qb-search">${icon("search")}<input class="input" id="glQ" type="search" placeholder="搜索名词、专业说法或解释"></label>
+      <span class="faint">页面上带虚线下划线的词，点一下就能跳到这里</span></div>
+    <div class="glossary" id="glList">${Object.entries(TERMS).map(([k,t])=>`<div class="glossary-item" id="gl-${esc(k)}" data-gl="${esc((t.name+" "+t.tech+" "+t.desc).toLowerCase())}"><div><div class="glossary-name">${esc(t.name)}</div>
+      <div class="glossary-tech">${esc(t.tech)}</div></div><div class="glossary-desc">${esc(t.desc)}</div></div>`).join("")}</div>
+    <div class="gl-empty" id="glEmpty" hidden>${emptyState("没有找到这个词","换个说法试试",{iconName:"search",inline:true})}</div>`,{wide:true});
+  const q=$("glQ");
+  q.addEventListener("input",()=>{const v=q.value.trim().toLowerCase();let n=0;
+    document.querySelectorAll("#glList .glossary-item").forEach(x=>{const on=!v||x.dataset.gl.includes(v);x.hidden=!on;n+=on});$("glEmpty").hidden=!!n});
+  if(focus&&TERMS[focus]){const it=$("gl-"+focus);if(it){it.classList.add("is-hit");setTimeout(()=>it.scrollIntoView({block:"center"}),30)}}
+  else setTimeout(()=>q.focus(),30);
 }
 
 /* ============================================================
@@ -201,13 +209,14 @@ function redrawVisible(){
   else if(VIEW==="styleguide")renderStyleguide();
 }
 /* 新建测试用右侧抽屉: 同一时间只开一个, 结果页保持可见 */
-const DRAWERS=["launcher","iqLauncher","genLauncher"];
+const DRAWERS=["launcher","iqLauncher","genLauncher","epDrawer"];
 function closeDrawers(except){
   DRAWERS.forEach(id=>{if(id!==except&&$(id)&&!$(id).hidden)toggleLauncher(id,false)});
 }
 function toggleLauncher(id,force){
   const el=$(id);if(!el)return;
   const open=force==null?el.hidden:force;
+  if(open){try{({launcher:launcherSummary,iqLauncher:iqLauncherSummary,genLauncher:genLauncherSummary}[id]||(()=>{}))()}catch(e){}}
   if(open)closeDrawers(id);
   el.hidden=!open;
   $("drawerBackdrop").hidden=!DRAWERS.some(d=>$(d)&&!$(d).hidden);
@@ -223,6 +232,8 @@ function setRunning(job,on){
 }
 function closeMenus(except){document.querySelectorAll("details.dropdown[open]").forEach(d=>{if(d!==except)d.open=false})}
 document.addEventListener("click",e=>{
+  const tm=e.target.closest(".term[data-term]");
+  if(tm&&!e.target.closest("th,.cselect-panel,select")){e.preventDefault();showGlossary(tm.dataset.term);return}
   const nav=e.target.closest(".nav-item");if(nav&&nav.dataset.view){showView(nav.dataset.view);return}
   if(e.target.closest("[data-density-toggle]")){applyDensity(document.documentElement.dataset.density==="compact"?"normal":"compact",true);closeMenus();return}
   if(e.target.closest("[data-theme-toggle]")){toggleTheme();closeMenus();return}
@@ -481,7 +492,7 @@ const CSelect=(()=>{
    ============================================================ */
 function LogBox(id,job){
   const el=$(id);let t0=0,timer=null;
-  el.innerHTML=`<div class="runlog-head"><span class="runlog-dot"></span><span class="runlog-title"></span><span class="runlog-time"></span>
+  el.innerHTML=`<div class="runlog-bar" hidden><i></i></div><div class="runlog-head"><span class="runlog-dot"></span><span class="runlog-title"></span><span class="runlog-time"></span>
     <button class="btn btn-ghost btn-sm runlog-stop" type="button" hidden>${icon("stop")}停止</button>
     <button class="btn btn-ghost btn-sm runlog-copy" type="button">${icon("copy")}复制日志</button></div><pre class="runlog-body"></pre>`;
   const title=el.querySelector(".runlog-title"),time=el.querySelector(".runlog-time"),body=el.querySelector(".runlog-body");
@@ -501,9 +512,11 @@ function LogBox(id,job){
   };
   const tick=()=>{const s=Math.max(0,Math.round((Date.now()-t0)/1000));time.textContent=(s>=60?Math.floor(s/60)+" 分 ":"")+(s%60)+" 秒"};
   return{
-    start(text){el.hidden=false;el.className="runlog is-running";title.textContent=text;body.textContent="";stopping=false;
+    start(text){el.hidden=false;el.className="runlog is-running";title.textContent=text;body.textContent="";stopping=false;el.querySelector(".runlog-bar").hidden=true;
       stop.hidden=!job;stop.disabled=false;t0=Date.now();clearInterval(timer);timer=setInterval(tick,1000);tick();if(job)setRunning(job,true)},
-    lines(arr){const atBottom=body.scrollHeight-body.scrollTop-body.clientHeight<32;body.textContent=arr.join("\n");if(atBottom)body.scrollTop=body.scrollHeight},
+    lines(arr){const atBottom=body.scrollHeight-body.scrollTop-body.clientHeight<32;body.textContent=arr.join("\n");if(atBottom)body.scrollTop=body.scrollHeight;
+      const m=[...arr].reverse().map(x=>/进度\s*(\d+)\s*\/\s*(\d+)/.exec(x)).find(Boolean),bar=el.querySelector(".runlog-bar");
+      if(m&&+m[2]>0){bar.hidden=false;bar.firstChild.style.width=Math.min(100,100*m[1]/m[2]).toFixed(1)+"%";bar.title=`已完成 ${m[1]} / ${m[2]}`}},
     state(s){if(s.cancelling){stopping=true;stop.disabled=true;title.textContent="正在停止…"}},
     get stopping(){return stopping},
     finish(ok,text){clearInterval(timer);tick();stop.hidden=true;el.className="runlog "+(ok?"is-ok":"is-fail");title.textContent=text;if(job)setRunning(job,false)}
@@ -1290,6 +1303,28 @@ $("fReplayFile").addEventListener("change",async e=>{
   }catch(err){msg("probeOut","error","读取文件失败："+err.message)}
 });
 
+/* ---------- 新建面板底部的「这次要测什么」 ---------- */
+function optText(id){const s=$(id);const o=s&&s.options[s.selectedIndex];return o?o.textContent:""}
+function launcherSummary(){
+  const box=$("launcherSum");if(!box)return;
+  const scn=scnSelected().map(k=>SCN_LABEL[k]||k),rp=$("fReplaySel").value;
+  box.innerHTML=`${icon("list-checks","icon-sm")}<span>这次将测：<b>${esc(optText("fSuite"))}</b>${scn.length?` · 模拟业务 ${scn.length} 类（${esc(scn.join("、"))}）`:""}${rp?" · 回放真实请求":""}${$("fFixed").checked?"":" · 输出长度不固定"}</span>`;
+}
+function iqLauncherSummary(){
+  const box=$("iqLauncherSum");if(!box)return;
+  const b=IQ_BANKS.find(x=>x.bank_id===$("iqBank").value),per=parseInt($("iqTier").value)||0;
+  const n=b?(b.subjects||[]).reduce((t,s)=>t+(per?Math.min(per,s.n):s.n),0):null;
+  box.innerHTML=`${icon("list-checks","icon-sm")}<span>这次将考：${n!=null?`<b>${fmtInt(n)}</b> 题（${b.subjects.length} 个科目）`:"先选择题集"} · ${esc(optText("iqTier").split("，")[0])} · ${$("iqThink").checked?"思考模式":"不思考"} · 同时答 ${esc($("iqConc").value||"8")} 题</span>`;
+}
+function genLauncherSummary(){
+  const box=$("genLauncherSum");if(!box)return;
+  const n=selectedTasks().length,judge=$("genJudgeBase").value.trim()&&$("genJudgeModel").value.trim();
+  box.innerHTML=`${icon("list-checks","icon-sm")}<span>这次将写：<b>${n}</b> 道题 · 同时写 ${esc($("genConc").value||"4")} 题 · ${$("genThink").checked?"思考模式":"不思考"}${judge?" · AI 看图打分":""}</span>`;
+}
+[["launcher",launcherSummary],["iqLauncher",iqLauncherSummary],["genLauncher",genLauncherSummary]].forEach(([id,f])=>{
+  const el=$(id);if(!el)return;el.addEventListener("input",f);el.addEventListener("change",f);
+});
+
 /* ---------- 导出离线报告 ---------- */
 function exportReport(view){
   const idA=view==="cmp"?$("cmpA").value:$("runA").value;
@@ -2060,6 +2095,7 @@ function iqLabel(r){
   return [r.model||"?",runFw(r),r.thinking?"思考":"不思考",acc,r.tag||"",shortTime(r.started_utc)].filter(Boolean).join(" · ");
 }
 async function loadIqResults(focusNew){
+  if(!IQ_LOADED)$("iqResult").innerHTML=skeletonPage();
   try{
     const list=await getJSON("/api/iq-results");
     Object.keys(IQ_CMP_CACHE).forEach(k=>delete IQ_CMP_CACHE[k]);
@@ -2690,6 +2726,7 @@ function watchGen(title,keepRun){
   }});
 }
 async function loadGenResults(focusNew,keepRun){
+  if(!GEN_LOADED)$("genResult").innerHTML=skeletonPage();
   try{
     const list=await getJSON("/api/gen-results");
     const prev=new Set(Object.keys(GEN_RUNS));
@@ -3259,20 +3296,16 @@ function manageEndpoints(){
   let editing=EP_EDIT?EPS.find(x=>x.id===EP_EDIT):null;
   if(EP_EDIT&&!editing)EP_EDIT=null;
   const val=v=>esc(editing?(v||""):"");
-  const cards=EPS.map(e=>{
-    const on=editing&&editing.id===e.id;
-    return `<article class="ep-card${on?" is-on":""}">
-      <div class="ep-card-main"><div class="ep-name">${esc(e.name)}</div>
-        <div class="ep-sub" title="${esc(e.url)}"><span class="ep-model">${esc(e.model||"—")}</span><span class="ep-dot">·</span>
-          <span class="ep-host">${esc(epHost(e.url))}</span><span class="ep-dot">·</span><span class="ep-keymask">${esc(maskKey(e.api_key))}</span></div></div>
-      <div class="ep-card-actions">
-        <button type="button" class="btn btn-secondary btn-sm" data-ep-use="${esc(e.id)}" title="填入速度、能力、代码生成三个新建面板">填入</button>
+  const spec={id:"ep-t",title:`已保存的模型 <span class="dt-sub">${EPS.length} 个</span>`,search:EPS.length>6,rowKey:e=>e.id,
+    columns:[{key:"name",label:"名称 · 模型 · 地址",type:"html",wrap:true,get:e=>`<b>${esc(e.name)}</b><span class="sub">${esc(e.model||"—")} · ${esc(epHost(e.url))}${e.last_used_utc?" · 最近使用 "+esc(shortTime(e.last_used_utc)):""}</span>`,
+        text:(v,e)=>`${e.name} ${e.model||""} ${e.url||""}`,sortValue:e=>e.name},
+      {key:"key",label:"Key",type:"text",get:e=>maskKey(e.api_key)},
+      {key:"act",label:"",type:"html",noSort:true,get:e=>`<span class="dt-actions"><button type="button" class="btn btn-secondary btn-sm" data-ep-use="${esc(e.id)}" title="填入速度、能力、代码生成三个新建面板">填入</button>
         <button type="button" class="btn btn-ghost btn-icon btn-sm" data-ep-edit="${esc(e.id)}" title="编辑" aria-label="编辑">${icon("sliders")}</button>
-        <button type="button" class="btn btn-ghost btn-icon btn-sm ep-del" data-ep-del="${esc(e.id)}" title="删除" aria-label="删除">${icon("trash")}</button>
-      </div></article>`;
-  }).join("");
+        <button type="button" class="btn btn-ghost btn-icon btn-sm ep-del" data-ep-del="${esc(e.id)}" title="删除" aria-label="删除">${icon("trash")}</button></span>`}],
+    rows:EPS,empty:"还没有保存的模型，在下面添加"};
   const form=`<form class="ep-form" autocomplete="off" onsubmit="epSave();return false">
-      <div class="eyebrow">${editing?"正在编辑":"新增"}</div>
+      <div class="step-h"><span class="step-n">${editing?icon("sliders","icon-sm"):icon("plus","icon-sm")}</span>${editing?"编辑「"+esc(editing.name)+"」":"添加一个模型"}</div>
       <div class="ep-fields">
         <div class="field span-2"><label for="epName">名称</label><input class="input" id="epName" placeholder="留空则用「模型 · 地址」" value="${editing?esc(editing.name):""}"></div>
         <div class="field span-2"><label for="epUrl">服务地址</label><input class="input" id="epUrl" placeholder="http://127.0.0.1:8000" value="${val(editing&&editing.url)}"></div>
@@ -3285,16 +3318,14 @@ function manageEndpoints(){
         ${editing?'<button type="button" class="btn btn-ghost btn-sm" data-ep-cancel>取消</button>':""}
         <button type="submit" class="btn btn-primary btn-sm">${editing?"保存":"添加"}</button></div>
     </form>`;
-  Modal.open("模型管理",`<div class="ep-shell">
-      <div class="ep-list-head">已保存的模型 <span class="ep-count">${EPS.length} 个</span></div>
-      <div class="ep-list">${cards||'<p class="ep-empty">还没有保存的模型</p>'}</div>
-      ${form}
-      <p class="ep-note">保存在本机数据库里。点「填入」会同时填到速度、能力、代码生成三个新建面板。</p></div>`,{panel:true});
+  $("epBody").innerHTML=`<div class="ep-shell">${dataTable(spec)}${form}<p class="ep-note">保存在本机数据库里，API Key 默认遮住。</p></div>`;
+  if($("epDrawer").hidden)toggleLauncher("epDrawer",true);
+  if(editing)setTimeout(()=>{const n=$("epUrl");if(n)n.focus()},60);
 }
 async function epApply(id){
   const ep=EPS.find(x=>x.id===id);if(!ep)return;
   Object.keys(EP_FIELDS).forEach(page=>epFill(page,ep));
-  Modal.close();
+  toggleLauncher("epDrawer",false);
   postJSON("/api/endpoint-use",{id}).catch(()=>{});
   toast(`已填入「${ep.name}」到三个新建面板`,"success");
 }

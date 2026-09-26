@@ -250,6 +250,7 @@
   </div>
   <div class="drawer-body">
     <div class="runlog" id="runLog" hidden></div>
+    <div class="step-h"><span class="step-n">1</span>服务与模型</div>
     <div class="form-grid">
       <div class="field span-2"><label for="fEpSel">从已保存的模型填入</label>
         <select class="select" id="fEpSel" aria-label="选择已保存的模型"><option value="">选择后自动填入 地址 / Key / 模型</option></select>
@@ -260,6 +261,9 @@
       <div class="field"><label for="fKey">API Key（可选）</label><input class="input" id="fKey" type="password" placeholder="没有可不填" autocomplete="off"></div>
       <div class="field"><label for="fModel">模型名称</label>
         <input class="input" id="fModel" list="modelList" placeholder="先点「测试连接」可以直接选"><datalist id="modelList"></datalist></div>
+    </div>
+    <div class="step-h"><span class="step-n">2</span>测什么</div>
+    <div class="form-grid">
       <div class="field span-2"><label for="fSuite">测试规模</label>
         <select class="select" id="fSuite">
           <option value="quick">快速：约 4 分钟</option>
@@ -267,21 +271,6 @@
           <option value="full">完整：约 35 分钟，含 32K–128K 超长输入和 64 个同时请求</option>
         </select></div>
     </div>
-    <details class="advanced">
-      <summary><svg class="icon"><use href="#i-chevron-down"/></svg>更多设置</summary>
-      <div class="form-grid">
-        <div class="field"><label for="fConc">同时请求数</label><input class="input" id="fConc" placeholder="默认 1,2,4,8,16"><span class="help">用逗号分隔，留空按测试规模</span></div>
-        <div class="field"><label for="fLens">输入长度（K）</label><input class="input" id="fLens" placeholder="默认 1K–8K 共 8 档"><span class="help">用逗号分隔，1–256</span></div>
-        <div class="field"><label for="fMConc">长输入测试的同时请求数</label><input class="input" id="fMConc" type="number" min="1" max="32" placeholder="4"><span class="help">各种输入长度下同时发几个请求</span></div>
-        <div class="field"><label for="fTag">备注标签</label><input class="input" id="fTag" placeholder="如 W4A16、新显卡"></div>
-        <div class="field"><label for="fFw">推理框架</label><input class="input" id="fFw" placeholder="vLLM / SGLang"><span class="help">测试连接时能自动识别 vLLM</span></div>
-        <div class="field"><label for="fFwVer">框架版本</label><input class="input" id="fFwVer" placeholder="如 0.8.5"></div>
-        <div class="field span-2"><label class="check"><input type="checkbox" id="fFixed" checked>每次都生成满指定长度（推荐）</label>
-          <span class="help">避免模型提前结束让速度看起来偏高、不同服务之间没法比；服务不支持时会自动关闭并在结果里注明</span></div>
-        <div class="field span-2"><label class="check"><input type="checkbox" id="fMetrics" checked>同时记录服务端的显存缓存占用和重复内容复用率</label>
-          <span class="help">需要服务提供 /metrics（vLLM 默认提供）</span></div>
-      </div>
-    </details>
     <div class="form-section">
       <div class="form-section-title">模拟真实业务（可选）</div>
       <div class="form-section-desc">按你的业务类型勾选。这些请求按正常方式结束（不强制生成满长度），题目用固定种子生成，两次测试可以直接对比。</div>
@@ -335,7 +324,24 @@
         <div class="field"><label for="fRpDur">每档持续秒数</label><input class="input" id="fRpDur" type="number" min="5" max="3600" placeholder="60"></div>
       </div>
     </div>
+    <div class="step-h"><span class="step-n">3</span>更多设置（可选）</div>
+    <details class="advanced is-step">
+      <summary><svg class="icon"><use href="#i-chevron-down"/></svg>更多设置</summary>
+      <div class="form-grid">
+        <div class="field"><label for="fConc">同时请求数</label><input class="input" id="fConc" placeholder="默认 1,2,4,8,16"><span class="help">用逗号分隔，留空按测试规模</span></div>
+        <div class="field"><label for="fLens">输入长度（K）</label><input class="input" id="fLens" placeholder="默认 1K–8K 共 8 档"><span class="help">用逗号分隔，1–256</span></div>
+        <div class="field"><label for="fMConc">长输入测试的同时请求数</label><input class="input" id="fMConc" type="number" min="1" max="32" placeholder="4"><span class="help">各种输入长度下同时发几个请求</span></div>
+        <div class="field"><label for="fTag">备注标签</label><input class="input" id="fTag" placeholder="如 W4A16、新显卡"></div>
+        <div class="field"><label for="fFw">推理框架</label><input class="input" id="fFw" placeholder="vLLM / SGLang"><span class="help">测试连接时能自动识别 vLLM</span></div>
+        <div class="field"><label for="fFwVer">框架版本</label><input class="input" id="fFwVer" placeholder="如 0.8.5"></div>
+        <div class="field span-2"><label class="check"><input type="checkbox" id="fFixed" checked>每次都生成满指定长度（推荐）</label>
+          <span class="help">避免模型提前结束让速度看起来偏高、不同服务之间没法比；服务不支持时会自动关闭并在结果里注明</span></div>
+        <div class="field span-2"><label class="check"><input type="checkbox" id="fMetrics" checked>同时记录服务端的显存缓存占用和重复内容复用率</label>
+          <span class="help">需要服务提供 /metrics（vLLM 默认提供）</span></div>
+      </div>
+    </details>
   </div>
+  <div class="drawer-sum" id="launcherSum"></div>
   <div class="drawer-foot">
     <span class="inline-msg" id="probeOut"></span>
     <button class="btn btn-secondary" id="btnProbe" onclick="probe()"><svg class="icon"><use href="#i-plug"/></svg>测试连接</button>
@@ -351,12 +357,16 @@
   </div>
   <div class="drawer-body">
     <div class="runlog" id="iqLog" hidden></div>
+    <div class="step-h"><span class="step-n">1</span>服务与模型</div>
     <div class="form-grid">
       <div class="field span-2"><label for="iqEpSel">从已保存的模型填入</label>
         <select class="select" id="iqEpSel" aria-label="选择已保存的模型"><option value="">选择后自动填入 地址 / Key / 模型</option></select></div>
       <div class="field span-2"><label for="iqBase">服务地址</label><input class="input" id="iqBase" value="http://192.168.0.51:8011" placeholder="http://127.0.0.1:8000"></div>
       <div class="field"><label for="iqKey">API Key（可选）</label><input class="input" id="iqKey" type="password" placeholder="没有可不填" autocomplete="off"></div>
       <div class="field"><label for="iqModel">模型名称</label><input class="input" id="iqModel" placeholder="模型名称"></div>
+    </div>
+    <div class="step-h"><span class="step-n">2</span>考什么</div>
+    <div class="form-grid">
       <div class="field span-2"><label for="iqBank">题集</label><select class="select" id="iqBank" onchange="bankInfo()"></select>
         <span class="help" id="iqBankInfo"></span></div>
       <div class="field"><label for="iqTier">测试规模</label>
@@ -369,7 +379,8 @@
       <div class="field"><label for="iqTag">备注标签</label><input class="input" id="iqTag" placeholder="如 W4A16"></div>
       <div class="field"><span class="label">思考模式</span><label class="check" title="模型先想一想再回答，数学题通常明显更好，但更慢"><input type="checkbox" id="iqThink">让模型先思考再回答</label></div>
     </div>
-    <details class="advanced">
+    <div class="step-h"><span class="step-n">3</span>更多设置（可选）</div>
+    <details class="advanced is-step">
       <summary><svg class="icon"><use href="#i-chevron-down"/></svg>更多设置</summary>
       <div class="form-grid">
         <div class="field span-2"><label for="iqSampling">随机性（采样方式）</label>
@@ -395,6 +406,7 @@
       </div>
     </details>
   </div>
+  <div class="drawer-sum" id="iqLauncherSum"></div>
   <div class="drawer-foot">
     <span class="inline-msg" id="iqMsg"></span>
     <button class="btn btn-primary" id="iqBtnStart" onclick="iqStart()"><svg class="icon"><use href="#i-play"/></svg>开始测试</button>
@@ -410,12 +422,16 @@
   </div>
   <div class="drawer-body">
     <div class="runlog" id="genLog" hidden></div>
+    <div class="step-h"><span class="step-n">1</span>服务与模型</div>
     <div class="form-grid">
       <div class="field span-2"><label for="genEpSel">从已保存的模型填入</label>
         <select class="select" id="genEpSel" aria-label="选择已保存的模型"><option value="">选择后自动填入 地址 / Key / 模型</option></select></div>
       <div class="field span-2"><label for="genBase">服务地址</label><input class="input" id="genBase" value="http://192.168.0.51:8011" placeholder="http://127.0.0.1:8000"></div>
       <div class="field"><label for="genKey">API Key（可选）</label><input class="input" id="genKey" type="password" placeholder="没有可不填" autocomplete="off"></div>
       <div class="field"><label for="genModel">模型名称</label><input class="input" id="genModel" placeholder="模型名称"></div>
+    </div>
+    <div class="step-h"><span class="step-n">2</span>写什么</div>
+    <div class="form-grid">
       <div class="field"><label for="genConc">同时写几题</label><input class="input" id="genConc" type="number" value="4" min="1" max="8"></div>
       <div class="field"><label for="genTag">备注标签</label><input class="input" id="genTag" placeholder="如 W4A16"></div>
       <div class="field"><span class="label">思考模式</span><label class="check"><input type="checkbox" id="genThink">让模型先思考再写代码</label></div>
@@ -432,23 +448,32 @@
       <div class="field" data-gen-custom hidden><label for="genPresence">presence_penalty（抑制重复）</label><input class="input" id="genPresence" type="number" step="0.1" min="-2" max="2" placeholder="不设置"></div>
     </div>
     <div class="form-section">
-      <div class="form-section-title">AI 看图打分（可选）</div>
-      <div class="form-section-desc">让一个能看图的模型看作品截图和代码，按题目要求逐项打分。需要支持图片输入的 OpenAI 兼容模型，留空则只做运行检查。</div>
+      <div class="form-section-title">题目 <span class="faint small" id="genTaskCount"></span></div>
+      <div class="task-groups" id="genTasks"></div>
+    </div>
+    <div class="step-h"><span class="step-n">3</span>AI 看图打分（可选）</div>
+    <div class="form-section">
+            <div class="form-section-desc">让一个能看图的模型看作品截图和代码，按题目要求逐项打分。需要支持图片输入的 OpenAI 兼容模型，留空则只做运行检查。</div>
       <div class="form-grid">
         <div class="field span-2"><label for="genJudgeBase">打分模型的服务地址</label><input class="input" id="genJudgeBase" placeholder="留空则不打分"></div>
         <div class="field"><label for="genJudgeModel">打分模型</label><input class="input" id="genJudgeModel" placeholder="如 Qwen2.5-VL-72B"></div>
         <div class="field"><label for="genJudgeKey">打分模型 API Key</label><input class="input" id="genJudgeKey" type="password" placeholder="没有可不填" autocomplete="off"></div>
       </div>
     </div>
-    <div class="form-section">
-      <div class="form-section-title">题目 <span class="faint small" id="genTaskCount"></span></div>
-      <div class="task-groups" id="genTasks"></div>
-    </div>
   </div>
+  <div class="drawer-sum" id="genLauncherSum"></div>
   <div class="drawer-foot">
     <span class="inline-msg" id="genInfo"></span>
     <button class="btn btn-primary" id="genBtnStart" onclick="genStart()"><svg class="icon"><use href="#i-play"/></svg>开始生成</button>
   </div>
+</aside>
+<!-- ======================== 模型管理 ======================== -->
+<aside class="drawer" id="epDrawer" hidden aria-labelledby="epTitle">
+  <div class="drawer-head">
+    <div><h2 class="card-title" id="epTitle">模型管理</h2><p class="card-desc">保存常用的服务地址、Key 和模型。点「填入」会同时填到速度、能力、代码生成三个新建面板</p></div>
+    <button class="btn btn-ghost btn-icon btn-sm" data-toggle="epDrawer" aria-label="关闭"><svg class="icon"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="drawer-body" id="epBody"></div>
 </aside>
 <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
 
