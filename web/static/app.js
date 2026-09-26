@@ -156,7 +156,23 @@ function applyTheme(t,persist){
   readTheme();
   redrawVisible();
 }
-$("themeBtn").onclick=()=>applyTheme(document.documentElement.dataset.theme==="dark"?"light":"dark",true);
+function toggleTheme(){applyTheme(document.documentElement.dataset.theme==="dark"?"light":"dark",true)}
+$("themeBtn").onclick=toggleTheme;
+/* 侧栏: 默认 64px 图标栏, 悬停展开; 「固定」后一直展开(记在本机) */
+function applyRailPin(on,persist){
+  document.querySelector(".app").classList.toggle("is-pinned",on);
+  const b=$("railPin");b.setAttribute("aria-pressed",String(on));
+  b.title=b.ariaLabel=on?"收起侧栏":"固定展开侧栏";
+  if(persist)try{localStorage.setItem("llm-bench-pro-rail",on?"1":"0")}catch(e){}
+}
+$("railPin").onclick=()=>applyRailPin(!document.querySelector(".app").classList.contains("is-pinned"),true);
+/* 密度: 标准 / 紧凑(表格行高、面板内边距), 记在本机 */
+function applyDensity(d,persist){
+  document.documentElement.dataset.density=d;
+  document.querySelectorAll("[data-density-toggle]").forEach(b=>b.setAttribute("aria-checked",String(d==="compact")));
+  if(persist)try{localStorage.setItem("llm-bench-pro-density",d)}catch(e){}
+  for(const inst of CHARTS.values()){try{inst.resize()}catch(e){}}
+}
 
 /* ============================================================
    导航 / 抽屉 / 弹窗 / 通用点击
@@ -168,7 +184,7 @@ function showView(v){
   VIEW=v;
   document.querySelectorAll(".nav-item").forEach(b=>{if(b.dataset.view===v)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
   Object.entries(VIEWS).forEach(([k,id])=>$(id).classList.toggle("is-active",k===v));
-  closeDrawers();
+  closeDrawers();closeMenus();
   try{history.replaceState(null,"","#"+v)}catch(e){}
   if(v==="dash")render();
   if(v==="cmp")renderCmp();
@@ -205,8 +221,14 @@ window.addEventListener("hashchange",()=>{const v=(location.hash||"").slice(1);i
 function setRunning(job,on){
   document.querySelectorAll(`[data-running="${job}"],[data-running-pill="${job}"]`).forEach(el=>el.hidden=!on);
 }
+function closeMenus(except){document.querySelectorAll("details.dropdown[open]").forEach(d=>{if(d!==except)d.open=false})}
 document.addEventListener("click",e=>{
   const nav=e.target.closest(".nav-item");if(nav&&nav.dataset.view){showView(nav.dataset.view);return}
+  if(e.target.closest("[data-density-toggle]")){applyDensity(document.documentElement.dataset.density==="compact"?"normal":"compact",true);closeMenus();return}
+  if(e.target.closest("[data-theme-toggle]")){toggleTheme();closeMenus();return}
+  const rt=e.target.closest(".bar-runs-toggle");
+  if(rt){const bar=rt.closest(".bar"),on=!bar.classList.contains("show-runs");bar.classList.toggle("show-runs",on);rt.setAttribute("aria-expanded",String(on));return}
+  if(e.target.closest(".menu .menu-item"))setTimeout(()=>closeMenus(),0);
   const tg=e.target.closest("[data-toggle]");if(tg){toggleLauncher(tg.dataset.toggle);return}
   const jump=e.target.closest("[data-jumpto]");
   if(jump){e.preventDefault();const t=$(jump.dataset.jumpto);if(t)t.scrollIntoView({behavior:"smooth",block:"start"});return}
@@ -231,8 +253,8 @@ document.addEventListener("click",e=>{
   }
   const row=e.target.closest("tr[data-expand]");
   if(row){const d=row.nextElementSibling;const open=d.hidden;d.hidden=!open;row.setAttribute("aria-expanded",String(open));return}
-  const dd=document.querySelector("details.dropdown[open]");
-  if(dd&&!dd.contains(e.target))dd.open=false;
+  const dd=e.target.closest("details.dropdown");
+  closeMenus(dd);
 });
 
 const Modal={
@@ -284,7 +306,7 @@ async function postWithConflict(url,body){
 $("modalClose").onclick=()=>Modal.close();
 $("modal").addEventListener("mousedown",e=>{if(e.target===$("modal"))Modal.close()});
 document.addEventListener("keydown",e=>{
-  if($("modal").hidden){if(e.key==="Escape")closeDrawers();return}
+  if($("modal").hidden){if(e.key==="Escape"){if(document.querySelector("details.dropdown[open]"))closeMenus();else closeDrawers()}return}
   if(e.key==="Escape"){Modal.close();return}
   if(e.key==="Tab"){  /* 焦点限制在弹窗内 */
     const f=[...$("modal").querySelectorAll("button,[href],input,select,textarea,iframe,[tabindex]:not([tabindex='-1'])")].filter(x=>!x.disabled);
@@ -668,10 +690,39 @@ function ccard(id,title,{desc="",h=280,table="",span=false}={}){
     <div class="chart" id="${id}" style="height:${h}px" role="img" aria-label="${esc(stripTags(title))}"></div>
     ${table?`<div class="ccard-table">${table}</div>`:""}</div>`;
 }
+let SPY=null;
 function buildJump(navId,root){
   const nav=$(navId);if(!nav)return;
   const secs=root?[...root.querySelectorAll("section.sec[data-jump]")]:[];
-  nav.innerHTML=secs.length>2?secs.map(s=>`<a href="javascript:void 0" data-jumpto="${esc(s.id)}">${esc(s.dataset.jump)}</a>`).join(""):"";
+  nav.innerHTML=secs.length>1?secs.map(s=>`<a href="javascript:void 0" data-jumpto="${esc(s.id)}">${esc(s.dataset.jump)}</a>`).join(""):"";
+  if(SPY){SPY.disconnect();SPY=null}
+  if(secs.length<2||typeof IntersectionObserver==="undefined")return;
+  const seen=new Map();
+  SPY=new IntersectionObserver(es=>{
+    es.forEach(x=>seen.set(x.target.id,x.isIntersecting));
+    const cur=secs.find(s=>seen.get(s.id));
+    nav.querySelectorAll("a").forEach(a=>{const on=!!cur&&a.dataset.jumpto===cur.id;a.setAttribute("aria-current",String(on));if(on&&a.scrollIntoView&&nav.scrollWidth>nav.clientWidth)a.scrollIntoView({block:"nearest",inline:"nearest"})});
+  },{rootMargin:"-120px 0px -55% 0px"});
+  secs.forEach(s=>SPY.observe(s));
+}
+/* 概览带: 左边结论, 右边 3–5 个关键数字 */
+function stat(label,value,unit,{sub="",delta="",tip="",hero=false,wide=false}={}){
+  return `<div class="stat${hero?" is-hero":""}${wide?" is-wide":""}"${tip?` title="${esc(tip)}"`:""}><div class="stat-label"><span>${label}</span>${delta}</div>
+    <div class="stat-value">${value}${unit&&value!=="—"?`<small>${unit}</small>`:""}</div>${sub?`<div class="stat-sub">${sub}</div>`:""}</div>`;
+}
+function overview(concl,stats,{title="结论",meta="",cols=2}={}){
+  const ic={good:"check-circle",bad:"x-circle",warn:"alert",info:"bulb"};
+  return `<div class="ov"><div class="ov-concl"><div class="ov-h">${esc(title)}</div>
+    <ul class="summary-list">${concl.map(i=>`<li class="is-${i.tone||"info"}">${icon(ic[i.tone||"info"])}<span>${i.html}</span></li>`).join("")}</ul>
+    ${meta?`<div class="ov-meta">${meta}</div>`:""}</div>
+    ${stats?`<div class="ov-stats" style="--cols:${cols}">${stats}</div>`:""}</div>`;
+}
+/* 加载中: 与最终布局同形的骨架 */
+function skeletonPage(){
+  const line=w=>`<div class="skeleton" style="height:12px;width:${w}%;margin-top:14px"></div>`;
+  return `<div class="ov"><div><div class="skeleton" style="height:12px;width:18%"></div>${line(88)}${line(76)}${line(82)}</div>
+    <div class="ov-stats">${'<div class="stat"><div class="skeleton" style="height:10px;width:50%"></div><div class="skeleton" style="height:26px;width:66%;margin-top:12px"></div></div>'.repeat(4)}</div></div>
+    <div class="sec"><div class="skeleton" style="height:14px;width:24%"></div><div class="grid-3" style="margin-top:20px">${'<div class="skeleton" style="height:200px"></div>'.repeat(3)}</div></div>`;
 }
 function kpi(label,value,unit,{sub="",delta="",hero=false,tip=""}={}){
   return `<div class="kpi${hero?" is-hero":""}"${tip?` title="${esc(tip)}"`:""}><div class="kpi-head"><span class="kpi-label">${label}</span>${delta}</div>
@@ -902,7 +953,7 @@ function exportReport(view){
 
 async function refresh(focusNew){
   status("加载中…");
-  if(!RUNS_LOADED)$("dashEmpty").innerHTML=`<div class="kpi-grid">${'<div class="kpi"><div class="skeleton" style="height:12px;width:50%"></div><div class="skeleton" style="height:30px;width:70%;margin-top:12px"></div></div>'.repeat(4)}</div>`;
+  if(!RUNS_LOADED)$("dashEmpty").innerHTML=skeletonPage();
   try{
     const list=await getJSON("/api/results?summary=1");
     if(!SERVER.version)setConn(true,"服务已连接");
@@ -1374,7 +1425,7 @@ async function render(){
   const body=$("dashBody");
   if(!RUNS[idA]){
     body.hidden=true;buildJump("dashJump",null);
-    $("dashEmpty").innerHTML=emptyState("还没有速度测试","点右上角「新建速度测试」，测完的结果会显示在这里",
+    $("dashEmpty").innerHTML=emptyState("还没有速度测试","测模型生成有多快、同时处理很多请求时稳不稳、输入很长时要等多久。点右上角「新建速度测试」开始，结果会显示在这里",
       {action:`<button class="btn btn-primary" data-toggle="launcher">${icon("plus")}新建速度测试</button>`});
     return;
   }
@@ -1414,7 +1465,7 @@ async function renderCmp(){
   if(!RUNS_LOADED)return;
   const idA=$("cmpA").value,idB=$("cmpB").value;
   const el=$("cmpBody");
-  if(!RUNS[idA]){el.innerHTML=emptyState("还没有速度测试","先在「速度测试」页完成至少两次测试");buildJump("cmpJump",null);return}
+  if(!RUNS[idA]){el.innerHTML=emptyState("还没有速度测试","把两次速度测试放在一起看谁更快、快多少。先在「速度测试」页完成至少两次测试");buildJump("cmpJump",null);return}
   if(!RUNS[idB]||idA===idB){
     el.innerHTML=`<div class="cmp-runs">${runCard(RUNS[idA],"A")}</div><div style="margin-top:16px">`+
       emptyState("再选一个测试 B","比如换了推理框架、量化方式或显卡之后再测一次，放在一起比",{iconName:"compare"})+`</div>`;
@@ -1628,7 +1679,7 @@ function _renderIq(){
   const el=$("iqResult");
   const mainId=$("iqMainSel").value,a=IQ_RUNS[mainId];
   renderIqCmpList(mainId);
-  if(!a){el.innerHTML=emptyState("还没有能力测试","点右上角「新建能力测试」，成绩会显示在这里",
+  if(!a){el.innerHTML=emptyState("还没有能力测试","用公开的标准考题（数学、常识、推理、中文、按要求作答）考模型，看答对多少。点右上角「新建能力测试」开始",
     {action:`<button class="btn btn-primary" data-toggle="iqLauncher">${icon("plus")}新建能力测试</button>`});buildJump("iqJump",null);return}
   const series=[{r:a,color:C.series[0],tag:"A"},...[...IQ_CMP].filter(id=>IQ_RUNS[id]).slice(0,5).map((id,i)=>({r:IQ_RUNS[id],color:C.series[i+1],tag:String.fromCharCode(66+i)}))];
   const base=a.overall||{};
@@ -2209,7 +2260,7 @@ function renderGen(){
   const el=$("genResult");
   const a=GEN_RUNS[$("genMainSel").value],b0=GEN_RUNS[$("genCmpSel").value];
   const b=b0&&a&&b0.run_id!==a.run_id?b0:null;
-  if(!a){el.innerHTML=emptyState("还没有生成任务","点右上角「新建生成任务」，作品和检查结果会显示在这里",
+  if(!a){el.innerHTML=emptyState("还没有生成任务","让模型写网页小游戏和应用，在后台浏览器里真正运行、点击、按键，检查能不能用。点右上角「新建生成任务」开始",
     {action:`<button class="btn btn-primary" data-toggle="genLauncher">${icon("plus")}新建生成任务</button>`});buildJump("genJump",null);return}
   const s=genStats(a),ev=a.eval||{};
   const items=a.items||[];
@@ -2703,6 +2754,8 @@ document.querySelectorAll("select.select").forEach(CSelect.enhance);
 CSelect.combo($("fModel"));
 readTheme();
 applyTheme(document.documentElement.dataset.theme||"dark",false);
+try{applyRailPin(localStorage.getItem("llm-bench-pro-rail")==="1",false)}catch(e){applyRailPin(false,false)}
+try{applyDensity(localStorage.getItem("llm-bench-pro-density")==="compact"?"compact":"normal",false)}catch(e){applyDensity("normal",false)}
 showView((location.hash||"#dash").slice(1));
 checkVersion().then(()=>{if(VIEW==="iq")renderIq()});
 setInterval(checkVersion,60000);

@@ -62,55 +62,66 @@
   <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3l1.9 5.8L20 10.5l-6.1 1.7L12 18l-1.9-5.8L4 10.5l6.1-1.7L12 3z"/></symbol>
   <symbol id="i-bulb" viewBox="0 0 24 24"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></symbol>
   <symbol id="i-server" viewBox="0 0 24 24"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></symbol>
+  <symbol id="i-panel" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></symbol>
+  <symbol id="i-rows" viewBox="0 0 24 24"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/></symbol>
+  <symbol id="i-contrast" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M12 3a9 9 0 0 1 0 18" fill="currentColor"/></symbol>
   <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></symbol>
 </svg>
 
 <div class="app">
-<aside class="sidebar">
+<aside class="rail" id="rail" aria-label="侧栏">
   <div class="brand">
     <div class="brand-mark"><svg class="icon"><use href="#i-logo"/></svg></div>
-    <div><div class="brand-name">LLM Bench Pro</div><div class="brand-sub">大模型测试平台</div></div>
+    <div class="rail-text"><div class="brand-name">LLM Bench Pro</div><div class="brand-sub">大模型测试平台</div></div>
   </div>
   <nav class="nav" aria-label="主导航">
     <div class="nav-label">测试</div>
-    <button class="nav-item" data-view="dash" aria-current="page"><svg class="icon"><use href="#i-gauge"/></svg>速度测试<span class="nav-dot" data-running="perf" hidden></span></button>
-    <button class="nav-item" data-view="cmp"><svg class="icon"><use href="#i-compare"/></svg>速度对比</button>
-    <button class="nav-item" data-view="iq"><svg class="icon"><use href="#i-list-checks"/></svg>能力测试<span class="nav-dot" data-running="iq" hidden></span></button>
-    <button class="nav-item" data-view="gen"><svg class="icon"><use href="#i-code"/></svg>代码生成<span class="nav-dot" data-running="gen" hidden></span></button>
+    <button class="nav-item" data-view="dash" aria-current="page" title="速度测试"><svg class="icon"><use href="#i-gauge"/></svg><span class="nav-text">速度测试</span><span class="nav-short">速度</span><span class="nav-dot" data-running="perf" hidden></span></button>
+    <button class="nav-item" data-view="cmp" title="速度对比"><svg class="icon"><use href="#i-compare"/></svg><span class="nav-text">速度对比</span><span class="nav-short">对比</span></button>
+    <button class="nav-item" data-view="iq" title="能力测试"><svg class="icon"><use href="#i-list-checks"/></svg><span class="nav-text">能力测试</span><span class="nav-short">能力</span><span class="nav-dot" data-running="iq" hidden></span></button>
+    <button class="nav-item" data-view="gen" title="代码生成"><svg class="icon"><use href="#i-code"/></svg><span class="nav-text">代码生成</span><span class="nav-short">生成</span><span class="nav-dot" data-running="gen" hidden></span></button>
     <div class="nav-label">设置</div>
-    <button class="nav-item" onclick="manageEndpoints()" title="保存常用的服务地址、Key 和模型，三个测试页一键填入"><svg class="icon"><use href="#i-sliders"/></svg>模型管理</button>
-    <button class="nav-item" onclick="showGlossary()" title="页面上出现的名词都是什么意思"><svg class="icon"><use href="#i-help"/></svg>名词解释</button>
+    <button class="nav-item" onclick="manageEndpoints()" title="模型管理：保存常用的服务地址、Key 和模型，三个新建面板一键填入"><svg class="icon"><use href="#i-sliders"/></svg><span class="nav-text">模型管理</span><span class="nav-short">模型</span></button>
+    <button class="nav-item" onclick="showGlossary()" title="名词解释：页面上出现的名词都是什么意思"><svg class="icon"><use href="#i-help"/></svg><span class="nav-text">名词解释</span><span class="nav-short">名词</span></button>
   </nav>
-  <div class="sidebar-foot">
-    <div class="row">
-      <span class="conn" id="conn" title="后端服务连接状态"><span class="conn-dot"></span><span id="connText">连接中…</span></span>
-      <button class="btn btn-ghost btn-icon btn-sm" id="themeBtn" aria-label="切换亮色/暗色" title="切换亮色/暗色"><svg class="icon"><use href="#i-sun"/></svg></button>
-    </div>
+  <div class="rail-foot">
+    <span class="conn" id="conn" title="后端服务连接状态"><span class="conn-dot"></span><span id="connText" class="rail-text">连接中…</span></span>
+    <button class="btn btn-ghost btn-icon btn-sm" id="themeBtn" aria-label="切换亮色/暗色" title="切换亮色/暗色"><svg class="icon"><use href="#i-sun"/></svg></button>
+    <button class="btn btn-ghost btn-icon btn-sm" id="railPin" aria-label="固定展开侧栏" title="固定展开侧栏" aria-pressed="false"><svg class="icon"><use href="#i-panel"/></svg></button>
   </div>
 </aside>
 
 <main class="main">
 <!-- ======================== 速度测试 ======================== -->
 <section class="page is-active" id="viewDash">
-  <div class="page-head">
-    <div><h1 class="page-title">速度测试</h1>
-      <p class="page-sub">模型生成有多快、同时处理很多请求时还稳不稳、输入很长时要等多久</p></div>
-    <div class="page-actions">
-      <button class="running-pill" data-toggle="launcher" data-running-pill="perf" hidden><span class="runlog-dot"></span>测试进行中</button>
-      <button class="btn btn-secondary btn-icon" onclick="refresh()" aria-label="刷新结果" title="刷新结果"><svg class="icon"><use href="#i-refresh"/></svg></button>
-      <button class="btn btn-primary" data-toggle="launcher" aria-controls="launcher" aria-expanded="false"><svg class="icon"><use href="#i-plus"/></svg>新建速度测试</button>
-    </div>
-  </div>
-  <div class="toolbar">
-    <div class="toolbar-row">
-      <div class="tb-field"><span class="run-tag a">A</span><select class="select" id="runA" aria-label="查看的测试 A" onchange="render()"></select></div>
-      <div class="tb-field"><span class="run-tag b">B</span><select class="select" id="runB" aria-label="对比的测试 B" onchange="render()"><option value="">不对比</option></select></div>
-      <span class="spacer"></span>
-      <span class="faint small" id="status"></span>
-      <button class="btn btn-secondary btn-sm" onclick="exportReport('dash')" title="把 A（和 B）导出成一个网页文件，可以直接发给别人打开"><svg class="icon"><use href="#i-file-down"/></svg>导出报告</button>
-      <button class="btn btn-ghost btn-icon btn-sm" onclick="deleteRun('perf')" aria-label="删除测试 A" title="删除测试 A"><svg class="icon"><use href="#i-trash"/></svg></button>
-    </div>
-    <nav class="jump" id="dashJump" aria-label="跳转到"></nav>
+  <div class="pagehead">
+    <header class="bar">
+      <h1 class="bar-title" title="模型生成有多快、同时处理很多请求时还稳不稳、输入很长时要等多久">速度测试</h1>
+      <button class="btn btn-ghost btn-sm bar-runs-toggle" type="button" aria-expanded="false"><svg class="icon"><use href="#i-rows"/></svg>当前测试</button>
+      <div class="bar-runs">
+        <div class="tb-field"><span class="run-tag a">A</span><select class="select" id="runA" aria-label="查看的测试 A" onchange="render()"></select></div>
+        <div class="tb-field"><span class="run-tag b">B</span><select class="select" id="runB" aria-label="对比的测试 B" onchange="render()"><option value="">不对比</option></select></div>
+      </div>
+      <div class="bar-tools">
+        <button class="btn btn-secondary btn-sm bar-export" onclick="exportReport('dash')" title="把 A（和 B）导出成一个网页文件，可以直接发给别人打开"><svg class="icon"><use href="#i-file-down"/></svg><span>导出报告</span></button>
+        <details class="dropdown more">
+          <summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作" title="更多操作"><svg class="icon"><use href="#i-more"/></svg></summary>
+          <div class="dropdown-panel menu is-right" role="menu">
+            <button class="menu-item" type="button" onclick="refresh()"><svg class="icon"><use href="#i-refresh"/></svg>刷新结果</button>
+            <button class="menu-item is-danger" type="button" onclick="deleteRun('perf')"><svg class="icon"><use href="#i-trash"/></svg>删除测试 A</button>
+            <div class="menu-sep"></div>
+            <div class="menu-note" id="status"></div>
+            <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
+            <button class="menu-item" type="button" data-theme-toggle><svg class="icon"><use href="#i-contrast"/></svg>切换亮色 / 暗色</button>
+          </div>
+        </details>
+        <button class="running-pill" data-toggle="launcher" data-running-pill="perf" hidden><span class="runlog-dot"></span>测试进行中</button>
+        <button class="btn btn-primary btn-sm bar-new" data-toggle="launcher" aria-controls="launcher" aria-expanded="false"><svg class="icon"><use href="#i-plus"/></svg><span>新建速度测试</span></button>
+      </div>
+    </header>
+    <nav class="secnav" id="dashJump" aria-label="跳转到"></nav>
   </div>
   <div id="dashEmpty"></div>
   <div id="dashBody" hidden></div>
@@ -118,74 +129,105 @@
 
 <!-- ======================== 速度对比 ======================== -->
 <section class="page" id="viewCmp">
-  <div class="page-head">
-    <div><h1 class="page-title">速度对比</h1><p class="page-sub">两次速度测试放在一起看：谁更快、快多少，比如换了推理框架、量化方式或显卡之后</p></div>
-  </div>
-  <div class="toolbar">
-    <div class="toolbar-row">
-      <div class="tb-field"><span class="run-tag a">A</span><select class="select" id="cmpA" aria-label="测试 A" onchange="renderCmp()"></select></div>
-      <button class="btn btn-ghost btn-icon btn-sm" onclick="swapCmp()" aria-label="交换 A 与 B" title="交换 A / B"><svg class="icon"><use href="#i-compare"/></svg></button>
-      <div class="tb-field"><span class="run-tag b">B</span><select class="select" id="cmpB" aria-label="测试 B" onchange="renderCmp()"></select></div>
-      <span class="spacer"></span>
-      <button class="btn btn-secondary btn-sm" onclick="exportReport('cmp')" title="把 A/B 对比导出成一个网页文件，可以直接发给别人打开"><svg class="icon"><use href="#i-file-down"/></svg>导出报告</button>
-    </div>
-    <nav class="jump" id="cmpJump" aria-label="跳转到"></nav>
+  <div class="pagehead">
+    <header class="bar">
+      <h1 class="bar-title" title="两次速度测试放在一起看：谁更快、快多少，比如换了推理框架、量化方式或显卡之后">速度对比</h1>
+      <button class="btn btn-ghost btn-sm bar-runs-toggle" type="button" aria-expanded="false"><svg class="icon"><use href="#i-rows"/></svg>当前测试</button>
+      <div class="bar-runs">
+        <div class="tb-field"><span class="run-tag a">A</span><select class="select" id="cmpA" aria-label="测试 A" onchange="renderCmp()"></select></div>
+        <button class="btn btn-ghost btn-icon btn-sm bar-swap" onclick="swapCmp()" aria-label="交换 A 与 B" title="交换 A / B"><svg class="icon"><use href="#i-compare"/></svg></button>
+        <div class="tb-field"><span class="run-tag b">B</span><select class="select" id="cmpB" aria-label="测试 B" onchange="renderCmp()"></select></div>
+      </div>
+      <div class="bar-tools">
+        <button class="btn btn-secondary btn-sm bar-export" onclick="exportReport('cmp')" title="把 A/B 对比导出成一个网页文件，可以直接发给别人打开"><svg class="icon"><use href="#i-file-down"/></svg><span>导出报告</span></button>
+        <details class="dropdown more">
+          <summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作" title="更多操作"><svg class="icon"><use href="#i-more"/></svg></summary>
+          <div class="dropdown-panel menu is-right" role="menu">
+            <button class="menu-item" type="button" onclick="refresh()"><svg class="icon"><use href="#i-refresh"/></svg>刷新结果</button>
+            <div class="menu-sep"></div>
+            <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
+            <button class="menu-item" type="button" data-theme-toggle><svg class="icon"><use href="#i-contrast"/></svg>切换亮色 / 暗色</button>
+          </div>
+        </details>
+        
+        
+      </div>
+    </header>
+    <nav class="secnav" id="cmpJump" aria-label="跳转到"></nav>
   </div>
   <div id="cmpBody"></div>
 </section>
 
 <!-- ======================== 能力测试 ======================== -->
 <section class="page" id="viewIq">
-  <div class="page-head">
-    <div><h1 class="page-title">能力测试</h1><p class="page-sub">用公开的标准考题（数学、常识、推理、中文、按要求作答）考模型，看答对多少</p></div>
-    <div class="page-actions">
-      <button class="running-pill" data-toggle="iqLauncher" data-running-pill="iq" hidden><span class="runlog-dot"></span>测试进行中</button>
-      <button class="btn btn-secondary btn-icon" onclick="loadIqResults()" aria-label="刷新结果" title="刷新结果"><svg class="icon"><use href="#i-refresh"/></svg></button>
-      <button class="btn btn-primary" data-toggle="iqLauncher" aria-controls="iqLauncher" aria-expanded="false"><svg class="icon"><use href="#i-plus"/></svg>新建能力测试</button>
-    </div>
-  </div>
-  <div class="toolbar">
-    <div class="toolbar-row">
-      <div class="tb-field"><span class="run-tag a">A</span><select class="select" id="iqMainSel" aria-label="查看的测试" onchange="renderIq()"></select></div>
-      <details class="dropdown" id="iqCmpDrop">
-        <summary class="btn btn-secondary btn-sm"><svg class="icon"><use href="#i-columns"/></svg><span id="iqCmpLabel">加入对比</span><svg class="icon icon-sm"><use href="#i-chevron-down"/></svg></summary>
-        <div class="dropdown-panel" id="iqCmpList"></div>
-      </details>
-      <span class="spacer"></span>
-      <button class="btn btn-ghost btn-icon btn-sm" onclick="deleteRun('iq')" aria-label="删除测试 A" title="删除测试 A"><svg class="icon"><use href="#i-trash"/></svg></button>
-    </div>
-    <nav class="jump" id="iqJump" aria-label="跳转到"></nav>
+  <div class="pagehead">
+    <header class="bar">
+      <h1 class="bar-title" title="用公开的标准考题（数学、常识、推理、中文、按要求作答）考模型，看答对多少">能力测试</h1>
+      <button class="btn btn-ghost btn-sm bar-runs-toggle" type="button" aria-expanded="false"><svg class="icon"><use href="#i-rows"/></svg>当前测试</button>
+      <div class="bar-runs">
+        <div class="tb-field"><span class="run-tag a">A</span><select class="select" id="iqMainSel" aria-label="查看的测试" onchange="renderIq()"></select></div>
+        <details class="dropdown" id="iqCmpDrop">
+          <summary class="btn btn-secondary btn-sm"><svg class="icon"><use href="#i-columns"/></svg><span id="iqCmpLabel">加入对比</span><svg class="icon icon-sm"><use href="#i-chevron-down"/></svg></summary>
+          <div class="dropdown-panel" id="iqCmpList"></div>
+        </details>
+      </div>
+      <div class="bar-tools">
+
+        <details class="dropdown more">
+          <summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作" title="更多操作"><svg class="icon"><use href="#i-more"/></svg></summary>
+          <div class="dropdown-panel menu is-right" role="menu">
+            <button class="menu-item" type="button" onclick="loadIqResults()"><svg class="icon"><use href="#i-refresh"/></svg>刷新结果</button>
+            <button class="menu-item is-danger" type="button" onclick="deleteRun('iq')"><svg class="icon"><use href="#i-trash"/></svg>删除测试 A</button>
+            <div class="menu-sep"></div>
+            <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
+            <button class="menu-item" type="button" data-theme-toggle><svg class="icon"><use href="#i-contrast"/></svg>切换亮色 / 暗色</button>
+          </div>
+        </details>
+        <button class="running-pill" data-toggle="iqLauncher" data-running-pill="iq" hidden><span class="runlog-dot"></span>测试进行中</button>
+        <button class="btn btn-primary btn-sm bar-new" data-toggle="iqLauncher" aria-controls="iqLauncher" aria-expanded="false"><svg class="icon"><use href="#i-plus"/></svg><span>新建能力测试</span></button>
+      </div>
+    </header>
+    <nav class="secnav" id="iqJump" aria-label="跳转到"></nav>
   </div>
   <div id="iqResult"></div>
 </section>
 
 <!-- ======================== 代码生成 ======================== -->
 <section class="page" id="viewGen">
-  <div class="page-head">
-    <div><h1 class="page-title">代码生成</h1><p class="page-sub">让模型写网页小游戏和应用，在后台浏览器里真正运行、点击、按键，检查能不能用</p></div>
-    <div class="page-actions">
-      <button class="running-pill" data-toggle="genLauncher" data-running-pill="gen" hidden><span class="runlog-dot"></span>任务进行中</button>
-      <button class="btn btn-secondary btn-icon" onclick="loadGenResults()" aria-label="刷新结果" title="刷新结果"><svg class="icon"><use href="#i-refresh"/></svg></button>
-      <button class="btn btn-primary" data-toggle="genLauncher" aria-controls="genLauncher" aria-expanded="false"><svg class="icon"><use href="#i-plus"/></svg>新建生成任务</button>
-    </div>
-  </div>
-  <div class="toolbar">
-    <div class="toolbar-row">
-      <div class="tb-field"><span class="run-tag a">A</span><select class="select" id="genMainSel" aria-label="查看的任务" onchange="renderGen()"></select></div>
-      <div class="tb-field"><span class="run-tag b">B</span><select class="select" id="genCmpSel" aria-label="对比的任务" onchange="renderGen()"></select></div>
-      <span class="spacer"></span>
-      <button class="btn btn-secondary btn-sm" id="genBtnEval" onclick="genReeval()" title="对 A 的作品重新运行检查（可同时配置 AI 看图打分），保留人工评分"><svg class="icon"><use href="#i-scan-check"/></svg>重新检查</button>
-      <button class="btn btn-ghost btn-icon btn-sm" onclick="deleteRun('gen')" aria-label="删除任务 A" title="删除任务 A（连同作品文件）"><svg class="icon"><use href="#i-trash"/></svg></button>
-    </div>
-    <nav class="jump" id="genJump" aria-label="跳转到"></nav>
+  <div class="pagehead">
+    <header class="bar">
+      <h1 class="bar-title" title="让模型写网页小游戏和应用，在后台浏览器里真正运行、点击、按键，检查能不能用">代码生成</h1>
+      <button class="btn btn-ghost btn-sm bar-runs-toggle" type="button" aria-expanded="false"><svg class="icon"><use href="#i-rows"/></svg>当前测试</button>
+      <div class="bar-runs">
+        <div class="tb-field"><span class="run-tag a">A</span><select class="select" id="genMainSel" aria-label="查看的任务" onchange="renderGen()"></select></div>
+        <div class="tb-field"><span class="run-tag b">B</span><select class="select" id="genCmpSel" aria-label="对比的任务" onchange="renderGen()"></select></div>
+      </div>
+      <div class="bar-tools">
+
+        <details class="dropdown more">
+          <summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作" title="更多操作"><svg class="icon"><use href="#i-more"/></svg></summary>
+          <div class="dropdown-panel menu is-right" role="menu">
+            <button class="menu-item" type="button" onclick="loadGenResults()"><svg class="icon"><use href="#i-refresh"/></svg>刷新结果</button>
+            <button class="menu-item" type="button" id="genBtnEval" onclick="genReeval()" title="对 A 的作品重新运行检查（可同时配置 AI 看图打分），保留人工评分"><svg class="icon"><use href="#i-scan-check"/></svg>重新检查作品</button>
+            <button class="menu-item is-danger" type="button" onclick="deleteRun('gen')"><svg class="icon"><use href="#i-trash"/></svg>删除任务 A（连同作品）</button>
+            <div class="menu-sep"></div>
+            <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
+            <button class="menu-item" type="button" data-theme-toggle><svg class="icon"><use href="#i-contrast"/></svg>切换亮色 / 暗色</button>
+          </div>
+        </details>
+        <button class="running-pill" data-toggle="genLauncher" data-running-pill="gen" hidden><span class="runlog-dot"></span>任务进行中</button>
+        <button class="btn btn-primary btn-sm bar-new" data-toggle="genLauncher" aria-controls="genLauncher" aria-expanded="false"><svg class="icon"><use href="#i-plus"/></svg><span>新建生成任务</span></button>
+      </div>
+    </header>
+    <nav class="secnav" id="genJump" aria-label="跳转到"></nav>
   </div>
   <div id="genResult"></div>
 </section>
 
 <!-- ======================== 样式自检(地址 #styleguide, 不在导航里) ======================== -->
 <section class="page" id="viewSg">
-  <div class="page-head">
-    <div><h1 class="page-title">样式自检</h1><p class="page-sub">全部设计令牌、字号和基础组件，用来截图核对亮暗两套主题</p></div>
+  <div class="pagehead">
+    <header class="bar"><h1 class="bar-title">样式自检</h1><span class="bar-desc">全部设计令牌、字号和基础组件，用来截图核对亮暗两套主题</span></header>
   </div>
   <div id="sgBody"></div>
 </section>
