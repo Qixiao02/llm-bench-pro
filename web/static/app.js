@@ -586,13 +586,17 @@ function legendOf(names,kind="line"){
   return{show:names.length>1,top:0,left:0,itemGap:16,textStyle:{color:C.text2,fontSize:12},data:names,
     icon:kind==="line"?"rect":"roundRect",itemWidth:kind==="line"?16:10,itemHeight:kind==="line"?3:10};
 }
+/* 折线: 2px; 数据点只在点数不多(<=12)时显示, 否则悬停时出现; 面积只用 10% 淡色 */
 function sLine(name,color,data,o={}){
-  return{name,type:"line",data,connectNulls:true,symbol:"circle",symbolSize:8,showSymbol:o.dots!==false,
+  const dots=o.dots===false?false:(o.dots===true||(Array.isArray(data)&&data.length<=12));
+  return{name,type:"line",data,connectNulls:true,symbol:"circle",symbolSize:7,showSymbol:dots,
     lineStyle:{width:2,color},itemStyle:{color,borderColor:C.surface,borderWidth:2},
-    areaStyle:o.area?areaFill(color):undefined,emphasis:{focus:"series"},z:o.z||2};
+    areaStyle:o.area?areaFill(color):undefined,emphasis:{focus:"series"},z:o.z||2,
+    endLabel:o.endLabel?{show:true,formatter:"{a}",color,fontSize:11,fontWeight:600,distance:6}:undefined};
 }
+/* 柱: 单系列最宽 28px, 分组时每根最宽 14px; 顶端 4px 圆角; 同组柱之间留 2px 左右的空隙 */
 function sBar(name,color,data,o={}){
-  return{name,type:"bar",data,barMaxWidth:o.maxWidth||24,barGap:"12%",barCategoryGap:o.catGap||"36%",stack:o.stack,
+  return{name,type:"bar",data,barMaxWidth:o.maxWidth||(o.grouped?14:28),barGap:o.grouped?"18%":"12%",barCategoryGap:o.catGap||"38%",stack:o.stack,
     itemStyle:{color,borderRadius:o.flat?0:(o.horizontal?[0,4,4,0]:[4,4,0,0])},
     label:o.label?{show:true,position:o.horizontal?"right":"top",color:C.text2,fontSize:11,formatter:o.label}:undefined,
     emphasis:{focus:"series"}};
@@ -647,14 +651,14 @@ function lineChart(id,{cats,series,unit,digits=1,yName,xName,area=false,tip}){
   setChart(id,baseOption({
     color:series.map(s=>s.color),
     legend:legendOf(series.map(s=>s.name)),
-    grid:{left:4,right:16,top:series.length>1?44:30,bottom:xName?26:4,containLabel:true},
+    grid:{left:4,right:series.length>1&&series.length<=4?30:16,top:series.length>1?44:30,bottom:xName?26:4,containLabel:true},
     xAxis:axisCat(cats,{gap:false,name:xName}),
     yAxis:axisValue({name:yName||unit,fmt:axisFmtFor(series)}),
     tooltip:Object.assign(baseOption().tooltip,{formatter:ps=>{
       const i=ps[0].dataIndex;
       return tt(tip&&tip.title?tip.title(i):String(ps[0].axisValue),
         ps.filter(p=>p.value!=null).map(p=>[p.color,p.seriesName,fmt(p.value,digits)+" "+(unit||"")]),tip&&tip.sub?tip.sub(i,ps):"");}}),
-    series:series.map(s=>sLine(s.name,s.color,s.data,{area:area&&series.length===1}))}));
+    series:series.map(s=>sLine(s.name,s.color,s.data,{area:area&&series.length===1,endLabel:series.length>1&&series.length<=4}))}));
 }
 /* 常用: 类目 + 分组柱, 单一数值轴 */
 function barChart(id,{cats,series,unit,digits=1,yName,horizontal=false,labels=false,tip,height,catLabelWidth}){
@@ -672,8 +676,9 @@ function barChart(id,{cats,series,unit,digits=1,yName,horizontal=false,labels=fa
       formatter:ps=>{const i=ps[0].dataIndex;
         return tt(tip&&tip.title?tip.title(i):String(ps[0].axisValue),
           ps.filter(p=>p.value!=null).map(p=>[p.color,p.seriesName,fmt(p.value,digits)+" "+(unit||"")]),tip&&tip.sub?tip.sub(i,ps):"");}}),
-    series:series.map(s=>sBar(s.name,s.color,s.data,{horizontal,label:lab}))}));
-  if(height)$(id).style.height=height+"px";
+    series:series.map(s=>sBar(s.name,s.color,s.data,{horizontal,label:lab,grouped:series.length>1}))}));
+  const auto=horizontal?Math.max(160,cats.length*(series.length>1?series.length*16+14:30)+(series.length>1?64:40)):0;
+  if(height||auto){$(id).style.height=(height||auto)+"px";const inst=CHARTS.get(id);if(inst)inst.resize()}
 }
 
 /* ============================================================
