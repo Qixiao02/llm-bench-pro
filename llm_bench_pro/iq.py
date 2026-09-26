@@ -32,6 +32,28 @@ except ImportError:
 IQ_VERSION = "1.4.0"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
 THINK_MAX_TOKENS = 32768   # 思考模式 max_tokens 上限(思考与正文共享); 端点上下文不足时按报错收缩
+
+# 各题型单题输出预算(默认与主流评测口径一致; 可在启动器高级设置覆盖, 影响能否答完, 不影响判分规则)
+DEFAULT_BUDGETS = {"mcq": 16, "math": 2048, "math500": 4096, "instruct": 320}
+
+
+def normalize_budgets(budgets):
+    """合并用户配置与默认: 键白名单, 数值钳制到 [8, 32768], 非法项忽略。"""
+    out = dict(DEFAULT_BUDGETS)
+    for k, v in (budgets or {}).items():
+        if k in out and v:
+            try:
+                out[k] = max(8, min(32768, int(v)))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def budget_policy(buds, thinking):
+    if thinking:
+        return "思考模式: 统一上限 %d(思考与正文共享, 超上下文自动收缩)" % THINK_MAX_TOKENS
+    return "输出预算: 选择题 %d · GSM8K %d · MATH-500 %d · 指令 %d" % (
+        buds["mcq"], buds["math"], buds["math500"], buds["instruct"])
 THINK_TIMEOUT = 1800
 PLAIN_TIMEOUT = 300
 MAX_CONSECUTIVE_ERRORS = 10
@@ -621,7 +643,7 @@ def plog(msg):
 
 def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
            framework=None, fw_version=None, subject_ids=None, limit_per_subject=None, thinking=False, sink=None,
-           sampling=None, cancel=None, resume=None):
+           sampling=None, budgets=None, cancel=None, resume=None):
     """跑能力评测。逐题增量保存; cancel(threading.Event)置位后停止派发新题并以 cancelled 状态收尾;
     resume 传入同版本运行文档时: 请求失败的题会重新作答, 其余已有结果的题跳过。sink 默认写 outdir/<run_id>.json。"""
     outdir = outdir or os.path.join(ROOT, "results")
@@ -636,6 +658,7 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
         subject_ids, limit_per_subject = params.get("subject_ids"), params.get("limit_per_subject")
         thinking, conc = bool(result.get("thinking")), result.get("conc") or conc
         sampling = result.get("sampling")
+        buds = normalize_budgets(params.get("budgets"))  # 续跑沿用原预算
         failed_sids = {r["sid"] for r in result["items"] if r.get("err")}
         result["items"] = [r for r in result["items"] if not r.get("err")]  # 失败的题重新作答
         result["subjects"] = [s for s in result["subjects"] if s["id"] not in failed_sids]  # 对应科目重新汇总
@@ -647,13 +670,15 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
     else:
         run_id = "iq_%s_%s" % (datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"), re.sub(r"[^A-Za-z0-9.-]", "_", model))
         sampling = resolve_sampling(thinking, sampling)
+        buds = normalize_budgets(budgets)
         result = {"kind": "iq", "iq_version": IQ_VERSION, "run_id": run_id, "tag": tag,
                   "url": url, "model": model, "conc": conc,
                   "bank_id": bank["bank_id"], "bank_manifest": bank.get("manifest"),
                   "framework": {"name": framework or "", "version": fw_version or ""},
                   "thinking": bool(thinking), "sampling": sampling,
-                  "params": {"subject_ids": subject_ids or None, "limit_per_subject": limit_per_subject or None},
-                  "max_tokens_policy": ("思考模式: 上限 %d(超上下文自动收缩)" % THINK_MAX_TOKENS) if thinking else "非思考: 按题型基础预算",
+                  "params": {"subject_ids": subject_ids or None, "limit_per_subject": limit_per_subject or None,
+                             "budgets": buds},
+                  "max_tokens_policy": budget_policy(buds, thinking),
                   "started_utc": datetime.now(timezone.utc).isoformat(),
                   "subjects": [], "items": []}
     subjects = bank["subjects"]
@@ -675,7 +700,7 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
     save()
     try:
         _run_subjects(url, result["model"], headers, subjects, limit_per_subject, conc, thinking, sampling,
-                      total_all, result, save, cancel)
+                      total_all, result, save, cancel, buds)
     except BaseException as e:
         cancelled = isinstance(e, Cancelled)
         result["status"] = "cancelled" if cancelled else ("interrupted" if isinstance(e, KeyboardInterrupt) else "failed")
@@ -710,7 +735,7 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
     return sink.location
 
 
-def _run_subjects(url, model, headers, subjects, limit_per_subject, conc, thinking, sampling, total_all, result, save, cancel):
+def _run_subjects(url, model, headers, subjects, limit_per_subject, conc, thinking, sampling, total_all, result, save, cancel, budgets=None):
     """逐科目跑题: 已有结果的题跳过(续跑); 完成的题实时追加到 result['items'], 每 20 题保存一次; 科目完成后写入汇总。
     cancel 置位时撤销未开始的题并抛出 Cancelled; 连续 MAX_CONSECUTIVE_ERRORS 题请求失败时中止(状态 failed, 可续跑)。"""
     done = {(r["sid"], r["idx"]) for r in result["items"]}
@@ -725,11 +750,13 @@ def _run_subjects(url, model, headers, subjects, limit_per_subject, conc, thinki
         chosen = select_indices(sub, limit_per_subject)
         pending = [(idx, sub["items"][idx]) for idx in chosen if (sub["id"], idx) not in done]
 
-        def worker(idx_item, sid=sub["id"], judge=JUDGES[stype], extract=EXTRACTORS[stype], prompter=PROMPTS[stype]):
+        def worker(idx_item, sid=sub["id"], judge=JUDGES[stype], extract=EXTRACTORS[stype],
+                   prompter=PROMPTS[stype], bud=(budgets or DEFAULT_BUDGETS).get(stype)):
             idx, item = idx_item
             if cancel is not None and cancel.is_set():
                 return None
             prompt, mt = prompter(item)
+            mt = bud or mt  # 用户配置的题型预算覆盖模板默认
             rec = {"sid": sid, "idx": idx, "ok": False}
             try:
                 r = ask(url, model, prompt, mt, thinking, headers, sampling)

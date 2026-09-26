@@ -117,6 +117,15 @@ CREATE TABLE IF NOT EXISTS deleted_runs (
   kind        TEXT,
   deleted_utc TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS endpoints (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  url           TEXT NOT NULL,
+  api_key       TEXT,
+  model         TEXT,
+  created_utc   TEXT,
+  last_used_utc TEXT
+);
 """
 
 
@@ -428,6 +437,56 @@ def delete_run(run_id, db_path=None):
 
 def is_deleted(conn, run_id):
     return conn.execute("SELECT 1 FROM deleted_runs WHERE run_id=?", (run_id,)).fetchone() is not None
+
+
+# ---------------------------------------------------------------- 模型端点配置 (含 API Key, 仅存本地库)
+
+def _now():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def list_endpoints(db_path=None):
+    with session(db_path) as conn:
+        rows = conn.execute("SELECT * FROM endpoints ORDER BY last_used_utc DESC, created_utc DESC").fetchall()
+        return [dict(r) for r in rows]
+
+
+def save_endpoint(ep, db_path=None):
+    """upsert: 有 id 则整体覆盖(以最后一次保存为准), 无 id 则新建。返回完整字段。"""
+    ep = dict(ep)
+    if not ep.get("url") or not str(ep["url"]).startswith(("http://", "https://")):
+        raise ValueError("API 地址必须以 http:// 或 https:// 开头")
+    if not ep.get("model"):
+        raise ValueError("模型名称不能为空")
+    if not ep.get("name"):
+        host = str(ep["url"]).split("//", 1)[-1].split("/")[0]
+        ep["name"] = "%s · %s" % (ep["model"], host)
+    now = _now()
+    with session(db_path) as conn, write_tx(conn):
+        if ep.get("id"):
+            row = conn.execute("SELECT id FROM endpoints WHERE id=?", (ep["id"],)).fetchone()
+            if not row:
+                raise ValueError("配置不存在或已被删除")
+            conn.execute("UPDATE endpoints SET name=?,url=?,api_key=?,model=?,last_used_utc=? WHERE id=?",
+                         (ep["name"][:64], ep["url"], ep.get("api_key") or "", ep["model"][:128], now, ep["id"]))
+        else:
+            ep["id"] = "ep_%d_%s" % (int(time.time()), os.urandom(4).hex())
+            conn.execute("INSERT INTO endpoints (id,name,url,api_key,model,created_utc,last_used_utc) VALUES (?,?,?,?,?,?,?)",
+                         (ep["id"], ep["name"][:64], ep["url"], ep.get("api_key") or "", ep["model"][:128], now, now))
+        row = conn.execute("SELECT * FROM endpoints WHERE id=?", (ep["id"],)).fetchone()
+        return dict(row)
+
+
+def touch_endpoint(ep_id, db_path=None):
+    with session(db_path) as conn, write_tx(conn):
+        cur = conn.execute("UPDATE endpoints SET last_used_utc=? WHERE id=?", (_now(), ep_id))
+        return cur.rowcount > 0
+
+
+def delete_endpoint(ep_id, db_path=None):
+    with session(db_path) as conn, write_tx(conn):
+        cur = conn.execute("DELETE FROM endpoints WHERE id=?", (ep_id,))
+        return cur.rowcount > 0
 
 
 def get_run(run_id, items=True, db_path=None, conn=None):

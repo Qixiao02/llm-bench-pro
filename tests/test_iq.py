@@ -146,6 +146,38 @@ def _bank(n_subjects=2, n_items=6):
 
 
 class TestRunLifecycle(unittest.TestCase):
+    def test_budgets_override_clamped_and_recorded(self):
+        """各题型输出预算: 覆盖模板默认、越界钳制、记录进 params 与口径文案; 未配置的键保持默认。"""
+        bodies = []
+
+        def h(method, path, body):
+            bodies.append(body)
+            return 200, chat_reply("B"), None
+        m = MockServer(h)
+        try:
+            import sinks
+            sink = sinks.JsonFileSink(temp_dir())
+            bank = {"bank_id": "tb", "subjects": [
+                {"id": "mc", "name": "MC", "type": "mcq",
+                 "items": [{"q": "q", "choices": list("abcd"), "answer": "B"}]},
+                {"id": "m5", "name": "M5", "type": "math500",
+                 "items": [{"q": "q", "answer": "1"}]},
+            ]}
+            iq.run_iq(m.url + "/v1/chat/completions", "m", bank=bank, sink=sink,
+                      budgets={"math500": 128, "mcq": 999999, "junk": 1, "math": "bad"})
+            doc = load_json(sink.path)
+            self.assertEqual(doc["params"]["budgets"]["math500"], 128)      # 覆盖生效
+            self.assertEqual(doc["params"]["budgets"]["mcq"], 32768)        # 钳到上限
+            self.assertEqual(doc["params"]["budgets"]["math"], 2048)        # 非法值忽略 → 默认
+            self.assertNotIn("junk", doc["params"]["budgets"])              # 白名单外丢弃
+            mts = {b["max_tokens"] for b in bodies}
+            self.assertIn(128, mts)                                         # 请求真的用了新预算
+            self.assertIn(32768, mts)
+            self.assertIn("输出预算", doc["max_tokens_policy"])
+            self.assertIn("128", doc["max_tokens_policy"])
+        finally:
+            m.close()
+
     def test_truncation_marked(self):
         m = MockServer(lambda *a: (200, chat_reply("", finish="length", completion_tokens=32768, reasoning="x" * 50), None))
         try:

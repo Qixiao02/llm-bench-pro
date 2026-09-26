@@ -46,6 +46,29 @@ class TestStore(unittest.TestCase):
                 got = store.get_run(doc["run_id"], db_path=self.db)
                 self.assertEqual(got, doc)
 
+    def test_scenario_phases_roundtrip(self):
+        """任务场景 phase(scn_* 任意模板 id) 与顶层 replay 元数据按 phase_id 自由透传, 无需改表。"""
+        doc = perf_doc()
+        doc["replay"] = {"file": "x.jsonl", "pool_size": 5, "skipped": 1, "bad": 0, "wrapped": True}
+        doc["phases"] += [
+            {"id": "scn_json", "task": {"tpl": "json", "label": "结构化抽取", "validator": "json", "max_tokens": 256},
+             "points": [{"conc": 4, "total": 12, "ok": 12, "fail": 0,
+                         "req_s": 1.8, "json_total": 12, "json_ok": 11, "json_rate": 0.917, "attempts": 2,
+                         "failed_attempts": [{"attempt": 1, "ok": 10, "fail": 2, "errors": ["x"]}]}]},
+            {"id": "scn_vision", "task": {"tpl": "vision", "label": "图片理解", "validator": None,
+                                          "images": 6, "images_per_request": 2},
+             "points": [{"conc": 2, "total": 6, "ok": 6, "fail": 0, "req_s": 0.8, "out_tokens_avg": 260.0}]},
+            {"id": "scn_rag", "task": {"tpl": "rag", "label": "RAG 问答", "validator": None, "rag_ctx": [4000, 16000]},
+             "points": [{"conc": 4, "ctx_tokens": 16000, "total": 12, "ok": 11, "fail": 1, "req_s": 0.9}]},
+            {"id": "replay", "pool": {"size": 5, "skipped": 1, "bad": 0, "wrapped": True},
+             "points": [{"conc": 8, "total": 16, "ok": 15, "fail": 1, "max_inflight": 8, "pool_wrapped": False}]},
+            {"id": "openloop", "duration_s": 60, "points": [{"rate": 2.0, "duration_s": 60, "sent": 121, "shed": 3,
+                          "total": 118, "ok": 115, "fail": 3, "completed_rps": 1.7, "max_inflight": 24,
+                          "inflight_ts": [[0.5, 0], [1.5, 4], [2.5, 9]]}]},
+        ]
+        sinks.SqliteSink(self.db).save(doc)
+        self.assertEqual(store.get_run(doc["run_id"], db_path=self.db), doc)
+
     def test_incremental_items_and_stars_preserved(self):
         doc = gen_doc()
         doc["status"] = "running"

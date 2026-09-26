@@ -5,7 +5,9 @@ llm-bench-pro 服务: UI 页面 + 模型探测 + 在线起测 + 结果接口 (�
 启动: python run.py [端口] [--host 127.0.0.1] [--token 访问令牌]
 """
 import argparse
+import base64
 import glob
+import hashlib
 import hmac
 import http.cookies
 import json
@@ -31,14 +33,47 @@ import bench  # noqa: E402
 import gen  # noqa: E402
 import geneval  # noqa: E402
 import iq  # noqa: E402
+import report  # noqa: E402
 import sinks  # noqa: E402
 import store  # noqa: E402
 from version import APP_VERSION  # noqa: E402
 
 RESULTS = os.path.join(ROOT, "results")  # 旧版 JSON 结果: 启动时自动导入库(仅新增)
 WORKS = os.path.join(ROOT, "works")
+
+# 预览与评测共用 geneval.STORAGE_SHIM_JS。垫片必须出现在作品自己的第一个 <script> 之前,
+# 否则脚本在垫片安装前读 localStorage, 沙箱里会直接抛 SecurityError。
+_WORKS_SHIM = ("<script>/*llm-bench-pro storage shim*/" + geneval.STORAGE_SHIM_JS + "</script>").encode("utf-8")
+
+
+def _inject_works_shim(data):
+    """doctype 保持在首行。垫片插到其后、第一个 script 之前; 没有 script 时放在 head/html 开标签后。"""
+    doctype = re.search(br"<\!doctype[^>]*>", data, re.IGNORECASE)
+    start = doctype.end() if doctype else 0
+    script = re.search(br"<script\b", data[start:], re.IGNORECASE)
+    if script:
+        pos = start + script.start()
+    else:
+        m = re.search(br"<head(?:\s[^>]*)?>", data[start:], re.IGNORECASE) or re.search(
+            br"<html(?:\s[^>]*)?>", data[start:], re.IGNORECASE)
+        pos = start + m.end() if m else start
+    return data[:pos] + _WORKS_SHIM + data[pos:]
+
+# 与评测时 Network.setBlockedURLs 对齐: 不给远程脚本/接口/图片, 仍允许内联脚本、eval、data/blob。
+# sandbox 让新标签打开也是不透明源, 读不到 /api/endpoints。
+_WORKS_CSP = (
+    "sandbox allow-scripts allow-pointer-lock allow-forms allow-modals; "
+    "base-uri 'none'; object-src 'none'; "
+    "script-src 'unsafe-inline' 'unsafe-eval' blob: data:; script-src-attr 'unsafe-inline'; "
+    "style-src 'unsafe-inline' blob: data:; "
+    "img-src data: blob:; font-src data: blob:; media-src data: blob: mediastream:; "
+    "connect-src data: blob:; worker-src blob:; child-src blob: data:"
+)
 WEB = os.path.join(ROOT, "web")
 UI = os.path.join(WEB, "index.html")
+REPLAY_DIR = os.path.join(ROOT, "data", "replay")      # 真实请求回放池(内容寻址 replay-<sha12>.jsonl)
+SCN_TASKS_DIR = os.path.join(ROOT, "data", "scenario", "tasks")    # 自定义任务集(内容寻址 scn-<sha12>.jsonl)
+SCN_IMAGES_DIR = os.path.join(ROOT, "data", "scenario", "images")  # 图片理解场景的图片包(img-<sha12>/<n>.<ext>)
 _RUN_ID_RE = re.compile(r"^(run|iq|gen)_[A-Za-z0-9_.-]+$")
 _STATIC_TYPES = {".css": "text/css; charset=utf-8", ".js": "application/javascript; charset=utf-8",
                  ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png"}
@@ -238,6 +273,135 @@ def _parse_sampling(raw):
     return out
 
 
+def _ints(raw, name, lo, hi):
+    """整数列表: 接受 [1,2] 或 "1,2"; 越界/非法抛 ValueError。"""
+    if isinstance(raw, str):
+        raw = [x for x in raw.split(",") if x.strip()]
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("%s 应为逗号分隔整数列表" % name)
+    try:
+        out = sorted({int(x) for x in raw})
+    except (TypeError, ValueError):
+        raise ValueError("%s 应为整数列表" % name)
+    if not (lo <= min(out) and max(out) <= hi):
+        raise ValueError("%s 超出范围 %d-%d" % (name, lo, hi))
+    return out
+
+
+def _parse_scenarios(body):
+    """任务场景配置: scenarios.tasks(模板多选) + 共用参数 + 各模板专属参数。
+    返回可直接传给 bench.run_suite 的 dict(无任务时返回 None); 非法抛 ValueError。"""
+    scen = body.get("scenarios")
+    if scen is None:
+        return None
+    if not isinstance(scen, dict):
+        raise ValueError("scenarios 应为对象")
+    tasks = scen.get("tasks") or []
+    if isinstance(tasks, str):
+        tasks = [t.strip() for t in tasks.split(",") if t.strip()]
+    if not isinstance(tasks, list) or not tasks:
+        raise ValueError("tasks 应为任务类型列表")
+    for t in tasks:
+        if t not in bench.SCN_TEMPLATES:
+            raise ValueError("未知任务类型 %s (可选: %s)" % (t, "/".join(bench.SCN_TEMPLATES)))
+    out = {"tasks": tasks}
+    if len(set(tasks)) != len(tasks):
+        raise ValueError("tasks 里有重复的任务类型")
+    try:
+        out["conc"] = _ints(scen.get("conc") or [4, 8], "scenarios.conc", 1, 128)
+        out["requests_per_worker"] = max(1, min(50, int(scen.get("requests_per_worker") or 3)))
+        out["max_tokens"] = max(64, min(8192, int(scen.get("max_tokens") or 512)))
+    except (TypeError, ValueError):
+        raise ValueError("requests_per_worker / max_tokens 应为整数")
+    if "rag" in tasks:
+        out["rag_ctx"] = _ints(scen.get("rag_ctx") or [4000], "scenarios.rag_ctx", 512, 65536)
+    if "vision" in tasks:
+        src = scen.get("vision_src") or {}
+        if not isinstance(src, dict):
+            raise ValueError("vision_src 应为对象")
+        img_dir = ""
+        if src.get("image_id"):
+            iid = str(src["image_id"]).strip()
+            if not re.match(r"^img-[0-9a-f]{12}$", iid):
+                raise ValueError("非法 image_id")
+            img_dir = os.path.join(SCN_IMAGES_DIR, iid)
+        elif (src.get("dir") or "").strip():
+            img_dir = (src["dir"] or "").strip()
+        if not img_dir or not os.path.isdir(img_dir):
+            raise ValueError("图片理解场景需要已上传的图片包或存在的服务器图片目录")
+        if not any(os.path.splitext(n)[1].lower() in (".jpg", ".jpeg", ".png", ".webp")
+                   for n in os.listdir(img_dir)):
+            raise ValueError("图片目录中没有可用图片(jpg/png/webp): %s" % img_dir)
+        out["vision_dir"] = img_dir
+        try:
+            out["vision_images"] = max(1, min(4, int(src.get("images") or 1)))
+        except (TypeError, ValueError):
+            raise ValueError("vision_src.images 应为 1-4 的整数")
+    if "custom" in tasks:
+        fid = (scen.get("custom_file_id") or "").strip()
+        if fid:
+            if not re.match(r"^scn-[0-9a-f]{12}$", fid):
+                raise ValueError("非法 custom_file_id")
+            full = os.path.join(SCN_TASKS_DIR, fid + ".jsonl")
+            if not os.path.isfile(full):
+                raise ValueError("任务集不存在: %s (可能已被删除, 请重新上传)" % fid)
+            out["custom_file"] = full
+        elif (scen.get("custom_file") or "").strip():
+            out["custom_file"] = scen["custom_file"].strip()
+            if not os.path.isfile(out["custom_file"]):
+                raise ValueError("任务集文件不存在: %s" % out["custom_file"])
+        else:
+            raise ValueError("自定义任务集需要选择已上传的任务集或填写服务器文件路径")
+    return out
+
+
+def _parse_replay(body):
+    """真实请求回放配置: file/file_id + closed/open; 返回传给 run_suite 的 dict 或 None。"""
+    rp = body.get("scenarios", {}).get("replay") if isinstance(body.get("scenarios"), dict) else None
+    if body.get("replay"):
+        rp = body["replay"]
+    if not rp:
+        return None
+    if not isinstance(rp, dict):
+        raise ValueError("replay 应为对象")
+    fid = (rp.get("file_id") or "").strip()
+    if fid:
+        if not re.match(r"^replay-[0-9a-f]{12}$", fid):
+            raise ValueError("非法 file_id")
+        full = os.path.join(REPLAY_DIR, fid + ".jsonl")
+        if not os.path.isfile(full):
+            raise ValueError("回放文件不存在: %s (可能已被删除, 请重新上传)" % fid)
+        rp = dict(rp, file=full)
+    elif not (rp.get("file") or "").strip():
+        raise ValueError("replay 需要 file_id(上传的文件)或 file(服务器路径)")
+    replay = dict(rp)
+    closed = replay.get("closed")
+    if closed:
+        if not isinstance(closed, dict):
+            raise ValueError("replay.closed 应为对象")
+        try:
+            rpw = max(1, min(100, int(closed.get("requests_per_worker") or 4)))
+        except (TypeError, ValueError):
+            raise ValueError("replay.closed.requests_per_worker 应为整数")
+        replay["closed"] = {"conc": _ints(closed.get("conc") or [8], "replay.closed.conc", 1, 128),
+                            "requests_per_worker": rpw}
+    o = replay.get("open")
+    if o:
+        if not isinstance(o, dict):
+            raise ValueError("replay.open 应为对象")
+        try:
+            rates = [float(x) for x in (o.get("rates") if isinstance(o.get("rates"), list) else
+                                        str(o.get("rates") or "").split(",")) if str(x).strip()]
+        except (TypeError, ValueError):
+            raise ValueError("replay.open.rates 应为数字列表")
+        rates = sorted({round(r, 3) for r in rates if 0.05 <= r <= 1000})
+        if not rates:
+            raise ValueError("replay.open.rates 需要至少一个 0.05-1000 的速率")
+        replay["open"] = {"rates": rates,
+                          "duration_s": max(5, min(3600, int(o.get("duration_s") or 60)))}
+    return replay
+
+
 # ---------------------------------------------------------------- HTTP
 
 class Handler(BaseHTTPRequestHandler):
@@ -286,8 +450,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "not found"}, 404)
         if path.startswith("/works/"):
             full = safe_join(WORKS, path[len("/works/"):])
-            ctype = {".html": "text/html; charset=utf-8", ".jpg": "image/jpeg"}.get(os.path.splitext(full or "")[1].lower())
+            ext = os.path.splitext(full or "")[1].lower()
+            ctype = {".html": "text/html; charset=utf-8", ".jpg": "image/jpeg"}.get(ext)
             if full and ctype and os.path.isfile(full):
+                if ext == ".html":
+                    with open(full, "rb") as f:
+                        return self._body(_inject_works_shim(f.read()), ctype, headers={"Content-Security-Policy": _WORKS_CSP})
                 return self._serve_file(full, ctype)
             return self._json({"error": "not found"}, 404)
 
@@ -303,9 +471,14 @@ class Handler(BaseHTTPRequestHandler):
             "/api/status": lambda: self._json(JOBS["perf"].snapshot()),
             "/api/iq-status": lambda: self._json(JOBS["iq"].snapshot()),
             "/api/gen-status": lambda: self._json(JOBS["gen"].snapshot()),
+            "/api/replay-list": lambda: self._json(self.replay_list()),
+            "/api/scenario-list": lambda: self._json(self.scenario_list()),
+            "/api/endpoints": lambda: self._json(store.list_endpoints()),
         }
         if path in routes:
             return routes[path]()
+        if path == "/api/report":
+            return self.report_html(q("id"), q("cmp"))
         if path in ("/api/run", "/api/export"):
             run_id = q("id")
             doc = store.get_run(run_id) if _RUN_ID_RE.match(run_id) else None
@@ -352,6 +525,10 @@ class Handler(BaseHTTPRequestHandler):
             "/api/iq-start": self.api_iq_start, "/api/iq-resume": self.api_iq_resume,
             "/api/gen-start": self.api_gen_start, "/api/gen-rate": self.api_gen_rate, "/api/gen-eval": self.api_gen_eval,
             "/api/cancel": self.api_cancel, "/api/run-delete": self.api_run_delete,
+            "/api/endpoints": self.api_endpoint_save, "/api/endpoint-use": self.api_endpoint_use,
+            "/api/endpoint-delete": self.api_endpoint_delete,
+            "/api/replay-upload": self.api_replay_upload,
+            "/api/scenario-upload": self.api_scenario_upload,
         }.get(parts.path)
         if handler is None:
             return self._json({"ok": False, "error": "not found"}, 404)
@@ -422,6 +599,172 @@ class Handler(BaseHTTPRequestHandler):
                 shutil.rmtree(d, ignore_errors=True)
         return self._json({"ok": True, "kind": kind})
 
+    def api_endpoint_save(self, body):
+        """模型端点配置: 命名保存 地址/Key/模型, 三页启动器一键填入, 免去复制粘贴。"""
+        try:
+            ep = store.save_endpoint({"id": body.get("id"), "name": body.get("name"),
+                                      "url": body.get("url"), "api_key": body.get("api_key"),
+                                      "model": body.get("model")})
+        except ValueError as e:
+            return self._json({"ok": False, "error": str(e)}, 400)
+        return self._json({"ok": True, "endpoint": ep, "endpoints": store.list_endpoints()})
+
+    def api_endpoint_use(self, body):
+        return self._json({"ok": bool(store.touch_endpoint(body.get("id") or ""))})
+
+    def api_endpoint_delete(self, body):
+        ok = store.delete_endpoint(body.get("id") or "")
+        return self._json({"ok": True} if ok else {"ok": False, "error": "配置不存在"}, 200 if ok else 404)
+
+    # ---- 任务场景: 自定义任务集 / 图片包
+    _IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+
+    def scenario_list(self):
+        tasks = []
+        if os.path.isdir(SCN_TASKS_DIR):
+            for fn in sorted(os.listdir(SCN_TASKS_DIR)):
+                if re.match(r"^scn-[0-9a-f]{12}\.jsonl$", fn):
+                    p = os.path.join(SCN_TASKS_DIR, fn)
+                    tasks.append({"file_id": fn[:-6], "size": os.path.getsize(p),
+                                  "mtime": datetime.fromtimestamp(os.path.getmtime(p), timezone.utc).isoformat()[:19]})
+        images = []
+        if os.path.isdir(SCN_IMAGES_DIR):
+            for dn in sorted(os.listdir(SCN_IMAGES_DIR)):
+                d = os.path.join(SCN_IMAGES_DIR, dn)
+                if re.match(r"^img-[0-9a-f]{12}$", dn) and os.path.isdir(d):
+                    files = [n for n in os.listdir(d) if os.path.splitext(n)[1].lower() in self._IMG_EXTS]
+                    if files:
+                        images.append({"image_id": dn, "count": len(files),
+                                       "size": sum(os.path.getsize(os.path.join(d, n)) for n in files)})
+        return {"ok": True, "tasks": tasks, "images": images}
+
+    def api_scenario_upload(self, body):
+        """上传任务场景资产: kind=tasks 任务集 JSONL {name, content}; kind=images 图片包 {files:[{name, data}]}。
+        均内容寻址幂等; 总量受 16MB 请求体上限约束。"""
+        kind = body.get("kind")
+        if kind == "tasks":
+            content = body.get("content")
+            if not isinstance(content, str) or not content.strip():
+                return self._json({"ok": False, "error": "缺少文件内容 (content 应为 JSONL 文本)"}, 400)
+            lines, bad = 0, 0
+            for ln in content.splitlines():
+                if not ln.strip():
+                    continue
+                try:
+                    r = json.loads(ln)
+                    lines += 1 if isinstance(r.get("messages"), list) else 0
+                    bad += 0 if isinstance(r.get("messages"), list) else 1
+                except Exception:
+                    bad += 1
+            if not lines:
+                return self._json({"ok": False, "error": "没有可用行: 每行应为 {\"messages\": [...], \"params\": {...}}"}, 400)
+            data = content.encode("utf-8")
+            fid = "scn-" + hashlib.sha256(data).hexdigest()[:12]
+            os.makedirs(SCN_TASKS_DIR, exist_ok=True)
+            path = os.path.join(SCN_TASKS_DIR, fid + ".jsonl")
+            if not os.path.isfile(path):
+                tmp = path + ".tmp"
+                with open(tmp, "wb") as f:
+                    f.write(data)
+                os.replace(tmp, path)
+            return self._json({"ok": True, "file_id": fid, "name": (body.get("name") or "")[:80],
+                               "lines": lines, "bad_lines": bad})
+        if kind == "images":
+            files = body.get("files")
+            if not isinstance(files, list) or not files:
+                return self._json({"ok": False, "error": "缺少 files: [{name, data(base64)}]"}, 400)
+            decoded = []
+            total = 0
+            for f in files[:64]:
+                name = str((f or {}).get("name") or "")
+                ext = os.path.splitext(name)[1].lower()
+                if ext not in self._IMG_EXTS:
+                    return self._json({"ok": False, "error": "不支持的图片类型 %r (仅 jpg/png/webp)" % name}, 400)
+                try:
+                    raw = base64.b64decode((f.get("data") or ""), validate=False)
+                except Exception:
+                    return self._json({"ok": False, "error": "%s 的 data 不是合法 base64" % name}, 400)
+                if not raw.startswith((b"\xff\xd8", b"\x89PNG", b"RIFF")):  # jpg/png/webp 魔数
+                    return self._json({"ok": False, "error": "%s 不是有效的图片文件" % name}, 400)
+                decoded.append((ext, raw))
+                total += len(raw)
+            digest = hashlib.sha256()
+            for _, raw in decoded:
+                digest.update(raw)
+            iid = "img-" + digest.hexdigest()[:12]
+            d = os.path.join(SCN_IMAGES_DIR, iid)
+            os.makedirs(d, exist_ok=True)
+            if not os.listdir(d):  # 内容寻址幂等
+                for i, (ext, raw) in enumerate(decoded):
+                    with open(os.path.join(d, "%02d%s" % (i, ext)), "wb") as f:
+                        f.write(raw)
+            return self._json({"ok": True, "image_id": iid, "count": len(decoded), "size": total})
+        return self._json({"ok": False, "error": "kind 应为 tasks 或 images"}, 400)
+
+    # ---- 真实请求回放池
+    def replay_list(self):
+        files = []
+        if os.path.isdir(REPLAY_DIR):
+            for fn in sorted(os.listdir(REPLAY_DIR)):
+                if re.match(r"^replay-[0-9a-f]{12}\.jsonl$", fn):
+                    p = os.path.join(REPLAY_DIR, fn)
+                    files.append({"file_id": fn[:-6], "size": os.path.getsize(p),
+                                  "mtime": datetime.fromtimestamp(os.path.getmtime(p), timezone.utc).isoformat()[:19]})
+        return {"ok": True, "files": files}
+
+    def api_replay_upload(self, body):
+        """上传回放文件: {name, content}; 内容寻址存 data/replay/replay-<sha12>.jsonl, 幂等。"""
+        name = (body.get("name") or "").strip()
+        content = body.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return self._json({"ok": False, "error": "缺少文件内容 (content 应为 JSONL 文本)"}, 400)
+        if len(content.encode("utf-8", "ignore")) > 15 * 1024 * 1024:
+            return self._json({"ok": False, "error": "文件超过 15MB 上限; 大文件请放到服务器后用路径引用"}, 400)
+        lines, bad = 0, 0
+        for ln in content.splitlines():
+            if not ln.strip():
+                continue
+            try:
+                r = json.loads(ln)
+                lines += 1 if isinstance(r.get("messages"), list) else 0
+                bad += 0 if isinstance(r.get("messages"), list) else 1
+            except Exception:
+                bad += 1
+        if not lines:
+            return self._json({"ok": False, "error": "没有可用行: 每行应为 {\"messages\": [...], \"params\": {...}}"}, 400)
+        data = content.encode("utf-8")
+        fid = "replay-" + hashlib.sha256(data).hexdigest()[:12]
+        os.makedirs(REPLAY_DIR, exist_ok=True)
+        path = os.path.join(REPLAY_DIR, fid + ".jsonl")
+        if not os.path.isfile(path):  # 内容寻址: 同内容幂等
+            tmp = path + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, path)
+        return self._json({"ok": True, "file_id": fid, "name": name[:80], "lines": lines, "bad_lines": bad})
+
+    def report_html(self, run_id, cmp_id=None):
+        """离线自包含 HTML 报告 (?id=run_a&cmp=run_b 做 A/B); 浏览器直接打开, 无需服务。"""
+        if not _RUN_ID_RE.match(run_id or ""):
+            return self._json({"ok": False, "error": "非法 run_id"}, 400)
+        a = store.get_run(run_id)
+        if a is None:
+            return self._json({"ok": False, "error": "run 不存在"}, 404)
+        b = None
+        if cmp_id:
+            if not _RUN_ID_RE.match(cmp_id):
+                return self._json({"ok": False, "error": "非法 cmp run_id"}, 400)
+            b = store.get_run(cmp_id)
+            if b is None:
+                return self._json({"ok": False, "error": "cmp run 不存在"}, 404)
+        try:
+            html_text = report.render(a, b)
+        except ValueError as e:
+            return self._json({"ok": False, "error": str(e)}, 400)
+        fn = "%s_report%s.html" % (run_id, "_ab" if b else "")
+        return self._body(html_text.encode("utf-8"), "text/html; charset=utf-8",
+                          headers={"Content-Disposition": 'attachment; filename="%s"' % fn})
+
     # ---- 性能测试
     def api_start(self, body):
         base = bench.normalize_base(body.get("base", ""))
@@ -459,6 +802,12 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("range")
             except (ValueError, TypeError):
                 return self._json({"ok": False, "error": "输入长度梯度格式错误：应为 1-256 的逗号分隔整数（K），如 1,2,4,8,16"}, 400)
+        try:
+            scen_cfg = _parse_scenarios(body)
+            replay_cfg = _parse_replay(body)
+        except ValueError as e:
+            return self._json({"ok": False, "error": "场景配置错误：%s" % e}, 400)
+        warmup_shapes = body.get("warmup_shapes", True) is not False
         if self._busy_or_conflict("perf", base, body):
             return
         job = JOBS["perf"]
@@ -476,11 +825,14 @@ class Handler(BaseHTTPRequestHandler):
             bench.run_suite(url, model, body.get("api_key", ""), suite, metrics_url, tag, RESULTS,
                             conc_ladder=ladder, matrix_conc=matrix_conc, lens=lens,
                             framework=framework, fw_version=fw_version, sink=sink,
-                            fixed_output=fixed_output, cancel=j.cancel, notes=notes)
+                            fixed_output=fixed_output, cancel=j.cancel, notes=notes,
+                            scenarios=scen_cfg, replay=replay_cfg, warmup_shapes=warmup_shapes)
             j.set(run_id=sink.run_id)
         job.run(target, "_PROGRESS_CB", bench)
         return self._json({"ok": True, "url": url, "metrics_url": metrics_url, "conc_ladder": ladder,
-                           "matrix_conc": matrix_conc, "lens": lens, "fixed_output": fixed_output})
+                           "matrix_conc": matrix_conc, "lens": lens, "fixed_output": fixed_output,
+                           "scenarios": (scen_cfg or {}).get("tasks") or [], "replay": bool(replay_cfg),
+                           "warmup_shapes": warmup_shapes})
 
     # ---- 能力评测
     def api_bank_update(self, body):
@@ -527,9 +879,10 @@ class Handler(BaseHTTPRequestHandler):
 
         def target(j):
             sink = sinks.SqliteSink()
+            buds = iq.normalize_budgets(body.get("budgets")) if isinstance(body.get("budgets"), dict) else None
             iq.run_iq(url, model, body.get("api_key", ""), bank, conc, RESULTS, (body.get("tag") or "").strip(),
                       (body.get("framework") or "").strip() or None, (body.get("fw_version") or "").strip() or None,
-                      subject_ids, limit, thinking, sink=sink, sampling=sampling, cancel=j.cancel)
+                      subject_ids, limit, thinking, sink=sink, sampling=sampling, budgets=buds, cancel=j.cancel)
             j.set(run_id=sink.run_id)
         job.run(target, "_IQ_PROGRESS", iq)
         return self._json({"ok": True, "url": url, "bank_id": bank_id, "conc": conc,
@@ -576,12 +929,16 @@ class Handler(BaseHTTPRequestHandler):
             conc = max(1, min(8, int(body.get("conc") or 4)))
         except (TypeError, ValueError):
             return self._json({"ok": False, "error": "并发应为整数"}, 400)
+        raw_tasks = body.get("tasks")
+        try:
+            task_ids = None if raw_tasks in (None, "") else gen.normalize_task_ids(raw_tasks)
+        except ValueError as e:
+            return self._json({"ok": False, "error": str(e)}, 400)
         if self._busy_or_conflict("gen", base, body):
             return
         job = JOBS["gen"]
         if not job.try_start(base, model):
             return self._json({"ok": False, "error": "已有代码生成任务或重新评测在运行"}, 409)
-        task_ids = body.get("tasks") or None
         judge = _judge_cfg(body)
 
         def target(j):
@@ -591,7 +948,7 @@ class Handler(BaseHTTPRequestHandler):
                         _truthy(body.get("thinking")), sink=sink, judge=judge, cancel=j.cancel)
             j.set(run_id=sink.run_id)
         job.run(target, "_GEN_PROGRESS", gen)
-        return self._json({"ok": True, "url": url, "tasks": len(task_ids) if task_ids else len(gen.GEN_TASKS),
+        return self._json({"ok": True, "url": url, "tasks": len(task_ids) if task_ids is not None else len(gen.GEN_TASKS),
                            "thinking": bool(body.get("thinking")), "eval": geneval.Evaluator(judge).meta()})
 
     def api_gen_eval(self, body):
@@ -601,7 +958,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": "非法 run_id"}, 400)
         if store.get_run(run_id, items=False) is None:
             return self._json({"ok": False, "error": "run 不存在"}, 404)
-        only = set(body.get("tasks") or []) or None
+        raw_tasks = body.get("tasks")
+        try:
+            only = None if not raw_tasks else set(gen.normalize_task_ids(raw_tasks))
+        except ValueError as e:
+            return self._json({"ok": False, "error": str(e)}, 400)
         judge = _judge_cfg(body)
         job = JOBS["gen"]
         if not job.try_start(None, "重新评测", run_id=run_id):
@@ -618,7 +979,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": "stars 应为 0-5 整数或 null"}, 400)
         try:
             # 单行 UPDATE: 运行中的生成测试也可打星, 后台增量写入从不触碰 stars
-            if not store.rate_gen_item(run_id, item_id, stars or None):
+            if not store.rate_gen_item(run_id, item_id, stars):
                 return self._json({"ok": False, "error": "run 或作品不存在"}, 404)
             return self._json({"ok": True})
         except Exception as e:

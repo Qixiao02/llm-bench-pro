@@ -30,7 +30,8 @@ except ImportError:
 
 # 1.1: 交互判定基线与动作窗口等长、需作品处理器响应、忽略无变化的 DOM 重写; 按键码表; 移动端溢出判定;
 #      白屏/截断时不白给分; 断言前后对照; 评审输出容错
-EVAL_VERSION = "1.1.0"
+# 1.2: 卡死/中断未跑的步骤记失败; 评审缺项记 0; 截图目录成功后才替换; 有开始按钮的动画在开始后测量
+EVAL_VERSION = "1.2.0"
 VIEW_W, VIEW_H = 1280, 800
 ANALYZE_SCALE = 0.25   # 像素分析用小图 320x200
 SHOT_SCALE = 0.6       # 评审/展示用截图 768x480
@@ -58,8 +59,8 @@ INSTRUMENT_JS = r"""
     let w = wrapped.get(fn);
     if (!w) {
       w = function (e) {
-        S.calls[e.type] = (S.calls[e.type] || 0) + 1;
-        return typeof fn === "function" ? fn.apply(this, arguments) : fn.handleEvent(e);
+        try { if (e && e.type) S.calls[e.type] = (S.calls[e.type] || 0) + 1; } catch (err) {}
+        return typeof fn === "function" ? fn.apply(this, arguments) : (fn && fn.handleEvent && fn.handleEvent(e));
       };
       wrapped.set(fn, w);
     }
@@ -100,6 +101,33 @@ INSTRUMENT_JS = r"""
     .observe(document.documentElement, {subtree: true, childList: true, attributes: true, characterData: true,
                                         attributeOldValue: true, characterDataOldValue: true});
   if (document.documentElement) startMO(); else add.call(document, "DOMContentLoaded", startMO);
+})();
+"""
+
+# 预览沙箱和 file:// 评测共用: 内存 localStorage/sessionStorage, 每次加载都是空的。
+# 沙箱不透明源访问原生 localStorage 会抛 SecurityError, 游戏在注册按键前读最高分就会停住;
+# file:// 上的原生 localStorage 则会把上一次评测的存档留到下一次。
+STORAGE_SHIM_JS = r"""
+(function () {
+  var mk = function () {
+    var s = {};
+    return {
+      getItem: function (k) { k = String(k); return Object.prototype.hasOwnProperty.call(s, k) ? s[k] : null; },
+      setItem: function (k, v) { s[String(k)] = String(v); },
+      removeItem: function (k) { delete s[String(k)]; },
+      clear: function () { s = {}; },
+      key: function (i) { return Object.keys(s)[i] || null; },
+      get length() { return Object.keys(s).length; }
+    };
+  };
+  var put = function (obj, name) {
+    try { Object.defineProperty(obj, name, { configurable: true, value: mk() }); } catch (e) {}
+  };
+  put(window, "localStorage");
+  put(window, "sessionStorage");
+  try {
+    Object.defineProperty(document, "cookie", { configurable: true, get: function () { return ""; }, set: function () {} });
+  } catch (e) {}
 })();
 """
 
@@ -339,6 +367,7 @@ class Prober:
                    "" if loaded and alive else ("加载超时" if not loaded else "主线程无响应(疑似死循环)"))
         if not alive:
             self.check("no_error", "运行无未捕获异常", False, "页面卡死, 无法继续检测")
+            fill_skipped(self, spec, "页面卡死，未检测")
             return
 
         a = self.small()
@@ -353,14 +382,10 @@ class Prober:
         b = self.small()
         ps1 = self.probe_state()
         idle_diff = cdp.image_diff(a, b)
-        idle_mut = ps1.get("mutations", 0) - ps0.get("mutations", 0)
         self.shot("02_idle", "空闲 %.1f 秒后" % spec["idle"])
         self.blank = not nonblank
         if spec["animated"]:
-            active = (ps1.get("raf", 0) > ps0.get("raf", 0) or ps1.get("draws", 0) > ps0.get("draws", 0) or idle_mut > 0)
-            self.check("animated", "空闲时持续动画/渲染", idle_diff > 0.003 or (idle_diff > 0.0005 and active),
-                       "画面变化 %.2f%%，rAF %d 次，绘制调用 %d 次" % (idle_diff * 100, ps1.get("raf", 0) - ps0.get("raf", 0),
-                                                            ps1.get("draws", 0) - ps0.get("draws", 0)))
+            self._mark_animated(idle_diff, ps0, ps1)
 
         for act in spec["setup"]:
             try:
@@ -383,6 +408,13 @@ class Prober:
 
         if spec["responsive"]:
             self.run_mobile(url)
+
+    def _mark_animated(self, diff, ps0, ps1):
+        active = (ps1.get("raf", 0) > ps0.get("raf", 0) or ps1.get("draws", 0) > ps0.get("draws", 0)
+                  or ps1.get("mutations", 0) > ps0.get("mutations", 0))
+        self.check("animated", "空闲时持续动画/渲染", diff > 0.003 or (diff > 0.0005 and active),
+                   "画面变化 %.2f%%，rAF %d 次，绘制调用 %d 次" % (diff * 100, ps1.get("raf", 0) - ps0.get("raf", 0),
+                                                        ps1.get("draws", 0) - ps0.get("draws", 0)))
 
     def _measure(self, js):
         try:
@@ -476,7 +508,7 @@ class Prober:
             time.sleep(0.4)
 
     def run_mobile(self, url):
-        label = "移动端 390px 适配（viewport 声明、无横向溢出）"
+        label = _RESP_LABEL
         if self.blank:
             self.check("responsive", label, False, "桌面首屏白屏，不检查移动端")
             return
@@ -517,40 +549,86 @@ def external_requests(page):
     return out
 
 
+_LITERAL = re.compile(r"<!--.*?-->|/\*.*?\*/|'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`", re.S)
+
+
+def _mask_literals(html):
+    """去掉注释和字符串, 避免脚本里的 `<script>` 文本被当成真标签。"""
+    html = _LITERAL.sub(" ", html)
+    return re.sub(r"(?m)(^|[^:\"'\\])//[^\n]*", r"\1", html)
+
+
 def source_complete(html):
-    low = html.lower()
+    low = _mask_literals(html).lower()
     return "</html>" in low and len(re.findall(r"<script\b[^>]*>", low)) <= low.count("</script>")
+
+
+_RESP_LABEL = "移动端 390px 适配（viewport 声明、无横向溢出）"
+
+
+def fill_skipped(prober, spec, why):
+    """没跑到的功能项记失败, 避免卡死或中断后这些项从通过率里消失。"""
+    have = {c["id"] for c in prober.checks}
+    if "nonblank" not in have:
+        prober.check("nonblank", "首屏有实际渲染内容（非白屏/纯色）", False, why)
+    if spec.get("animated") and "animated" not in have:
+        prober.check("animated", "空闲时持续动画/渲染", False, why)
+    for i, stp in enumerate(spec.get("steps") or []):
+        cid = "step%d" % (i + 1)
+        if cid not in have:
+            prober.check(cid, "交互：" + stp["label"], False, why)
+    if "no_error" not in have:
+        prober.check("no_error", "运行无未捕获异常/控制台错误", False, why)
+    if spec.get("responsive") and "responsive" not in have:
+        prober.check("responsive", _RESP_LABEL, False, why)
+
+
+def _commit_shots(tmp, shots_dir):
+    """新截图写在临时目录, 成功后整目录替换, 失败时旧截图还在。"""
+    if not os.path.isdir(tmp):
+        return
+    shutil.rmtree(shots_dir, ignore_errors=True)
+    os.rename(tmp, shots_dir)
 
 
 def probe_work(browser, html_path, task_id, shots_dir):
     spec = gen_specs.get(task_id)
-    shutil.rmtree(shots_dir, ignore_errors=True)  # 重新评测时清掉旧截图
-    os.makedirs(shots_dir, exist_ok=True)
+    tmp = shots_dir + ".tmp"
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp, exist_ok=True)
     page = browser.new_page()
-    prober = Prober(page, spec, shots_dir)
+    prober = Prober(page, spec, tmp)
     prober.blank = False
-    with open(html_path, encoding="utf-8", errors="replace") as f:
-        prober.check("complete", "代码完整输出（</html> 闭合、script 配对）", source_complete(f.read()), "")
+    ext = []
     try:
-        page.send("Page.enable")
-        page.send("Runtime.enable")
-        page.send("Network.enable")
-        page.send("Network.setBlockedURLs", {"urls": ["http://*", "https://*", "ws://*", "wss://*"]})
-        page.send("Emulation.setFocusEmulationEnabled", {"enabled": True})
-        page.send("Page.addScriptToEvaluateOnNewDocument", {"source": INSTRUMENT_JS})
-        prober.run(pathlib.Path(html_path).resolve().as_uri())
-    except cdp.CDPError as e:
-        prober.notes.append("检测中断: %s" % e)
-        if not any(c["id"] == "load" for c in prober.checks):
-            prober.check("load", "页面加载完成且未卡死", False, str(e))
-        else:  # 中途中断时后续检查项缺失, 记一项未通过, 避免剩余检查项显示为满分
-            prober.check("probe", "运行检测完整执行", False, "检测中断（页面无响应或超时）：%s" % str(e)[:160])
-    finally:
+        with open(html_path, encoding="utf-8", errors="replace") as f:
+            prober.check("complete", "代码完整输出（</html> 闭合、script 配对）", source_complete(f.read()), "")
+        try:
+            page.send("Page.enable")
+            page.send("Runtime.enable")
+            page.send("Network.enable")
+            page.send("Network.setBlockedURLs", {"urls": ["http://*", "https://*", "ws://*", "wss://*"]})
+            page.send("Emulation.setFocusEmulationEnabled", {"enabled": True})
+            page.send("Page.addScriptToEvaluateOnNewDocument", {"source": STORAGE_SHIM_JS})
+            page.send("Page.addScriptToEvaluateOnNewDocument", {"source": INSTRUMENT_JS})
+            prober.run(pathlib.Path(html_path).resolve().as_uri())
+        except cdp.CDPError as e:
+            prober.notes.append("检测中断: %s" % e)
+            if not any(c["id"] == "load" for c in prober.checks):
+                prober.check("load", "页面加载完成且未卡死", False, str(e))
+            else:
+                prober.check("probe", "运行检测完整执行", False, "检测中断（页面无响应或超时）：%s" % str(e)[:160])
+            fill_skipped(prober, spec, "检测中断，未执行")
         ext = external_requests(page)
+    except Exception:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    finally:
         try:
             page.close()
         except Exception:
             pass
+    _commit_shots(tmp, shots_dir)
     # 网络字体(含 Google Fonts 样式表)被拦截只影响字形, 不影响功能, 不判失败
     soft = re.compile(r"^https?://(fonts\.(googleapis|gstatic)\.com|fonts\.loli\.net|use\.typekit\.net)/", re.I)
     hard = [e for e in ext if e["type"] in ("Script", "Stylesheet", "Fetch", "XHR", "WebSocket") and not soft.match(e["url"])]
@@ -569,7 +647,7 @@ def strip_comments(html):
     return re.sub(r"(?m)(^|[^:\"'\\])//[^\n]*", r"\1", html)
 
 
-def static_checks(html, task):
+def static_checks(html, task, note=None):
     code = strip_comments(html)
     low = code.lower()
     checks = [
@@ -581,8 +659,8 @@ def static_checks(html, task):
     for i, f in enumerate(task.get("features") or []):
         checks.append({"id": "f%d" % (i + 1), "label": "源码特征 /%s/" % f, "pass": bool(re.search(f, code, re.I)),
                        "detail": "已去除注释后匹配"})
-    return {"method": "static", "browser": None, "checks": checks, "shots": [], "notes": ["未找到无头浏览器，降级为源码检查"],
-            "external": []}
+    return {"method": "static", "browser": None, "checks": checks, "shots": [],
+            "notes": [note or "未找到无头浏览器，降级为源码检查"], "external": []}
 
 
 # ---------------------------------------------------------------- 视觉评审
@@ -606,22 +684,97 @@ def _data_url(path):
         return "data:image/jpeg;base64," + base64.b64encode(f.read()).decode()
 
 
+def _script_ranges(html):
+    """每个 <script> 的 [start, end)。字符串和注释里的 </script> 不结束脚本。"""
+    low = html.lower()
+    i, n = 0, len(html)
+    spans = []
+    while i < n:
+        start = low.find("<script", i)
+        if start < 0 or (start and (html[start - 1].isalnum() or html[start - 1] in "_")):
+            if start < 0:
+                break
+            i = start + 7
+            continue
+        gt = html.find(">", start)
+        if gt < 0:
+            spans.append((start, n))
+            break
+        j = gt + 1
+        end = n
+        while j < n:
+            c = html[j]
+            if c in "\"'`":
+                j += 1
+                while j < n:
+                    if html[j] == "\\":
+                        j += 2
+                        continue
+                    if html[j] == c:
+                        j += 1
+                        break
+                    j += 1
+                continue
+            if html.startswith("//", j):
+                nl = html.find("\n", j)
+                j = n if nl < 0 else nl + 1
+                continue
+            if html.startswith("/*", j):
+                close = html.find("*/", j + 2)
+                j = n if close < 0 else close + 2
+                continue
+            if low.startswith("</script>", j):
+                end = j + len("</script>")
+                break
+            j += 1
+        spans.append((start, end))
+        i = end
+    return spans
+
+
+def _clip_ends(text, budget):
+    """超长时保留头尾, 中间用一行说明代替。游戏逻辑经常在脚本后部。"""
+    if len(text) <= budget:
+        return text
+    if budget < 48:
+        return text[:max(0, budget)]
+    tail = max(16, budget // 3)
+    note = ""
+    head = budget - tail
+    while True:
+        omitted = len(text) - head - tail
+        note = "\n/* …省略 %d 字符… */\n" % max(0, omitted)
+        if head + len(note) + tail <= budget or head <= 16:
+            break
+        head -= 1
+    return text[:head] + note + text[-tail:]
+
+
 def _code_excerpt(html, max_code):
-    """代码过长时: 去掉 SVG path 数据与 base64, 仍超长则保留开头与全部脚本(脚本从前往后截取)。"""
+    """代码过长时: 去掉 SVG path 数据与 base64, 仍超长则保留页头, 并带上每个脚本的头和尾。"""
     if len(html) <= max_code:
         return html
     slim = re.sub(r'(\sd=")[^"]{200,}(")', r"\1…\2", html)
     slim = re.sub(r"(data:[\w/+.-]+;base64,)[A-Za-z0-9+/=]{200,}", r"\1…", slim)
     if len(slim) <= max_code:
         return slim
-    head = slim[: max_code // 3]
-    scripts = [m.group(0) for m in re.finditer(r"<script\b[^>]*>.*?(?:</script>|$)", slim, re.S | re.I)
-               if m.start() >= len(head)]
-    body = "\n".join(scripts)
-    budget = max_code - len(head)
-    if len(body) > budget:
-        body = body[:budget] + "\n/* …以下 %d 字符省略… */" % (len(body) - budget)
-    return head + "\n<!-- …中间 HTML/CSS 省略，以下为脚本… -->\n" + body
+    spans = _script_ranges(slim)
+    scripts = [slim[a:b] for a, b in spans]
+    if not scripts:
+        return slim[:max_code]
+    script_budget = max_code // 2
+    sep = "\n<!-- …中间 HTML/CSS 省略，以下为脚本… -->\n"
+    body_budget = max(0, script_budget - len(sep))
+    per = max(1, body_budget // len(scripts))
+    body = "\n".join(_clip_ends(s, per) for s in scripts)
+    if len(body) > body_budget:
+        body = _clip_ends(body, body_budget)
+    head_budget = max(0, max_code - len(sep) - len(body))
+    head = slim[:head_budget]
+    # 页头已经完整包含的脚本不必再贴一次
+    if all(b <= head_budget for _, b in spans):
+        return head
+    return head + sep + body
 
 
 def judge_work(cfg, task, html, report, shots_dir, max_code=32000):
@@ -777,8 +930,8 @@ class Evaluator:
         if broken or self.closed:
             b.close()
 
-    def evaluate(self, task, html_path, html):
-        """返回 item 的 eval 字段: 运行检测 + (可选)评审。不抛异常。"""
+    def evaluate(self, task, html_path, html, cancel=None):
+        """返回 item 的 eval 字段: 运行检测 + (可选)评审。不抛异常。cancel 置位后不再开始视觉评审。"""
         shots_dir = html_path[:-5] + ".shots"
         if self._no_browser:
             report = static_checks(html, task)
@@ -791,11 +944,10 @@ class Evaluator:
             except Exception as e:
                 if b is not None:
                     self._release(b, broken=True)
-                report = static_checks(html, task)
-                report["notes"].append("浏览器检测失败，降级源码检查：%s" % str(e)[:160])
+                report = static_checks(html, task, "浏览器检测失败，降级为源码检查：%s" % str(e)[:160])
         report["shots_dir"] = os.path.basename(shots_dir)
         report["exec_score"] = round(100.0 * sum(c["pass"] for c in report["checks"]) / max(1, len(report["checks"])), 1)
-        if self.closed:
+        if self.closed or (cancel is not None and cancel.is_set()):
             return report
         if self.judge_cfg and report["shots"]:
             self.log("    评审中: %s" % task["name"])
@@ -811,6 +963,24 @@ class Evaluator:
             self._cond.notify_all()
         for b in pool:
             b.close()
+
+
+def eval_method(items):
+    """按作品上记录的检测方式汇总: browser / static / mixed。没有评测结果时返回空串。"""
+    methods = set()
+    for it in items or []:
+        if it.get("error"):
+            continue
+        m = (it.get("eval") or {}).get("method")
+        if m:
+            methods.add(m)
+    if not methods:
+        return ""
+    if methods == {"static"}:
+        return "static"
+    if "static" in methods and "browser" in methods:
+        return "mixed"
+    return "browser" if "browser" in methods else ""
 
 
 def apply_eval(item, report):

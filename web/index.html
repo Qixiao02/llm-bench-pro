@@ -67,6 +67,8 @@
     <button class="nav-item" data-view="cmp"><svg class="icon"><use href="#i-compare"/></svg>运行对比</button>
     <button class="nav-item" data-view="iq"><svg class="icon"><use href="#i-list-checks"/></svg>能力评测</button>
     <button class="nav-item" data-view="gen"><svg class="icon"><use href="#i-code"/></svg>代码生成</button>
+    <div class="nav-label">配置</div>
+    <button class="nav-item" onclick="manageEndpoints()" title="管理模型端点配置（地址 / Key / 模型）"><svg class="icon"><use href="#i-sliders"/></svg>模型管理</button>
   </nav>
   <div class="sidebar-foot">
     <span class="conn" id="conn" title="后端服务连接状态"><span class="conn-dot"></span><span id="connText">v2.0</span></span>
@@ -89,6 +91,10 @@
     <div class="card-head"><div><h2 class="card-title">新建测试</h2><p class="card-desc">对 OpenAI 兼容端点运行流式基准，结果自动保存</p></div>
       <button class="btn btn-ghost btn-icon btn-sm" data-toggle="launcher" aria-label="收起"><svg class="icon"><use href="#i-x"/></svg></button></div>
     <div class="form-grid">
+      <div class="field span-2"><label for="fEpSel">模型配置</label>
+        <select class="select" id="fEpSel" aria-label="选择模型配置">
+          <option value="">选择配置，一键填入 地址 / Key / 模型</option></select>
+        <span class="help">配置在侧边栏「模型管理」中维护</span></div>
       <div class="field span-2"><label for="fBase">API 地址</label>
         <input class="input" id="fBase" placeholder="http://127.0.0.1:8000" value="http://192.168.0.51:8011">
         <span class="help">支持 Base URL 或完整的 /v1/chat/completions</span></div>
@@ -116,6 +122,58 @@
           <span class="help">每次都生成满 max_tokens，避免模型提前结束导致不同后端吞吐不可比；端点不支持时自动关闭并在结果中注明</span></div>
       </div>
     </details>
+    <div class="form-section">
+      <div class="form-section-title">任务场景<span class="faint">按你的业务形态勾选 · 不发送 ignore_eos，测真实任务行为 · 语料固定种子生成，A/B 可比</span></div>
+      <div class="chip-grid" id="scnChips"></div>
+      <div class="form-grid" id="scnCommon" hidden>
+        <div class="field"><label for="fScnConc">场景并发</label><input class="input" id="fScnConc" placeholder="默认 4,8"><span class="help">逗号分隔</span></div>
+        <div class="field"><label for="fScnRpw">每并发请求数</label><input class="input" id="fScnRpw" type="number" min="1" max="50" value="3"></div>
+        <div class="field"><label for="fScnMt">输出上限 (tokens)</label><input class="input" id="fScnMt" type="number" min="64" max="8192" placeholder="512"></div>
+      </div>
+      <div class="form-grid" id="scnRagRow" hidden>
+        <div class="field span-2"><span class="label">RAG 上下文档位</span>
+          <div class="chip-grid" id="ragCtxChips"></div>
+          <span class="help">每档与各并发组合成一格；资料为通用技术段落，问题要求标注引用段落</span></div>
+      </div>
+      <div class="form-grid" id="scnVisionRow" hidden>
+        <div class="field span-2"><label for="fImgSel">图片包</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select class="select" id="fImgSel" style="flex:1"><option value="">未选择</option></select>
+            <label class="btn btn-secondary" style="margin:0;cursor:pointer" title="上传图片(可多选，jpg/png/webp，总量≤15MB)">
+              <svg class="icon"><use href="#i-image"/></svg>上传图片<input type="file" id="fImgUpload" accept=".jpg,.jpeg,.png,.webp" multiple hidden>
+            </label>
+          </div>
+          <span class="help">或在下面填服务器上的图片目录路径；两者选一，上传包优先</span></div>
+        <div class="field"><label for="fImgDir">服务器图片目录</label><input class="input" id="fImgDir" placeholder="/path/to/images"></div>
+        <div class="field"><label for="fImgN">每请求图片数</label><input class="input" id="fImgN" type="number" min="1" max="4" value="1"></div>
+      </div>
+      <div class="form-grid" id="scnCustomRow" hidden>
+        <div class="field span-2"><label for="fTaskSel">任务集文件</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select class="select" id="fTaskSel" style="flex:1"><option value="">未选择</option></select>
+            <label class="btn btn-secondary" style="margin:0;cursor:pointer" title="上传任务集：JSONL，每行 {&quot;messages&quot;: [...], &quot;params&quot;: {...}}，≤15MB">
+              <svg class="icon"><use href="#i-inbox"/></svg>上传任务集<input type="file" id="fTaskUpload" accept=".jsonl,.json,.txt" hidden>
+            </label>
+          </div>
+          <span class="help">完全使用你自己的请求；带 response_format 的行会计入 JSON 合法率</span></div>
+      </div>
+    </div>
+    <div class="form-section">
+      <div class="form-section-title">真实请求回放<span class="faint">线上导出的原始请求 · 闭环连发 / 开环泊松到达 · 两次运行到达时间轴相同</span></div>
+      <div class="form-grid">
+        <div class="field span-2"><label for="fReplaySel">回放文件</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select class="select" id="fReplaySel" style="flex:1"><option value="">不回放</option></select>
+            <label class="btn btn-secondary" style="margin:0;cursor:pointer" title="上传回放文件：JSONL，每行 {&quot;messages&quot;: [...], &quot;params&quot;: {...}}，≤15MB">
+              <svg class="icon"><use href="#i-inbox"/></svg>上传<input type="file" id="fReplayFile" accept=".jsonl,.json,.txt" hidden>
+            </label>
+          </div>
+          <span class="help">文件内容寻址保存、幂等，可重复使用；也可从 AI 中台导出真实请求</span></div>
+        <div class="field"><label for="fRpConc">回放·闭环并发</label><input class="input" id="fRpConc" placeholder="如 8,16"><span class="help">留空不跑闭环</span></div>
+        <div class="field"><label for="fRpRates">回放·开环速率 (req/s)</label><input class="input" id="fRpRates" placeholder="如 2,5"><span class="help">泊松到达，留空不跑开环</span></div>
+        <div class="field"><label for="fRpDur">开环持续秒数</label><input class="input" id="fRpDur" type="number" min="5" max="3600" placeholder="60"></div>
+      </div>
+    </div>
     <div class="form-actions">
       <span class="inline-msg" id="probeOut"></span>
       <button class="btn btn-secondary" id="btnProbe" onclick="probe()"><svg class="icon"><use href="#i-plug"/></svg>测试连接</button>
@@ -129,6 +187,7 @@
     <div class="tb-field"><span class="run-tag b">B</span><select class="select" id="runB" aria-label="对比运行 B" onchange="render()"><option value="">不对比</option></select></div>
     <span class="spacer"></span>
     <span class="faint small" id="status"></span>
+    <button class="btn btn-secondary btn-icon" onclick="exportReport('dash')" aria-label="导出离线报告" title="导出当前 A（及 B）为离线 HTML 报告，可直接发送他人打开"><svg class="icon"><use href="#i-file-down"/></svg></button>
     <button class="btn btn-ghost btn-icon" onclick="deleteRun('perf')" aria-label="删除运行 A" title="删除运行 A"><svg class="icon"><use href="#i-trash"/></svg></button>
   </div>
 
@@ -137,7 +196,7 @@
     <div class="meta-list" id="meta"></div>
     <div id="anomalies"></div>
     <div class="kpi-grid" id="kpis"></div>
-    <div class="grid-2">
+    <div class="grid-2" id="dashGrid">
       <div class="panel span-all"><div class="panel-head"><div><h3 class="panel-title">输入长度 × 并发矩阵</h3>
         <p class="panel-desc">各输入长度下的 TTFT、ITL、聚合吞吐与成功率，点击行查看单流明细</p></div>
         <button class="btn btn-ghost btn-icon btn-sm panel-toggle" data-collapse aria-label="折叠"><svg class="icon"><use href="#i-chevron-down"/></svg></button></div>
@@ -154,6 +213,14 @@
         <p class="panel-desc">解码速度、TPOT、ITL 分位数与抖动。Burst 为每个 chunk 的平均 token 数，大于 1 通常表示启用了投机解码</p></div>
         <button class="btn btn-ghost btn-icon btn-sm panel-toggle" data-collapse aria-label="折叠"><svg class="icon"><use href="#i-chevron-down"/></svg></button></div>
         <div class="panel-body" id="decodeTbl"></div></div>
+      <div class="panel span-all" id="replayPanel" hidden><div class="panel-head"><div><h3 class="panel-title">真实请求回放 · 闭环</h3>
+        <p class="panel-desc">真实请求按并发连发：请求/秒、延迟分位；cursor 跨格推进避免重复请求命中前缀缓存</p></div>
+        <button class="btn btn-ghost btn-icon btn-sm panel-toggle" data-collapse aria-label="折叠"><svg class="icon"><use href="#i-chevron-down"/></svg></button></div>
+        <div class="panel-body" id="replayTbl"></div></div>
+      <div class="panel span-all" id="olPanel" hidden><div class="panel-head"><div><h3 class="panel-title">真实请求回放 · 开环（泊松到达）</h3>
+        <p class="panel-desc">按设定速率随机到达持续施压：在途时间线持续抬升 = 请求越排越长；两次运行的到达时间轴相同，可严格对比</p></div>
+        <button class="btn btn-ghost btn-icon btn-sm panel-toggle" data-collapse aria-label="折叠"><svg class="icon"><use href="#i-chevron-down"/></svg></button></div>
+        <div class="panel-body"><canvas class="chart" id="cOpenloop"></canvas><div class="legend" id="lOpenloop"></div><div id="olTbl"></div></div></div>
       <div class="panel span-all" id="metricsPanel" hidden><div class="panel-head"><div><h3 class="panel-title">引擎指标</h3>
         <p class="panel-desc">测试期间 KV Cache 使用率与前缀缓存命中率（vLLM /metrics）</p></div>
         <button class="btn btn-ghost btn-icon btn-sm panel-toggle" data-collapse aria-label="折叠"><svg class="icon"><use href="#i-chevron-down"/></svg></button></div>
@@ -171,6 +238,8 @@
     <div class="tb-field"><span class="run-tag a">A</span><select class="select" id="cmpA" aria-label="运行 A" onchange="renderCmp()"></select></div>
     <button class="btn btn-ghost btn-icon" onclick="swapCmp()" aria-label="交换 A 与 B" title="交换 A / B"><svg class="icon"><use href="#i-compare"/></svg></button>
     <div class="tb-field"><span class="run-tag b">B</span><select class="select" id="cmpB" aria-label="运行 B" onchange="renderCmp()"></select></div>
+    <span class="spacer"></span>
+    <button class="btn btn-secondary btn-icon" onclick="exportReport('cmp')" aria-label="导出离线报告" title="导出 A/B 对比为离线 HTML 报告（结论先行，可直接发送他人）"><svg class="icon"><use href="#i-file-down"/></svg></button>
   </div>
   <div id="cmpBody"></div>
 </section>
@@ -188,6 +257,10 @@
     <div class="card-head"><div><h2 class="card-title">新建评测</h2><p class="card-desc">GSM8K、MMLU、MATH-500、ARC、HellaSwag、C-Eval 与指令遵循，按发布方口径判分</p></div>
       <button class="btn btn-ghost btn-icon btn-sm" data-toggle="iqLauncher" aria-label="收起"><svg class="icon"><use href="#i-x"/></svg></button></div>
     <div class="form-grid">
+      <div class="field span-2"><label for="iqEpSel">模型配置</label>
+        <select class="select" id="iqEpSel" aria-label="选择模型配置">
+          <option value="">选择配置，一键填入 地址 / Key / 模型</option></select>
+        <span class="help">配置在侧边栏「模型管理」中维护</span></div>
       <div class="field span-2"><label for="iqBase">API 地址</label><input class="input" id="iqBase" value="http://192.168.0.51:8011" placeholder="http://127.0.0.1:8000"></div>
       <div class="field"><label for="iqKey">API Key</label><input class="input" id="iqKey" type="password" placeholder="可选" autocomplete="off"></div>
       <div class="field"><label for="iqModel">模型</label><input class="input" id="iqModel" placeholder="模型名称"></div>
@@ -218,6 +291,14 @@
         <div class="field" data-custom-sampling hidden><label for="iqTopK">top_k</label><input class="input" id="iqTopK" type="number" step="1" min="-1" max="1000" placeholder="20"></div>
       </div>
       <div class="form-grid" style="margin-top:var(--sp-3)">
+        <div class="field span-all"><span class="label">各题型输出预算 (max_tokens)</span>
+          <div style="display:flex;gap:var(--sp-3) var(--sp-4);flex-wrap:wrap;align-items:center">
+            <label style="display:flex;gap:6px;align-items:center">选择题<input class="input" id="iqBudMcq" type="number" min="8" max="32768" value="16" style="width:96px"></label>
+            <label style="display:flex;gap:6px;align-items:center">GSM8K<input class="input" id="iqBudMath" type="number" min="8" max="32768" value="2048" style="width:96px"></label>
+            <label style="display:flex;gap:6px;align-items:center">MATH-500<input class="input" id="iqBudMath500" type="number" min="8" max="32768" value="4096" style="width:96px"></label>
+            <label style="display:flex;gap:6px;align-items:center">指令遵循<input class="input" id="iqBudInstruct" type="number" min="8" max="32768" value="320" style="width:96px"></label>
+          </div>
+          <span class="help">单题输出上限（默认与主流评测口径一致，本项目自定数值）；只影响"能否答完"，判分规则不变。各运行的 Token 花销会在结果与 A/B 对比中显示。思考模式统一 32K，此项不适用</span></div>
         <div class="field span-2"><label for="iqProxy">HTTP 代理</label><input class="input" id="iqProxy" placeholder="如 http://127.0.0.1:7890"><span class="help">仅用于下载题集，留空为直连</span></div>
         <div class="field" style="justify-content:flex-end"><button class="btn btn-secondary" id="iqBtnBank" onclick="bankUpdate()"><svg class="icon"><use href="#i-download"/></svg>更新题集</button></div>
       </div>
@@ -254,6 +335,10 @@
       <p class="card-desc">作品生成后在本机无头 Chrome/Edge 中实际运行，检查报错、白屏与动画，并按题目脚本模拟按键、点击和拖拽验证功能</p></div>
       <button class="btn btn-ghost btn-icon btn-sm" data-toggle="genLauncher" aria-label="收起"><svg class="icon"><use href="#i-x"/></svg></button></div>
     <div class="form-grid">
+      <div class="field span-2"><label for="genEpSel">模型配置</label>
+        <select class="select" id="genEpSel" aria-label="选择模型配置">
+          <option value="">选择配置，一键填入 地址 / Key / 模型</option></select>
+        <span class="help">配置在侧边栏「模型管理」中维护</span></div>
       <div class="field span-2"><label for="genBase">API 地址</label><input class="input" id="genBase" value="http://192.168.0.51:8011" placeholder="http://127.0.0.1:8000"></div>
       <div class="field"><label for="genKey">API Key</label><input class="input" id="genKey" type="password" placeholder="可选" autocomplete="off"></div>
       <div class="field"><label for="genModel">模型</label><input class="input" id="genModel" placeholder="模型名称"></div>
@@ -302,6 +387,7 @@
     <div class="modal-body" id="modalBody"></div>
   </div>
 </div>
+<script src="/static/vendor/echarts.min.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

@@ -23,7 +23,8 @@ except ImportError:
 
 # 2.0: 源码正则特征 -> 无头浏览器运行检测(逐题交互脚本/功能断言) + 可选视觉模型清单评审, 与 1.x 结果不可直接比较
 # 2.1: 流式生成(思考模式不再整体超时)、续写携带完整已生成内容并按行去重、HTML 提取修正、取消即停
-GEN_VERSION = "2.1.0"
+# 2.2: 续写保留换行且不在单词中间去重; 已落盘的作品取消后仍入库; 题目 id 精确匹配
+GEN_VERSION = "2.2.0"
 STREAM_IDLE_TIMEOUT = 300  # 流式响应两次数据之间的最长等待(秒)
 _STREAM_OPTIONAL = ("stream_options", "continue_final_message", "add_generation_prompt")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
@@ -169,7 +170,7 @@ def chat(url, payload, headers, cancel=None, idle_timeout=STREAM_IDLE_TIMEOUT):
             d = json.loads(r.read())
             ch = d["choices"][0]
             msg = ch.get("message") or {}
-            return ((msg.get("content") or "").strip(), d.get("usage") or {}, ch.get("finish_reason") or "",
+            return ((msg.get("content") or ""), d.get("usage") or {}, ch.get("finish_reason") or "",
                     (msg.get("reasoning_content") or msg.get("reasoning") or "").strip())
         for raw in r:
             if cancel is not None and cancel.is_set():
@@ -202,25 +203,60 @@ _CONTINUE_HINT = "输出在上面中断了。请从中断处继续输出剩余�
 _FENCE_LINE = re.compile(r"^\s*```[\w-]*\s*$")
 
 
+def _word_char(ch):
+    return bool(ch) and (ch.isalnum() or ch == "_")
+
+
+# 续写从这些词开头, 且上文没有换行时, 补上被截断吃掉的换行。不用于标识符中间(simYe+ars)。
+_STMT_START = re.compile(
+    r"^(?:let|const|var|function|class|import|export|return|if|else|for|while|do|switch|"
+    r"case|break|continue|try|catch|finally|throw|async|await|yield|debugger)\b"
+)
+
+
+def _join_parts(prev, nxt):
+    """最后一步拼接。两边都没带换行、续写却是新语句时补一个换行, 避免 let x = 1let y = 2。"""
+    if not prev or not nxt or prev.endswith("\n") or nxt[0] in "\n \t":
+        return prev + nxt
+    if _STMT_START.match(nxt):
+        return prev + "\n" + nxt
+    return prev + nxt
+
+
 def _stitch(prev, nxt):
-    """把续写内容接到已有内容后: 去掉续写开头的代码围栏, 删除与已有尾部重复的整行/行尾片段。"""
+    """把续写内容接到已有内容后: 去掉续写开头的代码围栏, 删除与已有尾部重复的整行/行尾片段。
+
+    续写以换行开头时保留该换行(截断点常在行尾)。重叠不能从单词中间切开,
+    例如已有内容以 myfunction 结尾、续写以 function 开头时不能删掉 function。
+    """
     lines = nxt.split("\n")
-    while lines and (not lines[0].strip() or _FENCE_LINE.match(lines[0])):
+    dropped_fence = False
+    while lines and _FENCE_LINE.match(lines[0]):
         lines.pop(0)
+        dropped_fence = True
+    if dropped_fence and lines and lines[0] == "":
+        lines.pop(0)  # 围栏后习惯性空行, 不是截断点的换行
     nxt = "\n".join(lines)
     if not nxt:
         return prev
-    # 1) 字符级重叠: 续写开头与已有末尾相同的一段(至少 8 字符)
-    for k in range(min(2000, len(prev), len(nxt)), 7, -1):
-        if prev.endswith(nxt[:k]):
-            return prev + nxt[k:]
-    # 2) 行级重叠: 模型从被截断那一行的行首重新输出
+    limit = min(2000, len(prev), len(nxt))
+    for k in range(limit, 7, -1):
+        if not prev.endswith(nxt[:k]):
+            continue
+        before = prev[-k - 1] if len(prev) > k else ""
+        if _word_char(before) and _word_char(nxt[0]):
+            continue
+        return prev + nxt[k:]
     last_nl = prev.rfind("\n")
     partial = prev[last_nl + 1:]
     first = nxt.split("\n", 1)[0]
-    if partial.strip() and first.strip().startswith(partial.strip()):
-        return prev[:last_nl + 1] + nxt
-    return prev + nxt
+    ps, fs = partial.strip(), first.strip()
+    if ps and fs.startswith(ps):
+        rest = fs[len(ps):]
+        mid_token = bool(rest) and _word_char(ps[-1]) and _word_char(rest[0])
+        if not (mid_token and len(ps) < 4):
+            return prev[:last_nl + 1] + nxt
+    return _join_parts(prev, nxt)
 
 
 def gen_complete(url, model, prompt, tier_max, headers, thinking=False, cancel=None):
@@ -319,6 +355,28 @@ def extract_html(resp):
     return resp.strip()
 
 
+def normalize_task_ids(raw):
+    """None 表示全部题目。字符串按逗号拆开。空列表和未知 id 报错。返回 id 列表。"""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = [x.strip() for x in raw.split(",") if x.strip()]
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("tasks 应为题目 id 数组")
+    ids = []
+    for x in raw:
+        if not isinstance(x, str) or not x.strip():
+            raise ValueError("tasks 应为题目 id 数组")
+        ids.append(x.strip())
+    if not ids:
+        raise ValueError("请至少选择 1 道题目")
+    known = {t["id"] for t in GEN_TASKS}
+    bad = [x for x in ids if x not in known]
+    if bad:
+        raise ValueError("未知题目：" + "、".join(bad[:8]))
+    return ids
+
+
 _GEN_PROGRESS = None
 
 
@@ -338,7 +396,9 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
     cancel: threading.Event, 置位后不再开始新题, 已完成作品保留, 状态记为 cancelled。"""
     outdir = outdir or os.path.join(ROOT, "results")
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
-    tasks = [t for t in GEN_TASKS if not task_ids or t["id"] in task_ids]
+    if task_ids is not None:
+        task_ids = set(normalize_task_ids(task_ids))
+    tasks = [t for t in GEN_TASKS if task_ids is None or t["id"] in task_ids]
 
     run_id = "gen_%s_%s" % (datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"),
                             re.sub(r"[^A-Za-z0-9.-]", "_", model))
@@ -348,7 +408,7 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
     result = {"kind": "gen", "gen_version": GEN_VERSION, "run_id": run_id, "tag": tag,
               "url": url, "model": model, "conc": conc,
               "framework": {"name": framework or "", "version": fw_version or ""},
-              "thinking": bool(thinking),
+              "thinking": bool(thinking), "planned": len(tasks),
               "started_utc": datetime.now(timezone.utc).isoformat(),
               "works_dir": "works/" + run_id, "items": []}
     sink = sink or sinks.JsonFileSink(outdir)
@@ -391,48 +451,54 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
                 else "输出中没有有效的 HTML(提取到 %d 字)" % len(html)
             plog("  ✗ [%s] %s · 进度 %d/%d" % (task["name"], why, done_ct[0], len(tasks)))
             return failed(task, why)
-        if cancel is not None and cancel.is_set():
-            return None
         fname = task["id"] + ".html"
         fpath = os.path.join(work_dir, fname)
-        with open(fpath + ".tmp", "w", encoding="utf-8") as f:
-            f.write(html)
-        os.replace(fpath + ".tmp", fpath)
-        item = {"id": task["id"], "name": task["name"], "tags": task["tags"],
-                "file": "works/%s/%s" % (run_id, fname), "chars": len(html),
-                "lines": html.count("\n") + 1,
-                "continuations": cont_n, "reason_chars": reason_len,
-                "stars": None, "in_tokens": in_tok, "out_tokens": out_tok}
-        report = evaluator.evaluate(task, fpath, html)
-        if cancel is not None and cancel.is_set():
+        try:
+            with open(fpath + ".tmp", "w", encoding="utf-8") as f:
+                f.write(html)
+            os.replace(fpath + ".tmp", fpath)
+            item = {"id": task["id"], "name": task["name"], "tags": task["tags"],
+                    "file": "works/%s/%s" % (run_id, fname), "chars": len(html),
+                    "lines": html.count("\n") + 1,
+                    "continuations": cont_n, "reason_chars": reason_len,
+                    "stars": None, "in_tokens": in_tok, "out_tokens": out_tok}
+            if cancel is None or not cancel.is_set():
+                report = evaluator.evaluate(task, fpath, html, cancel)
+                geneval.apply_eval(item, report)
+            else:
+                plog("  · [%s] 已生成，取消于评测前" % task["name"])
+        except Cancelled:
             return None
-        geneval.apply_eval(item, report)
+        except Exception as e:
+            done_ct[0] += 1
+            plog("  ✗ [%s] 失败: %s · 进度 %d/%d" % (task["name"], str(e)[:60], done_ct[0], len(tasks)))
+            return failed(task, str(e)[:240])
         done_ct[0] += 1
-        plog("  ✓ [%s] %s · 进度 %d/%d" % (task["name"], _eval_brief(item), done_ct[0], len(tasks)))
+        plog("  ✓ [%s] %s · 进度 %d/%d" % (task["name"], _eval_brief(item) if item.get("eval") else "已生成、未评测", done_ct[0], len(tasks)))
         return item
 
     result["status"] = "running"
     save()
+    futures, flushed = [], [0]
+
+    def flush(final=False):
+        """按题目顺序把已完成的作品追加并保存; final 时跳过被取消/未开始的题。"""
+        changed = False
+        while flushed[0] < len(futures):
+            f = futures[flushed[0]]
+            if not f.done():
+                if not final:
+                    break
+            elif not f.cancelled() and f.exception() is None and f.result() is not None:
+                result["items"].append(f.result())
+                changed = True
+            flushed[0] += 1
+        if changed:
+            save()
+
     try:
         ex = ThreadPoolExecutor(max_workers=conc)
-        futures = [ex.submit(worker, t) for t in tasks]
-        flushed = [0]
-
-        def flush(final=False):
-            """按题目顺序把已完成的作品追加并保存; final 时跳过被取消/未开始的题。"""
-            changed = False
-            while flushed[0] < len(futures):
-                f = futures[flushed[0]]
-                if not f.done():
-                    if not final:
-                        break
-                elif not f.cancelled() and f.exception() is None and f.result() is not None:
-                    result["items"].append(f.result())
-                    changed = True
-                flushed[0] += 1
-            if changed:
-                save()
-
+        futures.extend(ex.submit(worker, t) for t in tasks)
         try:
             pending = set(futures)
             while pending:
@@ -452,12 +518,21 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
         else:
             result["status"] = "done"
     except BaseException as e:
+        try:
+            flush(final=True)  # 中断时也把已经跑完的题按顺序入库
+        except Exception:
+            pass
         result["status"] = "interrupted" if isinstance(e, KeyboardInterrupt) else "failed"
         result["error"] = "%s: %s" % (type(e).__name__, str(e)[:300])
         raise
     finally:
         evaluator.close()
         result["eval"] = evaluator.meta()
+        mode = geneval.eval_method(result["items"])
+        if mode:
+            result["eval"]["method"] = mode
+        if thinking and "chat_template_kwargs" in iq._DROPPED.get(url, ()):
+            result["thinking_dropped"] = True
         result["finished_utc"] = datetime.now(timezone.utc).isoformat()
         save()
     plog("完成 => %s" % sink.location)
@@ -502,12 +577,20 @@ def reevaluate(run_id, judge=None, only=None, db_path=None, browsers=2, log=None
             return
         with open(path, encoding="utf-8", errors="replace") as f:
             html = f.read()
-        old_judge = (it.get("eval") or {}).get("judge")
-        report = evaluator.evaluate(tasks[it["id"]], path, html)
-        if cancel is not None and cancel.is_set():
+        old_eval = it.get("eval") or {}
+        old_judge = old_eval.get("judge") if isinstance(old_eval.get("judge"), dict) else None
+        report = evaluator.evaluate(tasks[it["id"]], path, html, cancel)
+        if report.get("method") != "browser" and old_eval.get("method") == "browser":
+            log("  · [%s] 浏览器检测失败，保留上次的运行检测和评审" % it["name"])
             return
-        if not evaluator.judge_cfg and old_judge and old_judge.get("score") is not None:
-            report["judge"] = dict(old_judge, stale=True)
+        j = report.get("judge") or {}
+        if j.get("score") is None and old_judge and old_judge.get("score") is not None:
+            kept = dict(old_judge, stale=True)
+            if j.get("error"):
+                kept["kept_because"] = str(j["error"])[:160]
+            report["judge"] = kept
+        elif not evaluator.judge_cfg and old_judge:
+            report["judge"] = dict(old_judge, stale=True) if old_judge.get("score") is not None else old_judge
         geneval.apply_eval(it, report)
         store.update_gen_item(run_id, it, db_path=db_path)
         done[0] += 1
@@ -529,5 +612,9 @@ def reevaluate(run_id, judge=None, only=None, db_path=None, browsers=2, log=None
         meta = evaluator.meta()
         if not evaluator.judge_cfg:  # 未配置评审时保留了原评审结果, 评审模型沿用原记录
             meta["judge_model"] = (doc.get("eval") or {}).get("judge_model")
-        store.update_run_meta(run_id, {"eval": meta}, db_path=db_path)  # gen_version 保持生成时的版本
+        mode = geneval.eval_method(doc.get("items") or [])
+        if mode:
+            meta["method"] = mode  # 以作品上的实际检测方式为准, 不因本机有 Chrome 就写成浏览器
+        if done[0]:
+            store.update_run_meta(run_id, {"eval": meta}, db_path=db_path)  # 一件都没更新时不改运行口径
     log("重新评测已取消" if cancel is not None and cancel.is_set() else "重新评测完成")

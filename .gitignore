@@ -16,3 +16,6 @@ __pycache__/
 
 # 测试期临时
 .playwright-mcp/
+
+# 覆盖率产物
+coverage.txt

@@ -13,9 +13,11 @@ llm-bench-pro — LLM 推理专业基准测试引擎
 输出: results/run_<时间戳>_<模型>.json (增量保存, 崩溃安全)
 """
 import argparse
+import base64
 import copy
 import json
 import os
+import random
 import re
 import statistics
 import sys
@@ -23,6 +25,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -31,8 +34,8 @@ try:
 except ImportError:
     import sinks  # server.py 以包目录为 sys.path 顶层导入
 
-# 1.1: 默认固定输出长度(ignore_eos, 端点不支持时自动关闭并记录), 可取消
-BENCH_VERSION = "1.1.0"
+# 1.3: 业务场景改为可插拔任务模板(对话问答/代码/结构化抽取/RAG/图片理解/自定义任务集); 1.2 的回放机制不变
+BENCH_VERSION = "1.3.0"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
 
 _PROGRESS_CB = None
@@ -48,6 +51,17 @@ class Cancelled(Exception):
 def check_cancel():
     if _CANCEL is not None and _CANCEL.is_set():
         raise Cancelled()
+
+
+def _sleep_cancel(seconds):
+    """可中断睡眠: 每 0.2s 检查一次取消, 取消立即抛出。"""
+    end = time.perf_counter() + seconds
+    while True:
+        left = end - time.perf_counter()
+        if left <= 0:
+            return
+        check_cancel()
+        time.sleep(min(0.2, left))
 
 
 def plog(msg):
@@ -74,16 +88,19 @@ def http_json(url, payload, headers, timeout=900):
         return json.loads(r.read())
 
 
-def stream_call(url, payload, headers, timeout=900):
-    """流式调用, 返回精确的时间戳序列 (SSE 逐 chunk 解析)。"""
+def stream_call(url, payload, headers, timeout=900, apply_req_extra=True):
+    """流式调用, 返回精确的时间戳序列 (SSE 逐 chunk 解析)。
+    apply_req_extra=False: 不注入 ignore_eos 等基准附加字段(业务/回放场景需要真实生成行为)。"""
     check_cancel()
-    payload = {**_REQ_EXTRA, **payload, "stream": True, "stream_options": {"include_usage": True}}
+    extra = _REQ_EXTRA if apply_req_extra else {}
+    payload = {**extra, **payload, "stream": True, "stream_options": {"include_usage": True}}
     if url in _NO_IGNORE_EOS:
         payload.pop("ignore_eos", None)
     body = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **headers})
     t0 = time.perf_counter()
     ttft, stamps, usage, chunks = None, [], {}, 0
+    texts = []
     try:
         resp = urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as e:
@@ -91,7 +108,8 @@ def stream_call(url, payload, headers, timeout=900):
         if e.code in (400, 422) and "ignore_eos" in payload and "ignore_eos" in detail:
             _NO_IGNORE_EOS.add(url)  # 端点不支持固定输出长度: 关闭后重试, 结果中会记录
             plog("  端点不支持 ignore_eos, 已关闭固定输出长度")
-            return stream_call(url, {k: v for k, v in payload.items() if k not in ("stream", "stream_options")}, headers, timeout)
+            return stream_call(url, {k: v for k, v in payload.items() if k not in ("stream", "stream_options")},
+                               headers, timeout, apply_req_extra)
         raise
     with resp as r:
         buf = b""
@@ -114,17 +132,20 @@ def stream_call(url, payload, headers, timeout=900):
                 ch = d.get("choices") or []
                 if ch:
                     delta = ch[0].get("delta") or {}
+                    piece = delta.get("content")
                     # 推理模型的思考 token 走 reasoning_content, 同样计入首 token 与解码时间戳
-                    if delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning"):
+                    if piece or delta.get("reasoning_content") or delta.get("reasoning") or delta.get("tool_calls"):
                         now = time.perf_counter()
                         chunks += 1
                         if ttft is None:
                             ttft = now - t0
                         stamps.append(now)
+                    if piece:
+                        texts.append(piece)
     if not stamps:
         raise RuntimeError("empty stream (no content/reasoning deltas)")
     return {"ttft": ttft, "stamps": stamps, "wall": time.perf_counter() - t0,
-            "usage": usage, "chunks": chunks}
+            "usage": usage, "chunks": chunks, "text": "".join(texts)}
 
 
 def pct(values, p):
@@ -320,12 +341,13 @@ def phase_concurrency(url, headers, model, conc_list, out_tok, per_conc):
     return {"id": "concurrency", "name": "并发阶梯", "points": points}
 
 
-def phase_prefill_conc(url, headers, model, ladder, conc, out_tok):
-    """提示词长度阶梯 × 并发矩阵: 每档并发起跑, 记录 TTFT/ITL/聚合吞吐/成功率, 并汇总分位数。"""
+def phase_prefill_conc(url, headers, model, ladder, conc, out_tok, max_attempts=3, retry_pause_s=30.0):
+    """提示词长度阶梯 × 并发矩阵: 每档并发起跑, 记录 TTFT/ITL/聚合吞吐/成功率, 并汇总分位数。
+    有失败时整格重跑(基础设施型失败), 留痕 failed_attempts。"""
     points = []
-    session_nonce = int(time.time() * 1000) % 1000000
-    for label, reps in ladder:
-        check_cancel()
+
+    def run_label(reps):
+        nonce = int(time.time() * 1000) % 1000000  # 每次尝试新批次号: 重跑不得命中前缀缓存
         barrier = threading.Barrier(conc)
         lock, results = threading.Lock(), []
 
@@ -334,7 +356,7 @@ def phase_prefill_conc(url, headers, model, ladder, conc, out_tok):
                 barrier.wait(timeout=60)
             except threading.BrokenBarrierError:
                 return
-            prompt = ("以下是技术参考资料（批次 %d-%d），请阅读后用两句话总结要点：" % (session_nonce, i)) + chr(10) + (ZH_UNIT * reps)
+            prompt = ("以下是技术参考资料（批次 %d-%d），请阅读后用两句话总结要点：" % (nonce, i)) + chr(10) + (ZH_UNIT * reps)
             try:
                 s = stream_call(url, {"model": model, "messages": [{"role": "user", "content": prompt}],
                                       "max_tokens": out_tok, "temperature": 0}, headers)
@@ -348,6 +370,7 @@ def phase_prefill_conc(url, headers, model, ladder, conc, out_tok):
             list(ex.map(worker, range(conc)))
         good = [r for r in results if "error" not in r]
         bad = len(results) - len(good)
+        point = None
         if good and any(r["ttft_s"] for r in good):
             in_tot = sum(r["in_tokens"] for r in good)
             out_tot = sum(r["out_tokens"] for r in good)
@@ -355,8 +378,8 @@ def phase_prefill_conc(url, headers, model, ladder, conc, out_tok):
             max_ttft = max(ttfts)
             max_dspan = max(r["decode_span_s"] for r in good)
             itls = [r["itl_p50_ms"] for r in good if r["itl_p50_ms"] is not None]
-            points.append({
-                "label": label, "in_tokens": good[0]["in_tokens"], "ok": len(good), "fail": bad,
+            point = {
+                "label": "", "in_tokens": good[0]["in_tokens"], "ok": len(good), "fail": bad,
                 "ttft_avg_ms": round(1000 * sum(ttfts) / len(ttfts), 1),
                 "ttft_max_ms": round(1000 * max_ttft, 1),
                 "itl_avg_ms": round(sum(itls) / len(itls), 2) if itls else None,
@@ -364,10 +387,19 @@ def phase_prefill_conc(url, headers, model, ladder, conc, out_tok):
                 "decode_tps_agg": round(out_tot / max(max_dspan, 1e-6), 1) if out_tot > 1 else None,
                 "stream_prefill_tps": [round(r["in_tokens"] / r["ttft_s"], 1) for r in good if r["ttft_s"]],
                 "stream_decode_tps": [r["decode_tps"] for r in good if r["decode_tps"]],
-            })
+            }
+        return {"point": point, "ok": len(good), "fail": bad, "total": conc,
+                "errors": [r["error"] for r in results if "error" in r][:3]}
+
+    for label, reps in ladder:
+        check_cancel()
+        rec = _retry_cell(lambda r=reps: run_label(r), "矩阵 %s" % label, max_attempts, retry_pause_s)
+        if rec["point"]:
+            rec["point"]["label"] = label
+            points.append(rec["point"])
             plog("  %-5s in=%-6d ttft_avg=%7.1fms  prefill_agg=%8.0f t/s  decode_agg=%7.1f t/s  ok=%d/%d" %
                  (label, points[-1]["in_tokens"], points[-1]["ttft_avg_ms"], points[-1]["prefill_tps_agg"],
-                  points[-1]["decode_tps_agg"] or 0, len(good), len(good) + bad))
+                  points[-1]["decode_tps_agg"] or 0, points[-1]["ok"], points[-1]["ok"] + points[-1]["fail"]))
     agg_pre = [p["prefill_tps_agg"] for p in points]
     agg_dec = [p["decode_tps_agg"] for p in points if p["decode_tps_agg"]]
     all_pre = [x for p in points for x in p["stream_prefill_tps"]]
@@ -397,8 +429,538 @@ def phase_longctx(url, headers, model, ctx_tokens, out_tok):
                           "max_tokens": out_tok, "temperature": 0}, headers)
     d = derive(s)
     plog("  ctx=%-7d in=%d  ttft=%6.2fs  prefill=%7.0f t/s  decode=%6.1f t/s" %
-          (ctx_tokens, d["in_tokens"], d["ttft_s"] or 0, d["prefill_tps"] or 0, d["decode_tps"] or 0))
+         (ctx_tokens, d["in_tokens"], d["ttft_s"] or 0, d["prefill_tps"] or 0, d["decode_tps"] or 0))
     return {"id": "longctx", "name": "长上下文驻留", "points": [d]}
+
+
+# ---------------------------------------------------------------- 场景阶段: 任务模板 / 真实请求回放
+# 业务场景 = 任务模板(形状) × 语料(内容) × 负载模式(闭环/开环)。
+# 内置模板语料 seeded 生成(A/B 两次运行收到同序列, 盐除外), 请求不注入 ignore_eos, 测真实任务行为;
+# 自定义任务集/真实请求回放则完全使用用户自己的请求。
+# 指标诚实化: 只有声明输出契约的模板(json / custom 行内 response_format)报 JSON 合法率。
+
+BIZ_RULES = [
+    "你是跨境电商商品信息结构化助手，负责把卖家提供的原始商品描述整理为平台上架所需的标准字段。",
+    "只输出一个 JSON 对象，不要输出解释、不要输出 Markdown 代码块、不要输出多余的空白行。",
+    "title 字段为英文标题，长度 60 到 120 个字符，首字母大写，包含核心品类词、关键材质和主要规格，不得出现品牌侵权词、极限词和联系方式。",
+    "category 字段从以下一级类目中选择最贴切的一个：家居厨房、户外运动、服饰配件、母婴用品、宠物用品、汽车配件、数码配件、美妆个护、办公文具、工具五金。",
+    "material 字段填写主体材质，多种材质时按占比从高到低用逗号分隔，最多三种；无法判断时填写 unknown。",
+    "price_usd 字段为数字，按卖家给出的人民币价格除以 7.1 后保留两位小数；卖家未给价格时填写 0。",
+    "weight_g 字段为整数，单位克；卖家给出千克、磅或盎司时换算为克，四舍五入；未给出时填写 0。",
+    "size_cm 字段为字符串，格式为 长x宽x高，单位厘米，保留一位小数；卖家给出英寸时乘以 2.54 换算。",
+    "tags 字段为 3 到 6 个英文关键词组成的数组，每个关键词不超过 3 个单词，按搜索热度从高到低排列，不得重复。",
+    "risk 字段为数组，列出可能涉及的合规风险：带电、液体、粉末、磁性、刀具、食品接触、儿童用品、仿牌；没有风险时为空数组。",
+    "summary 字段为中文，一句话概括商品卖点，不超过 40 个汉字。",
+    "所有字段必须出现；数字字段不得带单位；字符串字段不得包含换行符；遇到卖家描述前后矛盾时以规格参数表为准。",
+    "卖家描述中的营销夸张用语（例如第一、最好、全网最低）不得出现在任何字段中。",
+    "若卖家描述包含多个颜色或尺码，只按默认款整理，并在 summary 中注明提供多款可选。",
+]
+BIZ_SYSTEM = "\n".join("%d. %s" % (k + 1, r) for k, r in enumerate(BIZ_RULES * 2))
+BIZ_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"}, "category": {"type": "string"},
+        "material": {"type": "string"}, "price_usd": {"type": "number"},
+        "weight_g": {"type": "integer"}, "size_cm": {"type": "string"},
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "risk": {"type": "array", "items": {"type": "string"}},
+        "summary": {"type": "string"},
+    },
+    "required": ["title", "category", "material", "price_usd", "weight_g", "size_cm",
+                 "tags", "risk", "summary"],
+}
+BIZ_ITEMS = ["不锈钢真空保温杯", "硅胶折叠收纳盒", "户外折叠露营椅", "宠物自动喂食器", "车载手机支架",
+             "儿童防摔餐盘", "竹纤维毛巾套装", "磁吸无线充电器", "陶瓷不粘煎锅", "防水运动腰包"]
+BIZ_SENTENCES = [
+    "采用{m}材质，做工细致，边缘经过打磨处理，手感顺滑不刮手。",
+    "规格参数：长{a}厘米，宽{b}厘米，高{c}厘米，净重约{w}克。",
+    "适合家庭日常、办公室、户外出行等多种场景使用，收纳方便不占空间。",
+    "提供{n}种颜色可选，默认款为{col}，包装为独立彩盒，适合作为礼品赠送。",
+    "卖家建议零售价{p}元，支持批量采购，量大可议价，起订量{q}件。",
+    "产品已通过相关质量检测，表面无异味，清洗时建议使用温水和中性清洁剂。",
+    "注意：请勿放入微波炉或烤箱加热，避免长时间暴晒，儿童需在成人看护下使用。",
+    "细节设计考虑到用户习惯，防滑底座和圆角结构提升了使用的安全性和稳定性。",
+]
+
+MAX_OPEN_INFLIGHT = 128  # 开环在途硬上限: 超限丢弃并计数, 防客户端线程爆炸
+
+# ---- 对话问答语料: 短答/中任务/长文混合, 覆盖常见问答形态
+CHAT_POOL = [
+    "用两三句话解释什么是 KV cache，为什么它对推理速度至关重要。",
+    "temperature 和 top_p 分别控制什么？调参时应该先动哪个？",
+    "列出三种常见的模型量化方法，各用一句话说明优缺点。",
+    "为什么推理时批量越大吞吐越高，但单个请求的延迟也越高？",
+    "用通俗的语言解释 Transformer 的注意力机制在做什么。",
+    "大模型'幻觉'的主要成因是什么？用三句话概括。",
+    "把这段话翻译成英文：大模型的推理瓶颈通常在显存带宽而不是算力，量化通过降低权重精度来缓解这一约束。",
+    "把下面这段口语化描述改写为正式的技术文档语气：这个缓存吧，一满就把最老的那些东西扔了，新来的接着用。",
+    "为下面这段内容写一句摘要：前缀缓存通过复用相同前缀的 KV 计算结果，让重复系统提示词的请求跳过大部分 prefill，显著降低首 token 延迟。",
+    "我们要给一个内部评测平台起一个中文名，要求体现'快'与'可信'，给出三个候选并各配一句理由。",
+    "写一篇 600 字左右的短文，主题：边缘设备上部署大语言模型的机会与挑战。",
+    "为技术团队写一份 500 字左右的决策备忘录：是否引入 AI 代码助手，需覆盖收益、风险与试点方案。",
+    "对比 vLLM 与 SGLang 的核心设计差异，写一篇 600 字左右的技术综述。",
+    "写一份面向新同学的'如何看懂推理服务指标'入门指南，600 字左右，覆盖 TTFT、吞吐、队列深度。",
+    "用比喻的方式向产品经理解释什么是投机解码，为什么它能加速生成，300 字左右。",
+    "总结构建高并发推理网关的五个关键设计点，每个点两三句话展开，500 字左右。",
+    "分析这个论断是否成立并说明理由：'模型量化到 4bit 后，输出质量一定显著下降。'400 字左右。",
+    "把以下需求拆解成结构化任务清单（用户故事格式）：用户希望上传文档后自动生成摘要并可追问。",
+]
+
+# ---- 代码生成语料: (任务描述, 语言)
+CODE_TASKS = [
+    ("实现一个 LRU 缓存类，支持 get/put 与容量上限，说明时间复杂度。", "Python"),
+    ("编写函数 merge_intervals(intervals)，合并所有重叠区间，附带单元测试。", "Python"),
+    ("实现一个线程安全的有界阻塞队列，供生产者-消费者场景使用。", "Python"),
+    ("写一个命令行脚本：统计指定目录下各扩展名文件的累计大小，按大小排序输出。", "Python"),
+    ("在不使用内置解码器的前提下实现 is_valid_utf8(data: bytes) -> bool。", "Python"),
+    ("实现一个简化版布隆过滤器，支持指定误判率，并推导位数组大小。", "Python"),
+    ("实现带过期时间的内存缓存模块，导出 get/set/delete 接口。", "TypeScript"),
+    ("实现一个遵循速率限制的重试装饰器：指数退避、最多重试三次、可配置限速。", "Python"),
+    ("实现令牌桶限流器类，支持突发容量与匀速补充，附并发测试。", "Python"),
+    ("实现二叉树的序列化与反序列化（不用库函数），并写两个测试。", "Python"),
+    ("写一个把 CSV 文件转换为 JSON 数组的脚本，处理引号转义与缺列。", "Python"),
+    ("实现固定容量的环形缓冲区，支持并发读写一写一读无锁。", "C++"),
+    ("实现函数 top_k_frequent(words, k)：返回出现频率最高的 k 个单词，同频按字典序。", "Python"),
+    ("排查并修复这段代码的描述场景：一个长期运行的服务把每个请求的响应体都存进全局 list 用于'调试'，内存持续增长。给出修复代码与原因说明。", "Python"),
+]
+
+# ---- RAG 语料: 通用技术段落(编号引用) + 与内容无关也成立的引用式问题
+RAG_TOKENS_PER_PASSAGE = 110  # 每段正文约 100-115 汉字(≈1 token/字), 另加段落编号
+RAG_PASSAGES = [
+    "权重量化把模型参数从 16bit 压缩到 8bit 或 4bit，直接减少显存占用与访存量。量化误差会轻微影响输出质量，但配合逐层校准通常可以把质量损失控制在很小的范围内，是单卡部署大模型最常用的手段。",
+    "连续批处理让推理引擎在每一步解码时动态合并正在运行的请求，新请求不必等待整批完成。相比静态批处理，它显著提高了 GPU 利用率与吞吐，是 vLLM 等现代引擎的标志性设计。",
+    "KV 缓存保存注意力计算中间结果，使解码阶段每步只需计算新 token。它随上下文长度线性增长，是显存的主要消耗者之一；页式注意力(PagedAttention)通过分页管理减少了碎片浪费。",
+    "投机解码用一个小的草稿模型快速生成若干候选 token，再由主模型并行验证，被接受的部分等价于主模型逐个生成。它在保持输出分布不变的前提下，可以成倍降低解码延迟。",
+    "张量并行把每一层的权重切分到多张 GPU 上，各卡计算部分结果后通信归约。它对通信带宽敏感，通常通过 NVLink 等高速互联才能发挥效果，是大模型多卡部署的基础并行方式。",
+    "前缀缓存复用相同前缀的 KV 计算结果。对系统提示词很长的服务，命中前缀缓存可以把首 token 延迟降低一个数量级；评测时应使用唯一前缀避免命中导致数据虚高。",
+    "推理请求调度需要在吞吐与延迟之间权衡：batch 越大吞吐越高，但排队延迟也随之上升。常见的策略是设置等待队列上限与批大小上限，超过后新请求快速失败或降级。",
+    "评测推理性能时，固定输出长度(忽略停止条件)可以避免模型提前结束造成的吞吐偏差；同时报告 TTFT 与每 token 延迟的分位数，比只报平均值更能反映用户体验。",
+    "显存占用由权重、KV 缓存与激活三部分构成。部署时通常预留一部分显存给 KV 缓存池，池越大可并发请求越多；当并发超过容量时，引擎会抢占或排队，表现为延迟陡增。",
+    "模型服务的长尾延迟往往来自个别的慢请求与偶发的批重组。压测时除了平均延迟，更应关注 P95/P99 与最大在途请求数，开环(固定到达速率)测试比闭环并发更能暴露排队堆积。",
+]
+RAG_QUESTIONS = [
+    "根据资料，总结其中提到的三个最重要的观点，并标注各自的段落号。",
+    "资料中提到了哪些技术手段？分别用来解决什么问题？请逐条标注来源段落。",
+    "仅根据资料回答：如果显存不足，有哪几种可行的应对办法？标注依据段落。",
+    "资料作者对'吞吐与延迟的关系'持什么观点？请引用具体段落说明。",
+    "基于资料，说明为什么评测推理系统时不能只看平均延迟，需引用段落支持你的回答。",
+    "资料未提及但与主题相关的'模型蒸馏'，资料里有没有任何间接信息？若没有请明确说明，并总结资料实际覆盖的主题。",
+]
+
+# ---- 图片理解语料: 与具体图片无关也成立的分析型 prompt
+VISION_PROMPTS = [
+    "详细描述这张图片的内容，指出其中最值得注意的三点。",
+    "如果这是数据图表，请读出关键数值并给出三条分析结论；若不是图表，请做内容分析。",
+    "提取图片中的全部文字，尽量保持原始排版结构。",
+    "为这张图片写一段 100 字左右的替代文本(alt text)，再写一段内容分析。",
+    "评估这张图片的构图、清晰度与信息密度，并说明它适合用在什么场合。",
+    "假设这张图片来自一份报告，请推断它想支持什么结论，并指出图中可能存在的误导之处。",
+]
+
+SCN_TEMPLATES = {
+    "chat":   {"label": "对话问答", "validator": None},
+    "code":   {"label": "代码生成", "validator": None},
+    "json":   {"label": "结构化抽取", "validator": "json"},
+    "rag":    {"label": "RAG 问答", "validator": None},
+    "vision": {"label": "图片理解", "validator": None},
+    "custom": {"label": "自定义任务集", "validator": None},  # 合法率按行内 response_format 决定
+}
+
+
+def _json_text_ok(text, required=None):
+    """输出能否解析为 JSON(容忍 ``` 围栏); required 非空时要求键齐全。"""
+    t = (text or "").strip()
+    if t.startswith("```"):
+        t = t.split("\n", 1)[1] if "\n" in t else ""
+        t = t.rsplit("```", 1)[0]
+    try:
+        obj = json.loads(t)
+    except Exception:
+        return False
+    return isinstance(obj, dict) and (not required or set(required) <= set(obj))
+
+
+def _retry_cell(run_once, label, max_attempts=3, pause_s=30.0):
+    """整格重跑: 有失败且未达上限时隔 pause_s 秒重跑整格, 每轮失败留痕, 记录以最后一轮为准。
+    只用于"基础设施型失败"的场景格(业务/回放/矩阵); 并发阶梯的过载失败是测量对象, 不重跑。"""
+    attempts, failed = 0, []
+    while True:
+        attempts += 1
+        rec = run_once()
+        if rec.get("ok") == rec.get("total") or attempts >= max_attempts:
+            if attempts > 1:
+                rec["attempts"] = attempts
+                rec["failed_attempts"] = failed
+            return rec
+        failed.append({"attempt": attempts, "ok": rec["ok"], "fail": rec["fail"],
+                       "errors": rec.get("errors") or []})
+        plog("  %s: %d/%d 失败, %.0fs 后重跑 (尝试 %d/%d)" %
+             (label, rec["fail"], rec["total"], pause_s, attempts + 1, max_attempts))
+        _sleep_cancel(pause_s)
+
+
+def _cell_metrics(recs, wall):
+    """场景格通用汇总: 先逐请求记录, 再对每请求指标取分位。"""
+    ok = [r for r in recs if not r["err"] and r["ntok"] > 0]
+    tt = sorted(r["ttft"] for r in ok if r["ttft"] is not None)
+    e2e = sorted(r["dt"] for r in ok)
+    m = {
+        "wall_s": round(wall, 2), "ok": len(ok), "fail": len(recs) - len(ok), "total": len(recs),
+        "req_s": round(len(ok) / wall, 3) if ok and wall > 0 else 0,
+        "agg_tps": round(sum(r["ntok"] for r in ok) / wall, 1) if ok and wall > 0 else 0,
+        "ttft_p50_s": round(pct(tt, 50), 3) if tt else None,
+        "ttft_p95_s": round(pct(tt, 95), 3) if tt else None,
+        "e2e_p50_s": round(pct(e2e, 50), 3) if e2e else None,
+        "e2e_p95_s": round(pct(e2e, 95), 3) if e2e else None,
+        "prompt_tokens_avg": round(statistics.mean(r["ptok"] for r in ok if r["ptok"]), 1)
+            if ok and any(r["ptok"] for r in ok) else None,
+        "out_tokens_avg": round(statistics.mean(r["ntok"] for r in ok), 1) if ok else None,
+        "errors": [r["err"] for r in recs if r["err"]][:3],
+    }
+    jr = [r for r in ok if r.get("json_req")]
+    if jr:
+        m["json_total"] = len(jr)
+        m["json_ok"] = sum(1 for r in jr if r["json_ok"])
+    return m
+
+
+def _scenario_request(url, headers, body, res, lock, inflight=None):
+    """单次场景请求(流式): 记录 ttft/e2e/token 数/JSON 合法性; 异常降级为错误记录。"""
+    json_req = (body.get("response_format") or {}).get("type") in ("json_schema", "json_object")
+    rec = {"ttft": None, "dt": None, "ntok": 0, "ptok": 0, "err": None,
+           "json_req": json_req, "json_ok": False}
+    if inflight is not None:
+        with lock:
+            inflight[0] += 1
+            inflight[1] = max(inflight[1], inflight[0])
+    try:
+        s = stream_call(url, body, headers, apply_req_extra=False)
+        rec.update(ttft=s["ttft"], dt=s["wall"],
+                   ntok=(s["usage"].get("completion_tokens") or 0) or s["chunks"],
+                   ptok=s["usage"].get("prompt_tokens") or 0)
+        if json_req:
+            rec["json_ok"] = _json_text_ok(s["text"])
+    except Exception as e:
+        rec["err"] = str(e)[:160]
+    finally:
+        if inflight is not None:
+            with lock:
+                inflight[0] -= 1
+        with lock:
+            res.append(rec)
+
+
+def _scn_json_body(model, rng, max_tokens, disable_thinking):
+    item = rng.choice(BIZ_ITEMS)
+    fill = dict(m=rng.choice(["304不锈钢", "食品级硅胶", "铝合金", "ABS塑料", "竹纤维", "陶瓷"]),
+                a=rng.randint(5, 60), b=rng.randint(5, 40), c=rng.randint(2, 30), w=rng.randint(80, 3000),
+                n=rng.randint(2, 6), col=rng.choice(["黑色", "白色", "灰色", "蓝色", "粉色"]),
+                p=rng.randint(15, 400), q=rng.randint(10, 200))
+    body_text = "".join(rng.choice(BIZ_SENTENCES).format(**fill) for _ in range(22))
+    user = "[编号%s] 商品：%s\n卖家原始描述：%s\n请按规则整理为 JSON。" % (uuid.uuid4().hex[:8], item, body_text)
+    body = {"model": model,
+            "messages": [{"role": "system", "content": BIZ_SYSTEM}, {"role": "user", "content": user}],
+            "max_tokens": max_tokens, "temperature": 0.3,
+            "response_format": {"type": "json_schema", "json_schema": {"name": "listing", "schema": BIZ_SCHEMA}}}
+    if disable_thinking:
+        body["chat_template_kwargs"] = {"enable_thinking": False}
+    return body
+
+
+def _scn_chat_body(model, rng, max_tokens, salt):
+    return {"model": model, "max_tokens": max_tokens, "temperature": 0.3,
+            "messages": [{"role": "user", "content": "[%s] %s" % (salt, rng.choice(CHAT_POOL))}]}
+
+
+def _scn_code_body(model, rng, max_tokens, salt):
+    task, lang = rng.choice(CODE_TASKS)
+    return {"model": model, "max_tokens": max_tokens, "temperature": 0.2,
+            "messages": [{"role": "system",
+                          "content": "你是资深软件工程师。给出完整、可直接运行的代码，附简要说明与两个测试用例。"},
+                         {"role": "user", "content": "[%s] 编程语言: %s。任务: %s" % (salt, lang, task)}]}
+
+
+def _scn_rag_body(model, rng, max_tokens, salt, ctx_tokens):
+    n = max(3, round(ctx_tokens / RAG_TOKENS_PER_PASSAGE))
+    start = rng.randrange(len(RAG_PASSAGES))
+    parts = ["[段落 %d] %s" % (i + 1, RAG_PASSAGES[(start + i) % len(RAG_PASSAGES)]) for i in range(n)]
+    user = "[%s]\n以下是检索到的资料：\n\n%s\n\n问题: %s" % (salt, "\n\n".join(parts), rng.choice(RAG_QUESTIONS))
+    return {"model": model, "max_tokens": max_tokens, "temperature": 0.2,
+            "messages": [{"role": "system",
+                          "content": "仅基于用户提供的资料回答，需标注依据的段落号；资料未涉及的内容明确说明不知道，不得编造。"},
+                         {"role": "user", "content": user}]}
+
+
+def _scn_vision_body(model, rng, max_tokens, salt, images, n_img):
+    start = rng.randrange(len(images))
+    parts = [{"type": "text", "text": "[%s] %s" % (salt, rng.choice(VISION_PROMPTS))}]
+    parts += [{"type": "image_url", "image_url": {"url": images[(start + k) % len(images)]}}
+              for k in range(n_img)]
+    return {"model": model, "max_tokens": max_tokens, "temperature": 0.2,
+            "messages": [{"role": "user", "content": parts}]}
+
+
+_IMG_MIME = {".jpg": "jpeg", ".jpeg": "jpeg", ".png": "png", ".webp": "webp"}
+
+
+def _load_vision_images(d):
+    """读取图片目录 -> data URL 列表; 无目录/无图片时抛错(场景无法运行, 快速失败)。"""
+    if not d or not os.path.isdir(d):
+        raise RuntimeError("图片目录不存在: %s (图片理解场景需要已上传的图片包或服务器图片目录)" % d)
+    names = sorted(n for n in os.listdir(d) if os.path.splitext(n)[1].lower() in _IMG_MIME)
+    if not names:
+        raise RuntimeError("图片目录中没有可用图片(jpg/png/webp): %s" % d)
+    out = []
+    for n in names:
+        with open(os.path.join(d, n), "rb") as f:
+            out.append("data:image/%s;base64,%s"
+                       % (_IMG_MIME[os.path.splitext(n)[1].lower()], base64.b64encode(f.read()).decode("ascii")))
+    return out
+
+
+def phase_scenario(url, headers, model, tpl_id, cfg):
+    """任务场景: 按 SCENARIO_TEMPLATES 的模板构造请求, C 个 worker 各连发 N 条。
+    语料 seeded 生成(同 seed 同正文, 盐除外) → A/B 两次运行收到相同请求序列;
+    custom 模板的请求来自任务集文件(cursor 跨格推进防前缀缓存)。"""
+    tpl = SCN_TEMPLATES[tpl_id]
+    conc_list = [int(c) for c in (cfg.get("conc") or [4, 8])]
+    rpw = int(cfg.get("requests_per_worker") or 3)
+    mt = int(cfg.get("max_tokens") or 512)
+    max_attempts = int(cfg.get("max_attempts") or 3)
+    pause = cfg.get("retry_pause_s")
+    pause = 30.0 if pause is None else float(pause)
+    images = pool = None
+    if tpl_id == "vision":
+        images = _load_vision_images(cfg.get("vision_dir") or "")
+        plog("  图片池 %d 张, 每请求 %d 张" % (len(images), int(cfg.get("vision_images") or 1)))
+    if tpl_id == "custom":
+        pool = ReplayPool(cfg.get("custom_file") or "")
+        plog("  任务集 %d 条" % len(pool))
+    ctx_list = [int(x) for x in (cfg.get("rag_ctx") or [4000])] if tpl_id == "rag" else [None]
+
+    def build(rng, salt, ctx):
+        if tpl_id == "chat":
+            return _scn_chat_body(model, rng, mt, salt)
+        if tpl_id == "code":
+            return _scn_code_body(model, rng, mt, salt)
+        if tpl_id == "json":
+            return _scn_json_body(model, rng, mt, bool(cfg.get("disable_thinking")))
+        if tpl_id == "rag":
+            return _scn_rag_body(model, rng, mt, salt, ctx)
+        return _scn_vision_body(model, rng, mt, salt, images, int(cfg.get("vision_images") or 1))
+
+    points = []
+    for conc in conc_list:
+        for ctx in ctx_list:
+            check_cancel()
+
+            def once(conc=conc, ctx=ctx):
+                res, lock, inflight = [], threading.Lock(), [0, 0]
+                start = pool.reserve(conc * rpw) if pool is not None else 0
+
+                def worker(w):
+                    rng = random.Random("%s-%s-%d-%d" % (tpl_id, ctx or "x", conc, w))
+                    for j in range(rpw):
+                        check_cancel()
+                        if pool is not None:  # custom: 请求来自任务集, 保留行内 params
+                            body = _replay_body(model, pool.get(start + w * rpw + j), pool)
+                        else:
+                            body = build(rng, uuid.uuid4().hex[:8], ctx)
+                        _scenario_request(url, headers, body, res, lock, inflight)
+
+                t0 = time.perf_counter()
+                with ThreadPoolExecutor(max_workers=conc) as ex:
+                    list(ex.map(worker, range(conc)))
+                m = _cell_metrics(res, time.perf_counter() - t0)
+                m.update(conc=conc, requests_per_worker=rpw)
+                if ctx is not None:
+                    m["ctx_tokens"] = ctx
+                if pool is not None:
+                    m.update(pool_size=len(pool), pool_wrapped=pool.wrapped)
+                if m["ok"] and tpl_id == "json":
+                    m["json_rate"] = round(m["json_ok"] / m["ok"], 3)
+                return m
+
+            rec = _retry_cell(once, "%s C=%d%s" % (tpl_id, conc, (" ctx=%d" % ctx) if ctx else ""),
+                              max_attempts, pause)
+            points.append(rec)
+            plog("  C=%-3d%s ok=%d/%d  req/s=%7.2f  ttft_p95=%6.2fs  e2e_p95=%6.2fs%s" %
+                 (conc, ("ctx=%-6d" % ctx) if ctx else "      ", rec["ok"], rec["total"], rec["req_s"],
+                  rec["ttft_p95_s"] or 0, rec["e2e_p95_s"] or 0,
+                  ("  json=%d/%d" % (rec["json_ok"], rec["json_total"])) if rec.get("json_total") else ""))
+    task = {"tpl": tpl_id, "label": tpl["label"], "validator": tpl["validator"],
+            "max_tokens": mt, "requests_per_worker": rpw}
+    if tpl_id == "rag":
+        task["rag_ctx"] = ctx_list
+    if tpl_id == "vision":
+        task["images"] = len(images)
+        task["images_per_request"] = int(cfg.get("vision_images") or 1)
+    if tpl_id == "custom":
+        task["pool_size"] = len(pool)
+    return {"id": "scn_" + tpl_id, "name": "场景 · " + tpl["label"], "points": points, "task": task}
+
+
+class ReplayPool:
+    """真实请求池: JSONL 逐行 {"messages": [...], "params": {...}}; 固定种子洗牌,
+    cursor 跨格推进尽量不重发同一请求(重复请求会命中前缀缓存, 吞吐虚高)。"""
+
+    def __init__(self, path, max_prompt_tokens=60000, seed=1, mt_default=4096, mt_cap=8192):
+        pool, skipped, bad = [], 0, 0
+        with open(path, encoding="utf-8") as f:
+            for ln in f:
+                if not ln.strip():
+                    continue
+                try:
+                    r = json.loads(ln)
+                except json.JSONDecodeError:
+                    bad += 1
+                    continue
+                pt = (r.get("meta") or {}).get("prompt_tokens")
+                if not isinstance(r.get("messages"), list) or (isinstance(pt, int) and pt > max_prompt_tokens):
+                    skipped += 1
+                    continue
+                pool.append(r)
+        if not pool:
+            raise RuntimeError("回放文件没有可用请求: %s (超限跳过 %d, 坏行 %d)" % (path, skipped, bad))
+        random.Random(seed).shuffle(pool)
+        self.pool, self.skipped, self.bad, self.path = pool, skipped, bad, path
+        self.mt_default, self.mt_cap, self.cursor = int(mt_default), int(mt_cap), 0
+
+    def reserve(self, n):
+        """预占 n 个请求(返回起始下标); 耗尽后回绕并置 wrapped。"""
+        start = self.cursor
+        self.cursor += n
+        return start
+
+    def get(self, i):
+        return self.pool[i % len(self.pool)]
+
+    @property
+    def wrapped(self):
+        return self.cursor > len(self.pool)
+
+    def __len__(self):
+        return len(self.pool)
+
+
+def _replay_body(model, rec, rp):
+    body = {k: v for k, v in (rec.get("params") or {}).items()
+            if k not in ("model", "stream", "stream_options", "n")}
+    mt = body.pop("max_completion_tokens", None)
+    try:
+        mt = int(body.get("max_tokens") or mt or rp.mt_default)
+    except (TypeError, ValueError):
+        mt = rp.mt_default
+    body["max_tokens"] = min(mt, rp.mt_cap)
+    if "enable_thinking" in body:  # 网关把顶层开关映射进 chat template
+        body.setdefault("chat_template_kwargs", {}).setdefault("enable_thinking", bool(body.pop("enable_thinking")))
+    body.update(model=model, messages=rec["messages"])
+    return body
+
+
+def phase_replay_closed(url, headers, model, cfg, rp):
+    """回放·闭环: C 个 worker 各连发 N 条真实请求 — 回答"C 路并发扛不扛得住"。"""
+    conc_list = [int(c) for c in (cfg.get("conc") or [4, 8])]
+    rpw = int(cfg.get("requests_per_worker") or 4)
+    max_attempts = int(cfg.get("max_attempts") or 3)
+    pause = cfg.get("retry_pause_s")
+    pause = 30.0 if pause is None else float(pause)
+    points = []
+    for conc in conc_list:
+        check_cancel()
+
+        def once(c=conc):
+            start = rp.reserve(c * rpw)
+            res, lock, inflight = [], threading.Lock(), [0, 0]
+
+            def worker(w):
+                for j in range(rpw):
+                    check_cancel()
+                    _scenario_request(url, headers, _replay_body(model, rp.get(start + w * rpw + j), rp),
+                                      res, lock, inflight)
+
+            t0 = time.perf_counter()
+            with ThreadPoolExecutor(max_workers=c) as ex:
+                list(ex.map(worker, range(c)))
+            m = _cell_metrics(res, time.perf_counter() - t0)
+            m.update(conc=c, requests_per_worker=rpw, max_inflight=inflight[1],
+                     pool_size=len(rp), pool_wrapped=rp.wrapped)
+            return m
+
+        rec = _retry_cell(once, "replay C=%d" % conc, max_attempts, pause)
+        points.append(rec)
+        plog("  C=%-3d ok=%d/%d  req/s=%7.2f  ttft_p95=%6.2fs  e2e_p95=%6.2fs  in-flight_max=%d" %
+             (conc, rec["ok"], rec["total"], rec["req_s"], rec["ttft_p95_s"] or 0,
+              rec["e2e_p95_s"] or 0, rec["max_inflight"]))
+    return {"id": "replay", "name": "回放·闭环", "points": points,
+            "pool": {"size": len(rp), "skipped": rp.skipped, "bad": rp.bad, "wrapped": rp.wrapped}}
+
+
+def _inflight_sampler(out, stop, inflight, lock):
+    t0 = time.perf_counter()
+    while not stop.wait(1.0):
+        with lock:
+            out.append([round(time.perf_counter() - t0, 1), inflight[0]])
+
+
+def _open_rate_cell(url, headers, model, rate, duration, rp):
+    """开波单速率格: 泊松到达(种子固定, A/B 两次运行到达时间轴相同), 发送期+排空期全程计时。"""
+    rng = random.Random("openloop-rate-%g" % rate)
+    res, lock, inflight = [], threading.Lock(), [0, 0]
+    samples, stop = [], threading.Event()
+    threads, shed, k = [], 0, 0
+    start = rp.cursor
+    sampler = threading.Thread(target=_inflight_sampler, args=(samples, stop, inflight, lock), daemon=True)
+    t0 = time.perf_counter()
+    sampler.start()
+    try:
+        nxt = 0.0
+        while nxt < duration:
+            _sleep_cancel(max(0.0, t0 + nxt - time.perf_counter()))
+            check_cancel()
+            if inflight[0] >= MAX_OPEN_INFLIGHT:  # 在途超限: 丢弃并计数(到达时间轴不变)
+                shed += 1
+            else:
+                t = threading.Thread(target=_scenario_request,
+                                     args=(url, headers, _replay_body(model, rp.get(start + k), rp),
+                                           res, lock, inflight), daemon=True)
+                t.start()
+                threads.append(t)
+            k += 1
+            nxt += rng.expovariate(rate)
+        for t in threads:
+            t.join()
+    finally:
+        stop.set()
+        sampler.join(timeout=2)
+        rp.cursor = start + k
+    wall = time.perf_counter() - t0
+    m = _cell_metrics(res, wall)
+    m.update(rate=rate, duration_s=duration, sent=k, shed=shed,
+             completed_rps=round(m["ok"] / wall, 3) if wall > 0 else 0,
+             max_inflight=inflight[1], inflight_ts=samples,
+             pool_size=len(rp), pool_wrapped=rp.wrapped)
+    return m
+
+
+def phase_replay_open(url, headers, model, cfg, rp):
+    """回放·开环: 按设定速率(泊松到达)持续施压 — 回答"线上到达速率下会不会越排越长"。
+    inflight_ts 时间线 + max_inflight 直接暴露排队堆积。"""
+    rates = [float(r) for r in (cfg.get("rates") or [])]
+    duration = float(cfg.get("duration_s") or 60)
+    max_attempts = int(cfg.get("max_attempts") or 3)
+    pause = cfg.get("retry_pause_s")
+    pause = 30.0 if pause is None else float(pause)
+    points = []
+    for rate in rates:
+        check_cancel()
+        rec = _retry_cell(lambda r=rate: _open_rate_cell(url, headers, model, r, duration, rp),
+                          "openloop rate=%g" % rate, max_attempts, pause)
+        points.append(rec)
+        plog("  rate=%-6g sent=%d shed=%d ok=%d/%d  完成=%6.2f rps  ttft_p95=%6.2fs  in-flight_max=%d" %
+             (rate, rec["sent"], rec["shed"], rec["ok"], rec["total"], rec["completed_rps"],
+              rec["ttft_p95_s"] or 0, rec["max_inflight"]))
+    return {"id": "openloop", "name": "回放·开环 (泊松到达)", "points": points, "duration_s": duration}
 
 
 # ---------------------------------------------------------------- 主流程
@@ -464,12 +1026,51 @@ def detect_framework(base_url, headers):
     return {"name": name or ("vLLM" if ver else ""), "version": ver}
 
 
+def _warmup(url, headers, model, cfg, warmup_shapes):
+    """热身: 先单发; 再按"实际会跑的 (输入长度, 并发) 组合"各预热一发(out=32, 结果丢弃),
+    覆盖引擎按 batch shape 的编译/cudagraph/缓存冷启动, 避免首个格子吃到冷启动开销。"""
+    plog("warmup...")
+
+    def one(prompt):
+        try:
+            stream_call(url, {"model": model, "messages": [{"role": "user", "content": prompt}],
+                              "max_tokens": 32, "temperature": 0}, headers, timeout=120)
+        except RuntimeError as e:  # 空流不致命(如被截断); 连接类错误与取消照常抛出
+            plog("warmup warning: %s" % e)
+
+    one("回复 OK")
+    if not warmup_shapes:
+        return
+    shapes = [(reps, 1) for _, reps in (cfg.get("prefill") or [])]
+    pc = cfg.get("prefill_conc")
+    if pc:
+        shapes += [(reps, int(pc.get("conc") or 4)) for _, reps in (pc.get("ladder") or [])]
+    shapes += [(1, c) for c in (1, 4, 8) if c in (cfg.get("conc") or [])]
+    seen, uniq = set(), []
+    for s in shapes:
+        if s not in seen:
+            seen.add(s)
+            uniq.append(s)
+    for reps, conc in uniq[:16]:
+        check_cancel()
+        prompt = "（预热 %d）请阅读后用一句话概括：" % (int(time.time() * 1000) % 1000000) + (ZH_UNIT * reps)
+        with ThreadPoolExecutor(max_workers=conc) as ex:
+            list(ex.map(lambda _: one(prompt), range(conc)))
+        plog("  warmup shape: 输入x%d句 × 并发%d" % (reps, conc))
+
+
 def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag="",
               outdir=None, custom=None, conc_ladder=None, matrix_conc=None, lens=None,
-              framework=None, fw_version=None, sink=None, fixed_output=True, cancel=None, notes=None):
+              framework=None, fw_version=None, sink=None, fixed_output=True, cancel=None, notes=None,
+              scenarios=None, replay=None, warmup_shapes=True, retry_max_attempts=3, retry_pause_s=30):
     """可编程入口: server.py 与 CLI 共用。sink 默认写 outdir/<run_id>.json; 返回落地位置; 失败抛异常。
-    fixed_output: 请求带 ignore_eos, 每次输出都跑满 max_tokens, 使不同后端/模型的吞吐可比。
-    cancel: threading.Event, 置位后在下一个请求前停止, 已完成阶段保留, 状态记为 cancelled。"""
+    fixed_output: 请求带 ignore_eos, 每次输出都跑满 max_tokens, 使不同后端/模型的吞吐可比(任务场景/回放除外)。
+    cancel: threading.Event, 置位后在下一个请求前停止, 已完成阶段保留, 状态记为 cancelled。
+    scenarios: 任务场景配置 {"tasks": ["chat","code","json","rag","vision","custom"], "conc": [...],
+              "requests_per_worker": n, "max_tokens": n, "rag_ctx": [...], "vision_dir": 路径, "vision_images": n,
+              "custom_file": 路径}; 默认不启用任何场景。
+    replay: 真实请求回放配置 dict({"file": 路径, "closed": {...}, "open": {"rates": [...], "duration_s": n}, ...})。
+    warmup_shapes: 按 batch shape 预热; retry_*: 场景/矩阵格失败整格重跑(留痕)。"""
     global _REQ_EXTRA, _CANCEL
     _REQ_EXTRA = {"ignore_eos": True} if fixed_output else {}
     _CANCEL = cancel
@@ -488,6 +1089,20 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
         cfg["prefill"] = lens_to_ladder(lens)
         if cfg.get("prefill_conc"):
             cfg["prefill_conc"]["ladder"] = lens_to_ladder(lens)
+    if scenarios and scenarios.get("tasks"):
+        for t in scenarios["tasks"]:
+            if t not in SCN_TEMPLATES:
+                raise RuntimeError("未知任务类型: %s (可选: %s)" % (t, "/".join(SCN_TEMPLATES)))
+    rp_pool = None
+    if replay:
+        rfile = replay.get("file") or replay.get("path") or ""
+        if not rfile or not os.path.isfile(rfile):
+            raise RuntimeError("回放文件不存在: %s" % rfile)
+        rp_pool = ReplayPool(rfile,
+                             max_prompt_tokens=int(replay.get("max_prompt_tokens") or 60000),
+                             seed=int(replay.get("seed") or 1),
+                             mt_default=int(replay.get("max_tokens_default") or 4096),
+                             mt_cap=int(replay.get("max_tokens_cap") or 8192))
 
     base_url = normalize_base(url)
     fw = detect_framework(base_url, headers)
@@ -500,10 +1115,13 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
               "started_utc": datetime.now(timezone.utc).isoformat(), "url": url, "model": model,
               "env": probe_env(base_url, headers), "phases": [],
               "overrides": {"conc_ladder": conc_ladder or None, "matrix_conc": matrix_conc or None, "lens": lens or None,
-                            "fixed_output": bool(fixed_output)},
+                            "fixed_output": bool(fixed_output), "warmup_shapes": bool(warmup_shapes)},
               "framework": fw}
     if notes:
         result["notes"] = list(notes)
+    if replay and rp_pool is not None:
+        result["replay"] = {"file": os.path.basename(rp_pool.path), "pool_size": len(rp_pool),
+                            "skipped": rp_pool.skipped, "bad": rp_pool.bad}
     sink = sink or sinks.JsonFileSink(outdir)
 
     def save():
@@ -514,22 +1132,31 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
     result["status"] = "running"
     try:
         save()
-        plog("warmup...")
-        try:
-            stream_call(url, {"model": model, "messages": [{"role": "user", "content": "回复 OK"}],
-                              "max_tokens": 16, "temperature": 0}, headers, timeout=120)
-        except RuntimeError as e:  # 空流不致命(如被截断); 连接类错误与取消照常抛出
-            plog("warmup warning: %s" % e)
+        _warmup(url, headers, model, cfg, warmup_shapes)
         plog("[phase] prefill")
         result["phases"].append(phase_prefill(url, headers, model, cfg["prefill"], 96, cfg["prefill_rep"])); save()
         pc = cfg.get("prefill_conc")
         if pc:
             plog("[phase] prefill-conc (x%d)" % pc["conc"])
-            result["phases"].append(phase_prefill_conc(url, headers, model, pc["ladder"], pc["conc"], 128)); save()
+            result["phases"].append(phase_prefill_conc(url, headers, model, pc["ladder"], pc["conc"], 128,
+                                                       retry_max_attempts, retry_pause_s)); save()
         plog("[phase] decode")
         result["phases"].append(phase_decode(url, headers, model, cfg["decode_tok"], cfg["decode_rep"])); save()
         plog("[phase] concurrency")
         result["phases"].append(phase_concurrency(url, headers, model, cfg["conc"], cfg["decode_tok"], cfg["conc_rounds"])); save()
+        for tpl_id in (scenarios or {}).get("tasks") or []:
+            plog("[phase] scenario:%s (%s)" % (tpl_id, SCN_TEMPLATES[tpl_id]["label"]))
+            result["phases"].append(phase_scenario(url, headers, model, tpl_id, scenarios)); save()
+        if rp_pool is not None:
+            rcfg = replay.get("closed") or {}
+            if rcfg.get("conc"):
+                plog("[phase] replay 闭环")
+                result["phases"].append(phase_replay_closed(url, headers, model, rcfg, rp_pool)); save()
+            ocfg = replay.get("open") or {}
+            if ocfg.get("rates"):
+                plog("[phase] replay 开环 (泊松到达)")
+                result["phases"].append(phase_replay_open(url, headers, model, ocfg, rp_pool)); save()
+            result["replay"]["wrapped"] = rp_pool.wrapped
         for ctx in cfg.get("longctx", []):
             plog("[phase] longctx %dK" % (ctx // 1024))
             result["phases"].append(phase_longctx(url, headers, model, ctx, 256)); save()
@@ -573,6 +1200,19 @@ def main():
     ap.add_argument("--framework", default=None, help="后端框架名称, 如 1Cat-vLLM / vLLM / SGLang")
     ap.add_argument("--fw-version", default=None, help="框架版本号, 如 1.6.5-sm70main")
     ap.add_argument("--no-fixed-output", action="store_true", help="不发送 ignore_eos(允许模型提前结束输出)")
+    ap.add_argument("--scn", default=None,
+                    help="任务场景, 逗号分隔: chat/code/json/rag/vision/custom (默认不启用任何场景)")
+    ap.add_argument("--scn-conc", default=None, help="任务场景并发列表, 逗号分隔, 如 4,8 (默认 4,8)")
+    ap.add_argument("--scn-rpw", type=int, default=3, help="任务场景每并发请求数 (默认 3)")
+    ap.add_argument("--rag-ctx", default=None, help="RAG 场景上下文档位(token), 逗号分隔, 如 1500,4000,16000")
+    ap.add_argument("--vision-dir", default=None, help="图片理解场景的图片目录(服务器路径)")
+    ap.add_argument("--vision-img", type=int, default=1, help="图片理解每请求图片数 1-4 (默认 1)")
+    ap.add_argument("--custom-file", default=None, help="自定义任务集 JSONL (每行 {messages, params})")
+    ap.add_argument("--replay-file", default=None, help="真实请求回放 JSONL 文件 (每行 {messages, params})")
+    ap.add_argument("--replay-conc", default=None, help="回放闭环并发列表, 逗号分隔, 如 8,16")
+    ap.add_argument("--replay-rates", default=None, help="回放开环速率列表(req/s), 逗号分隔, 如 2,5; 传了才跑开环")
+    ap.add_argument("--rate-duration", type=int, default=60, help="开环每档速率持续秒数 (默认 60)")
+    ap.add_argument("--no-shape-warmup", action="store_true", help="关闭按 batch shape 的预热")
     ap.add_argument("--sink", choices=["json", "db", "both"], default="json",
                     help="结果落地: json=outdir 文件(默认) / db=SQLite 库 / both")
     ap.add_argument("--db", default=None, help="SQLite 库路径 (默认 data/llm_bench.db 或 $LLM_BENCH_DB)")
@@ -592,11 +1232,43 @@ def main():
                 raise ValueError("range")
         except ValueError:
             plog("--lens 格式错误: 应为 1-256 的逗号分隔整数(K)"); sys.exit(2)
+
+    def _int_list(text, flag):
+        try:
+            return [int(x) for x in text.split(",") if x.strip()]
+        except ValueError:
+            plog("%s 格式错误, 应为逗号分隔整数" % flag); sys.exit(2)
+
+    scen_cfg = None
+    if args.scn:
+        scen_cfg = {"tasks": [t.strip() for t in args.scn.split(",") if t.strip()]}
+        if args.scn_conc:
+            scen_cfg["conc"] = _int_list(args.scn_conc, "--scn-conc")
+        scen_cfg["requests_per_worker"] = args.scn_rpw
+        if args.rag_ctx:
+            scen_cfg["rag_ctx"] = _int_list(args.rag_ctx, "--rag-ctx")
+        if args.vision_dir:
+            scen_cfg["vision_dir"] = args.vision_dir
+            scen_cfg["vision_images"] = max(1, min(4, args.vision_img))
+        if args.custom_file:
+            scen_cfg["custom_file"] = args.custom_file
+    replay_cfg = None
+    if args.replay_file:
+        replay_cfg = {"file": args.replay_file}
+        if args.replay_conc:
+            replay_cfg["closed"] = {"conc": _int_list(args.replay_conc, "--replay-conc")}
+        if args.replay_rates:
+            try:
+                replay_cfg["open"] = {"rates": [float(x) for x in args.replay_rates.split(",") if x.strip()],
+                                      "duration_s": args.rate_duration}
+            except ValueError:
+                plog("--replay-rates 格式错误, 应为逗号分隔数字"); sys.exit(2)
     try:
         run_suite(url, args.model, args.api_key, args.suite, args.metrics_url, args.tag, args.outdir, args.custom,
                   conc_ladder=ladder, matrix_conc=args.matrix_conc, lens=lens_list,
                   framework=args.framework, fw_version=args.fw_version,
-                  sink=sinks.from_cli(args.sink, args.outdir, args.db), fixed_output=not args.no_fixed_output)
+                  sink=sinks.from_cli(args.sink, args.outdir, args.db), fixed_output=not args.no_fixed_output,
+                  scenarios=scen_cfg, replay=replay_cfg, warmup_shapes=not args.no_shape_warmup)
     except SystemExit:
         raise
     except Exception as e:
