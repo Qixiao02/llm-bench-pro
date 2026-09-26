@@ -520,10 +520,6 @@ def image_diff(png_a, png_b, threshold=24):
     return round(changed / (wa * ha), 5)
 
 
-if __name__ == "__main__":
-    print("browser:", find_browser())
-
-
 def reap_all_legacy(log=print):
     """手动回收: 关闭所有 llmbench-chrome-* 目录对应的后台浏览器(包括旧版本遗留、没有归属记录的)。
     只应在没有评测正在运行时使用。返回处理的目录数。"""
