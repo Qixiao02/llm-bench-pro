@@ -63,6 +63,8 @@ globalThis.setTimeout = () => 0;
 globalThis.clearTimeout = () => {};
 globalThis.clearInterval = () => {};
 globalThis.requestAnimationFrame = () => 0;
+globalThis.scrollTo = () => {};
+globalThis.CSS = { escape: x => String(x) };
 
 class __Evt { constructor(type, opts) { this.type = type; Object.assign(this, opts || {}); } }
 globalThis.Event = __Evt;

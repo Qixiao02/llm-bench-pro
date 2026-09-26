@@ -1,6 +1,6 @@
 "use strict";
-/* LLM Bench Pro 前端逻辑 (零依赖, 经典脚本) */
-const UI_VERSION="2.7.0";  /* 与 llm_bench_pro/version.py 保持一致 */
+/* LLM Bench Pro 前端逻辑 (零依赖经典脚本; 图表用本地内置的 ECharts) */
+const UI_VERSION="2.8.0";  /* 与 llm_bench_pro/version.py 保持一致 */
 /* ============================================================
    基础工具
    ============================================================ */
@@ -17,14 +17,22 @@ function fmtAxis(v){
   if(a>=10)return v.toFixed(0);
   return v.toFixed(a<1?2:1).replace(/\.?0+$/,"");
 }
+/* 秒: 小于 10 秒保留两位小数, 否则一位 */
+function fmtSec(v){return v==null||!isFinite(v)?"—":Number(v).toFixed(Math.abs(v)<10?2:1)}
 function median(xs){const v=xs.filter(x=>x!=null&&isFinite(x)).sort((p,q)=>p-q);if(!v.length)return null;const m=v.length>>1;return v.length%2?v[m]:(v[m-1]+v[m])/2}
+/* 坐标轴上限: 整洁刻度步长(1/2/2.5/5×10^n), 4 格网格 */
+function niceMax(v){
+  if(!(v>0))return 1;
+  const raw=v/4,p=10**Math.floor(Math.log10(raw)),n=raw/p;
+  return (n<=1?1:n<=2?2:n<=2.5?2.5:n<=5?5:10)*p*4;
+}
 /* 时间统一按浏览器本地时区显示(后端存 UTC ISO) */
 function toDate(iso){if(!iso)return null;let s=String(iso);if(!/[zZ]$|[+-]\d\d:?\d\d$/.test(s))s+="Z";const d=new Date(s);return isNaN(d.getTime())?null:d}
 const pad2=n=>String(n).padStart(2,"0");
 function timeText(iso){const d=toDate(iso);return d?`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`:"—"}
 function shortTime(iso){const d=toDate(iso);return d?`${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`:""}
 function durationText(s){s=Math.max(0,Math.round(s||0));if(s<3600)return Math.max(1,Math.round(s/60))+" 分钟";if(s<86400)return (s/3600).toFixed(1).replace(/\.0$/,"")+" 小时";return (s/86400).toFixed(1).replace(/\.0$/,"")+" 天"}
-const STATUS_NAME={running:"运行中",done:"已完成",failed:"失败",interrupted:"已中断",cancelled:"已停止"};
+const STATUS_NAME={running:"进行中",done:"已完成",failed:"失败",interrupted:"已中断",cancelled:"已停止"};
 async function getJSON(url){const r=await fetch(url,{cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);return r.json()}
 async function postJSON(url,body){
   try{const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -36,7 +44,7 @@ function lsSet(key,val){try{localStorage.setItem(key,JSON.stringify(val))}catch(
 function bindFormMemory(key,ids){
   const saved=lsGet(key);
   ids.forEach(id=>{const el=$(id);if(el&&saved[id]!=null&&saved[id]!=="")el.value=saved[id]});
-  const save=()=>{const k={};ids.forEach(id=>k[id]=$(id).value);lsSet(key,k)};
+  const save=()=>{const k={};ids.forEach(id=>{const el=$(id);if(el)k[id]=el.value});lsSet(key,k)};
   ids.forEach(id=>{const el=$(id);if(el){el.addEventListener("input",save);el.addEventListener("change",save)}});
   return save;
 }
@@ -75,6 +83,56 @@ function setConn(ok,text){
 function emptyState(title,desc,{iconName="inbox",action="",inline=false}={}){
   return `<div class="empty${inline?" is-inline":""}">${icon(iconName)}<div class="empty-title">${esc(title)}</div>${desc?`<div class="empty-desc">${esc(desc)}</div>`:""}${action}</div>`;
 }
+function alertBox(tone,html,action=""){
+  const ic={warn:"alert",bad:"x-circle",info:"info",good:"check-circle"}[tone]||"info";
+  return `<div class="alert is-${tone}">${icon(ic)}<div>${html}</div>${action}</div>`;
+}
+
+/* ============================================================
+   名词解释: 页面上用大白话, 悬停可看专业说法; 左侧「名词解释」列出全部
+   ============================================================ */
+const TERMS={
+  token:{name:"token",tech:"token",desc:"模型读写文字的最小单位。中文里 1 个 token 大约是 1 个汉字，英文里大约是 3/4 个单词。"},
+  decode:{name:"生成速度",tech:"解码速度（Decode），单位 token/秒",desc:"模型每秒能写出多少个 token。越高越好。"},
+  agg:{name:"总生成速度",tech:"聚合吞吐（Throughput）",desc:"同时处理多个请求时，所有请求加起来每秒写出多少 token，反映服务器的总能力。越高越好。"},
+  per:{name:"单个请求的速度",tech:"单流吞吐",desc:"同时处理多个请求时，每个请求分到的生成速度。同时请求越多，通常越慢。"},
+  ttft:{name:"首字等待",tech:"TTFT（Time To First Token）",desc:"从发出请求到收到第一个字要等多久。输入越长、同时请求越多，通常要等越久。越短越好。"},
+  itl:{name:"出字间隔",tech:"ITL（Inter-Token Latency）/ TPOT",desc:"相邻两次收到新内容隔了多久，决定看起来“打字”流不流畅。越短越好。"},
+  prefill:{name:"读入速度",tech:"Prefill 吞吐",desc:"模型读取你发过去的内容（提示词、资料）的速度，决定长输入要等多久才开始回答。越高越好。"},
+  pct:{name:"一般 / 较慢 / 最慢",tech:"p50 / p95 / p99 分位数",desc:"把所有请求从快到慢排好：“一般”是正中间那个（p50）；“较慢”表示 95% 的请求都比它快（p95）；“最慢”是 99%（p99）。"},
+  conc:{name:"同时请求数",tech:"并发（Concurrency）",desc:"同一时刻有多少个请求在等模型回答。"},
+  rps:{name:"每秒完成请求数",tech:"req/s（QPS）",desc:"每秒能完整回答多少个请求。越高越好。"},
+  e2e:{name:"完整响应时间",tech:"端到端延迟（E2E）",desc:"从发出请求到收到最后一个字的总时间。越短越好。"},
+  burst:{name:"每次返回的 token 数",tech:"Burst（投机解码）",desc:"服务每次推送几个 token。明显大于 1 通常说明开启了投机解码（一次猜好几个字）来加速。"},
+  jitter:{name:"出字波动",tech:"ITL 抖动",desc:"出字间隔忽快忽慢的程度。越小越平稳。"},
+  kv:{name:"显存缓存占用",tech:"KV Cache 使用率",desc:"服务端存放对话上下文的显存用了多少。接近 100% 时新请求要排队。"},
+  prefix:{name:"重复内容复用率",tech:"前缀缓存命中率",desc:"请求开头与之前请求相同的部分可以直接复用、不用重读，复用得越多越快。"},
+  open:{name:"按固定速率发送",tech:"开环（泊松到达）",desc:"不管前面的请求有没有回完，按设定速率随机间隔地发新请求，模拟真实用户陆续到来。处理中的请求越积越多，说明服务跟不上。"},
+  closed:{name:"固定同时请求数",tech:"闭环",desc:"始终保持固定数量的请求在处理，一个回完马上发下一个。"},
+  inflight:{name:"处理中的请求",tech:"在途请求",desc:"已经发出、还没回完的请求数量。"},
+  fixed:{name:"生成满指定长度",tech:"ignore_eos",desc:"让模型每次都写满规定的长度，避免有的模型提前结束让速度看起来偏高。"},
+  ci:{name:"误差范围",tech:"95% 置信区间（Wilson）",desc:"题目数量有限，分数会有随机波动。真实水平有 95% 的把握落在这个范围内。两个分数的范围重叠很多时，差距可能只是运气。"},
+  sig:{name:"差异可信",tech:"McNemar 配对检验，p < 0.05",desc:"两次测试用同一套题，逐题比较谁对谁错。“差异可信”表示差距不太可能是随机波动；“差异不明显”表示可能只是运气。"},
+  macro:{name:"各科平均",tech:"宏平均",desc:"每科先算正确率再求平均，题多的科目不会占更大比重。"},
+  trunc:{name:"没答完",tech:"截断（finish_reason = length）",desc:"回答写到长度上限被强行停止，常见于思考太久或上限太小，这些题记为答错。"},
+  run:{name:"实际运行检查",tech:"无头浏览器运行检测",desc:"在后台浏览器里真正打开模型写的网页，检查能否加载、有没有报错、是不是白屏，并按题目模拟操作看功能是否生效。"},
+  static:{name:"只看了代码",tech:"源码检查（降级）",desc:"后台浏览器不可用时只检查代码里有没有相关关键词，不能代表作品真的能用。"},
+  judge:{name:"AI 看图打分",tech:"视觉评审（VLM Judge）",desc:"让一个能看图的模型看截图和代码，按题目要求逐项打 0–10 分，汇总成百分制。"},
+  repeat:{name:"陷入重复输出",tech:"退化重复（degenerate repetition）",desc:"模型不停地重复同一段内容直到长度上限，这是模型自身的问题。检测到后会立即停止并标记。"},
+  cont:{name:"接着写",tech:"续写",desc:"作品太长一次写不完时，把已写好的部分交给模型让它接着写，再拼起来。每次拼接做了什么都记在「生成过程」里。"},
+  control:{name:"对照运行",tech:"干净环境复现",desc:"作品报错时，在不加任何检测代码的干净页面里按同样步骤再运行一遍。同样报错，说明是作品本身的问题。"},
+  sampling:{name:"随机性",tech:"采样参数 temperature / top_p / top_k",desc:"控制模型每次选词有多随机。太低时小模型容易反复写同一段；官方推荐值是模型厂商给出的最佳设置。"},
+};
+/* 页面上的名词: 大白话 + 悬停显示专业说法 */
+function term(key,label){
+  const t=TERMS[key];if(!t)return esc(label||key);
+  return `<span class="term" title="${esc(t.tech+"：" +t.desc)}">${esc(label||t.name)}</span>`;
+}
+function showGlossary(){
+  Modal.open("名词解释",`<p class="muted" style="margin-bottom:12px">页面上尽量用大白话；把鼠标放在带虚线下划线的词上，也能看到这里的解释。</p>
+    <div class="glossary">${Object.values(TERMS).map(t=>`<div class="glossary-item"><div><div class="glossary-name">${esc(t.name)}</div>
+      <div class="glossary-tech">${esc(t.tech)}</div></div><div class="glossary-desc">${esc(t.desc)}</div></div>`).join("")}</div>`,{wide:true});
+}
 
 /* ============================================================
    主题
@@ -83,22 +141,25 @@ let C={};
 function readTheme(){
   const cs=getComputedStyle(document.documentElement),v=n=>cs.getPropertyValue(n).trim();
   C={a:v("--series-1"),b:v("--series-2"),t:v("--series-3"),series:[1,2,3,4,5,6].map(i=>v("--series-"+i)),
-     grid:v("--chart-grid"),axis:v("--chart-axis"),text:v("--text-3"),text2:v("--text-2"),text1:v("--text-1"),
-     surface:v("--surface-1"),borderStrong:v("--border-strong"),font:v("--font-sans"),mono:v("--font-mono")||v("--font-sans")};
+     grid:v("--chart-grid"),axis:v("--chart-axis"),text:v("--text-3"),text2:v("--text-2"),text1:v("--text-1"),text3:v("--text-3"),
+     surface:v("--surface-1"),surface2:v("--surface-2"),border:v("--border"),borderStrong:v("--border-strong"),
+     good:v("--good"),bad:v("--bad"),warn:v("--warn"),primary:v("--primary-fg"),
+     goodMark:v("--good-mark"),warnMark:v("--warn-mark"),badMark:v("--bad-mark"),
+     font:v("--font-sans"),mono:v("--font-mono")||v("--font-sans")};
 }
 function withAlpha(hex,a){const h=String(hex).replace("#","");return h.length===6?"#"+h+Math.round(a*255).toString(16).padStart(2,"0"):hex}
 function applyTheme(t,persist){
   document.documentElement.dataset.theme=t;
   if(persist)try{localStorage.setItem("llm-bench-pro-theme",t)}catch(e){}
   $("themeBtn").querySelector("use").setAttribute("href",t==="dark"?"#i-sun":"#i-moon");
-  $("themeBtn").setAttribute("aria-label",t==="dark"?"切换为亮色主题":"切换为暗色主题");
+  $("themeBtn").setAttribute("aria-label",t==="dark"?"切换为亮色":"切换为暗色");
   readTheme();
   redrawVisible();
 }
 $("themeBtn").onclick=()=>applyTheme(document.documentElement.dataset.theme==="dark"?"light":"dark",true);
 
 /* ============================================================
-   导航 / 折叠 / 展开 / 弹窗
+   导航 / 抽屉 / 弹窗 / 通用点击
    ============================================================ */
 let VIEW="dash";
 const VIEWS={dash:"viewDash",cmp:"viewCmp",iq:"viewIq",gen:"viewGen"};
@@ -107,31 +168,51 @@ function showView(v){
   VIEW=v;
   document.querySelectorAll(".nav-item").forEach(b=>{if(b.dataset.view===v)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
   Object.entries(VIEWS).forEach(([k,id])=>$(id).classList.toggle("is-active",k===v));
+  closeDrawers();
   try{history.replaceState(null,"","#"+v)}catch(e){}
   if(v==="dash")render();
   if(v==="cmp")renderCmp();
   if(v==="iq"){loadBanks();loadIqResults();}
   if(v==="gen"){renderTaskChips();loadGenResults();}
+  window.scrollTo(0,0);
 }
 function redrawVisible(){
   if(VIEW==="dash")render();
   else if(VIEW==="cmp")renderCmp();
   else if(VIEW==="iq")renderIq();
+  else if(VIEW==="gen")renderGen();
+}
+/* 新建测试用右侧抽屉: 同一时间只开一个, 结果页保持可见 */
+const DRAWERS=["launcher","iqLauncher","genLauncher"];
+function closeDrawers(except){
+  DRAWERS.forEach(id=>{if(id!==except&&$(id)&&!$(id).hidden)toggleLauncher(id,false)});
 }
 function toggleLauncher(id,force){
-  const el=$(id);const open=force==null?el.hidden:force;
+  const el=$(id);if(!el)return;
+  const open=force==null?el.hidden:force;
+  if(open)closeDrawers(id);
   el.hidden=!open;
+  $("drawerBackdrop").hidden=!DRAWERS.some(d=>$(d)&&!$(d).hidden);
   document.querySelectorAll(`[data-toggle="${id}"][aria-expanded]`).forEach(b=>b.setAttribute("aria-expanded",String(open)));
-  if(open&&force==null){const f=el.querySelector("input:not([type=checkbox]),select");if(f)f.focus()}
+  if(open&&force==null){const f=el.querySelector("input:not([type=checkbox]):not([type=file]),select");if(f)setTimeout(()=>f.focus(),60)}
+}
+$("drawerBackdrop").addEventListener("click",()=>closeDrawers());
+/* 地址栏 #dash / #iq … 变化(前进/后退、手动修改)时切换页面 */
+window.addEventListener("hashchange",()=>{const v=(location.hash||"").slice(1);if(VIEWS[v]&&v!==VIEW)showView(v)});
+/* 运行中的任务: 侧栏圆点 + 页头"进行中"按钮, 抽屉关着也看得到 */
+function setRunning(job,on){
+  document.querySelectorAll(`[data-running="${job}"],[data-running-pill="${job}"]`).forEach(el=>el.hidden=!on);
 }
 document.addEventListener("click",e=>{
   const nav=e.target.closest(".nav-item");if(nav&&nav.dataset.view){showView(nav.dataset.view);return}
   const tg=e.target.closest("[data-toggle]");if(tg){toggleLauncher(tg.dataset.toggle);return}
-  const col=e.target.closest("[data-collapse]");
-  if(col){const p=col.closest(".panel");p.classList.toggle("is-collapsed");col.setAttribute("aria-expanded",String(!p.classList.contains("is-collapsed")));
-    if(!p.classList.contains("is-collapsed"))redrawVisible();return}
-  const vis=e.target.closest("[data-vis]");
-  if(vis){const [g,k]=vis.dataset.vis.split(".");VIS[g][k]^=1;redrawVisible();return}
+  const jump=e.target.closest("[data-jumpto]");
+  if(jump){e.preventDefault();const t=$(jump.dataset.jumpto);if(t)t.scrollIntoView({behavior:"smooth",block:"start"});return}
+  const flip=e.target.closest("[data-flip]");
+  if(flip){const card=flip.closest(".ccard");const on=!card.classList.contains("is-table");
+    card.classList.toggle("is-table",on);flip.setAttribute("aria-pressed",String(on));
+    flip.innerHTML=on?icon("gauge")+"图表":icon("table")+"数据";
+    if(!on){const ch=card.querySelector(".chart");if(ch&&ch._ec)ch._ec.resize()}return}
   const epBtn=e.target.closest("[data-ep-use],[data-ep-del],[data-ep-edit],[data-ep-save],[data-ep-cancel],[data-ep-reveal]");
   if(epBtn){
     if(epBtn.dataset.epUse)epApply(epBtn.dataset.epUse);
@@ -143,7 +224,7 @@ document.addEventListener("click",e=>{
       epBtn.title=show?"隐藏 Key":"显示 Key";
     }
     else if("epSave" in epBtn.dataset)epSave();
-    else{EP_EDIT=null;manageEndpoints()}  /* 取消编辑 → 回到新增态 */
+    else{EP_EDIT=null;manageEndpoints()}  /* 取消编辑 → 回到新增 */
     return
   }
   const row=e.target.closest("tr[data-expand]");
@@ -155,7 +236,7 @@ document.addEventListener("click",e=>{
 const Modal={
   last:null,
   onClose:null,
-  open(title,html,{badges="",flush=false,dialog=false,panel=false}={}){
+  open(title,html,{badges="",flush=false,dialog=false,panel=false,wide=false}={}){
     if(!$("modal").hidden)this.close();
     this.last=document.activeElement;
     $("modalTitle").textContent=title;
@@ -163,12 +244,14 @@ const Modal={
     const body=$("modalBody");body.className="modal-body"+(flush?" is-flush":"");body.innerHTML=html;body.onclick=null;
     $("modal").classList.toggle("is-dialog",!!dialog);
     $("modal").classList.toggle("is-panel",!!panel);
+    $("modal").classList.toggle("is-wide",!!wide);
     $("modal").hidden=false;
     $("modalClose").focus();
   },
   close(){
     if($("modal").hidden)return;
     $("modal").hidden=true;$("modalBody").innerHTML="";  /* 清空 iframe, 停止作品音频/动画 */
+    disposeDetached();
     const cb=this.onClose;this.onClose=null;
     if(this.last&&this.last.focus)this.last.focus();
     if(cb)cb();
@@ -186,11 +269,11 @@ function confirmDialog({title,message,confirmText="确定",danger=false}){
     $("modalBody").querySelector('[data-dialog="yes"]').focus();
   });
 }
-/* 启动类请求: 与性能测试共用端点时后端返回 endpoint_busy, 由用户确认是否仍要同时运行 */
+/* 启动类请求: 与速度测试共用端点时后端返回 endpoint_busy, 由用户确认是否仍要同时运行 */
 async function postWithConflict(url,body){
   let d=await postJSON(url,body);
   if(!d.ok&&d.code==="endpoint_busy"){
-    const go=await confirmDialog({title:"模型端点正在被使用",message:d.error+"\n\n仍要同时启动吗？",confirmText:"仍要启动"});
+    const go=await confirmDialog({title:"这个模型服务正在被使用",message:d.error+"\n\n同时测试会互相影响结果。仍要同时开始吗？",confirmText:"仍要开始"});
     if(!go)return null;
     d=await postJSON(url,{...body,force:true,conflict_with:d.conflict});
   }
@@ -199,7 +282,7 @@ async function postWithConflict(url,body){
 $("modalClose").onclick=()=>Modal.close();
 $("modal").addEventListener("mousedown",e=>{if(e.target===$("modal"))Modal.close()});
 document.addEventListener("keydown",e=>{
-  if($("modal").hidden)return;
+  if($("modal").hidden){if(e.key==="Escape")closeDrawers();return}
   if(e.key==="Escape"){Modal.close();return}
   if(e.key==="Tab"){  /* 焦点限制在弹窗内 */
     const f=[...$("modal").querySelectorAll("button,[href],input,select,textarea,iframe,[tabindex]:not([tabindex='-1'])")].filter(x=>!x.disabled);
@@ -368,6 +451,7 @@ const CSelect=(()=>{
   return{enhance,combo,close};
 })();
 
+
 /* ============================================================
    运行日志 + 状态轮询
    ============================================================ */
@@ -380,8 +464,8 @@ function LogBox(id,job){
   const stop=el.querySelector(".runlog-stop");
   let stopping=false;
   stop.onclick=async()=>{
-    const ok=await confirmDialog({title:"停止运行",confirmText:"停止",danger:true,
-      message:"不再开始新的请求，已完成的结果会保留。"+(job==="iq"?"\n停止后可以在能力评测页续跑。":"")+"\n正在进行中的请求会被放弃。"});
+    const ok=await confirmDialog({title:"停止测试",confirmText:"停止",danger:true,
+      message:"不再发新的请求，已经完成的结果会保留。"+(job==="iq"?"\n停止后可以在能力测试页接着跑。":"")+"\n正在进行的请求会被放弃。"});
     if(!ok)return;
     const d=await postJSON("/api/cancel",{job});
     if(!d.ok){toast(d.error,"error");return}
@@ -394,11 +478,11 @@ function LogBox(id,job){
   const tick=()=>{const s=Math.max(0,Math.round((Date.now()-t0)/1000));time.textContent=(s>=60?Math.floor(s/60)+" 分 ":"")+(s%60)+" 秒"};
   return{
     start(text){el.hidden=false;el.className="runlog is-running";title.textContent=text;body.textContent="";stopping=false;
-      stop.hidden=!job;stop.disabled=false;t0=Date.now();clearInterval(timer);timer=setInterval(tick,1000);tick()},
+      stop.hidden=!job;stop.disabled=false;t0=Date.now();clearInterval(timer);timer=setInterval(tick,1000);tick();if(job)setRunning(job,true)},
     lines(arr){const atBottom=body.scrollHeight-body.scrollTop-body.clientHeight<32;body.textContent=arr.join("\n");if(atBottom)body.scrollTop=body.scrollHeight},
     state(s){if(s.cancelling){stopping=true;stop.disabled=true;title.textContent="正在停止…"}},
     get stopping(){return stopping},
-    finish(ok,text){clearInterval(timer);tick();stop.hidden=true;el.className="runlog "+(ok?"is-ok":"is-fail");title.textContent=text}
+    finish(ok,text){clearInterval(timer);tick();stop.hidden=true;el.className="runlog "+(ok?"is-ok":"is-fail");title.textContent=text;if(job)setRunning(job,false)}
   };
 }
 function pollStatus(url,log,{interval=2000,onDone}={}){
@@ -407,373 +491,190 @@ function pollStatus(url,log,{interval=2000,onDone}={}){
       const s=await getJSON(url);
       log.lines((s.log||[]).map(x=>x.msg).slice(-300));
       log.state(s);
-      if(!s.running){clearInterval(h);log.finish(!s.error,s.error?"运行失败："+s.error:(log.stopping?"已停止，已完成的结果已保存":"运行完成"));if(onDone)onDone(s)}
+      if(!s.running){clearInterval(h);log.finish(!s.error,s.error?"没有完成："+s.error:(log.stopping?"已停止，完成的部分已保存":"已完成"));if(onDone)onDone(s)}
     }catch(e){}
   },interval);
   return h;
 }
 
 /* ============================================================
-   图表
+   图表层 (ECharts)
+   规范: 同一系列在所有图里颜色不变(A 紫 / B 青…); 线 2px、点 8px 带底色描边; 面积只用 10% 淡色;
+   网格线用细实线; 不画双纵轴(两种单位拆成两张图); 浮层里数值在前、名称在后;
+   每张图都能切到「数据」表格查看具体数字。
    ============================================================ */
-const TIP=$("tip");
-const VIS={pre:{a:1,b:1},conc:{a:1,b:1,t:1}};
-function setupCanvas(cv,ratio=.42,minH=220,maxH=420){
-  const dpr=window.devicePixelRatio||1;
-  const w=Math.max(cv.clientWidth,60);
-  const h=Math.round(Math.min(maxH,Math.max(minH,w*ratio)));
-  cv.width=Math.round(w*dpr);cv.height=Math.round(h*dpr);cv.style.height=h+"px";
-  const g=cv.getContext("2d");g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,w,h);
-  g.font=`10.5px ${C.mono||C.font}`;g.textBaseline="middle";g.lineJoin="round";g.lineCap="round";
-  cv._hit=[];
-  return{g,w,h};
-}
-function noData(g,w,h,text="无数据"){g.fillStyle=C.text;g.textAlign="center";g.font=`12px ${C.font}`;g.fillText(text,w/2,h/2);g.textAlign="left"}
-/* 坐标轴上限: 先取整洁的刻度步长(1/2/2.5/5×10^n), 4 格网格刻度均为整洁数值 */
-function niceMax(v){
-  if(!(v>0))return 1;
-  const raw=v/4,p=10**Math.floor(Math.log10(raw)),n=raw/p;
-  return (n<=1?1:n<=2?2:n<=2.5?2.5:n<=5?5:10)*p*4;
-}
-function tt(title,rows){
-  return `<div class="tt-title">${esc(title)}</div>`+rows.map(([color,name,val])=>
-    `<div class="tt-row">${color?`<span class="swatch" style="background:${color}"></span>`:""}<span>${esc(name)}</span><span class="tt-v">${esc(val)}</span></div>`).join("");
-}
-function bindTips(cv){
-  const show=e=>{
-    const r=cv.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
-    let best=null,bd=600;
-    (cv._hit||[]).forEach(p=>{const d=(p.x-mx)**2+(p.y-my)**2;if(d<bd){bd=d;best=p}});
-    if(!best){TIP.style.display="none";return}
-    TIP.innerHTML=best.html;TIP.style.display="block";
-    const tw=TIP.offsetWidth,th=TIP.offsetHeight,px=r.left+best.x,py=r.top+best.y;
-    let x=px+14,y=py-th-10;
-    if(x+tw>innerWidth-8)x=px-tw-14;
-    if(y<8)y=py+14;
-    TIP.style.left=x+"px";TIP.style.top=y+"px";
-  };
-  cv.onmousemove=show;cv.onclick=show;cv.onmouseleave=()=>TIP.style.display="none";
-}
-function legendBtn(key,color,text,{dash=false,on=true}={}){
-  const mark=dash?`<span class="legend-dash" style="color:${color}"></span>`:`<span class="swatch" style="background:${color}"></span>`;
-  return key?`<button type="button" class="legend-item" data-vis="${key}" aria-pressed="${on?"true":"false"}">${mark}${esc(text)}</button>`
-            :`<span class="legend-item static">${mark}${esc(text)}</span>`;
-}
-function drawGrid(g,{pad,w,h,ymax,fmtY=fmtAxis,right=null}){
-  g.lineWidth=1;
-  for(let i=0;i<=4;i++){
-    const y=Math.round(pad.t+(h-pad.t-pad.b)*i/4)+.5;
-    g.strokeStyle=i===4?C.axis:C.grid;
-    g.beginPath();g.moveTo(pad.l,y);g.lineTo(w-pad.r,y);g.stroke();
-    g.fillStyle=C.text;g.textAlign="right";g.fillText(fmtY(ymax*(1-i/4)),pad.l-8,y);
-    if(right){g.textAlign="left";g.fillText(right.fmt(right.max*(1-i/4)),w-pad.r+8,y)}
+const CHARTS=new Map();
+let CHART_RO=null;
+function disposeDetached(){
+  for(const [id,inst] of CHARTS){
+    const dom=inst.getDom&&inst.getDom();
+    if(!dom||!document.body.contains(dom)){try{inst.dispose()}catch(e){}CHARTS.delete(id)}
   }
-  g.textAlign="left";
 }
-function catX(pad,w,n){return i=>n>1?pad.l+(w-pad.l-pad.r)*i/(n-1):(pad.l+w-pad.r)/2}
-function drawXLabels(g,labels,X,h,pad){
-  g.fillStyle=C.text;
-  const step=Math.max(1,Math.ceil(labels.length/12));
-  labels.forEach((lab,i)=>{if(i%step&&i!==labels.length-1)return;
-    g.textAlign=labels.length===1?"center":(i===0?"left":(i===labels.length-1?"right":"center"));
-    g.fillText(String(lab),X(i),h-pad.b+14)});
-  g.textAlign="left";
-}
-function axisTitles(g,pad,w,left,right){
-  g.font=`10.5px ${C.mono||C.font}`;g.fillStyle=C.text2;
-  if(left){g.textAlign="left";g.fillText(left,4,8)}
-  if(right){g.textAlign="right";g.fillText(right,w-4,8)}
-  g.textAlign="left";
-}
-function strokeSeries(g,pts,color,{width=1.75,dash=null}={}){
-  const v=pts.filter(p=>p.y!=null&&isFinite(p.y));if(!v.length)return;
-  g.strokeStyle=color;g.lineWidth=width;g.setLineDash(dash||[]);
-  g.beginPath();v.forEach((p,i)=>i?g.lineTo(p.x,p.y):g.moveTo(p.x,p.y));g.stroke();g.setLineDash([]);
-}
-function dots(g,pts,color,r=2.5){
-  pts.forEach(p=>{if(p.y==null||!isFinite(p.y))return;g.beginPath();g.arc(p.x,p.y,r+1.5,0,7);g.fillStyle=C.surface;g.fill();
-    g.beginPath();g.arc(p.x,p.y,r,0,7);g.fillStyle=color;g.fill()});
-}
-
-function prefillSeries(r){const p=phase(r,"prefill");return p&&p.points.length?p.points:null}
-
-/* ============================================================
-   ECharts 增强层: 内置 vendor/echarts.min.js 存在时用交互图表
-   (悬浮十字线/渐变面积/可点图例/入场动画), 缺失时自动回落原生 canvas
-   ============================================================ */
-const EC_INSTANCES=new Map();
-const ecReady=()=>typeof window.echarts!=="undefined";
-function ecCtx(cvId){
-  let el=$(cvId);
-  if(!el)return null;
-  if(el.tagName==="CANVAS"){  // 首次把 canvas 换成 echarts 容器(同 id)
-    const div=document.createElement("div");
-    div.id=el.id;div.className="chart-ec";
-    el.replaceWith(div);el=div;
+function chartInst(id){
+  const el=$(id);
+  if(!el||typeof window.echarts==="undefined")return null;
+  let inst=CHARTS.get(id);
+  if(inst&&inst.getDom()!==el){try{inst.dispose()}catch(e){}inst=null;CHARTS.delete(id)}
+  if(!inst){
+    inst=window.echarts.init(el,null,{renderer:"canvas"});
+    CHARTS.set(id,inst);el._ec=inst;
+    if(typeof ResizeObserver!=="undefined"){
+      if(!CHART_RO)CHART_RO=new ResizeObserver(es=>es.forEach(x=>{if(x.target._ec&&x.target.clientWidth)x.target._ec.resize()}));
+      CHART_RO.observe(el);
+    }
   }
-  let inst=EC_INSTANCES.get(cvId);
-  if(inst&&!document.body.contains(inst.getDom())){  // renderCmp 重建了 DOM
-    try{inst.dispose()}catch(e){}
-    inst=null;EC_INSTANCES.delete(cvId);
-  }
-  if(!inst){inst=window.echarts.init(el);EC_INSTANCES.set(cvId,inst)}
   return inst;
 }
-function ecBase(){
-  const font=C.mono||C.font;
-  // animation:false 与 bench 报告同款: 入场动画在渐变面积上有偶发的
-  // zrender addColorStop(undefined) 竞态, 交互感由 tooltip/图例承担
-  return{animation:false,
-    textStyle:{fontFamily:font,color:C.text2},
-    grid:{left:56,right:20,top:36,bottom:30},
-    tooltip:{trigger:"axis",backgroundColor:C.surface,borderColor:C.borderStrong,padding:[8,12],
-      textStyle:{color:C.text1,fontFamily:font,fontSize:12},
+/* 面积淡色: 只用 10% 透明度, 非法颜色回落到主色(历史事故: 漏传颜色导致渐变色标 undefined) */
+function areaFill(color){
+  const base=/^#?[0-9a-fA-F]{6}$/.test(String(color))?color:"#6950E8";
+  return{color:withAlpha(base,.10)};
+}
+/* 浮层 HTML: 数值在前(加粗), 名称在后, 色块是短线; 全部转义 */
+function tt(title,rows,sub){
+  return `<div class="tt-title">${esc(title)}</div>`+rows.map(([color,name,val])=>
+    `<div class="tt-row">${color?`<span class="tt-key" style="background:${color}"></span>`:`<span class="tt-key"></span>`}<span class="tt-v">${esc(val)}</span><span class="tt-n">${esc(name)}</span></div>`).join("")+
+    (sub?`<div class="tt-sub">${esc(sub)}</div>`:"");
+}
+function baseOption(extra){
+  return Object.assign({
+    animation:false,  // 与离线报告一致; 交互感由浮层/图例承担
+    textStyle:{fontFamily:C.font,fontSize:12,color:C.text2},
+    grid:{left:4,right:16,top:36,bottom:4,containLabel:true},
+    tooltip:{trigger:"axis",confine:true,backgroundColor:C.surface,borderColor:C.borderStrong,borderWidth:1,padding:[8,12],
+      textStyle:{color:C.text1,fontFamily:C.font,fontSize:12},extraCssText:"border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18)",
       axisPointer:{type:"line",lineStyle:{color:C.axis,width:1}}},
-  };
+  },extra||{});
 }
-function ecAxis(cat,name){
-  return{
-    xAxis:{type:cat?"category":"value",name:name?"":""+name,boundaryGap:false,
-      axisTick:{show:false},axisLine:{lineStyle:{color:C.axis}},
-      axisLabel:{color:C.text,fontFamily:C.mono||C.font,fontSize:10.5}},
-    yAxis:{type:"value",splitLine:{lineStyle:{color:C.grid}},
-      axisLabel:{color:C.text,fontFamily:C.mono||C.font,fontSize:10.5},
-      nameTextStyle:{color:C.text,fontFamily:C.mono||C.font,fontSize:10.5,align:"left"}},
-  };
+function axisValue(o={}){
+  return{type:"value",name:o.name||"",nameGap:10,nameTextStyle:{color:C.text3,fontSize:11,align:o.alignName||"left"},
+    min:o.min,max:o.max,axisLine:{show:false},axisTick:{show:false},splitLine:{lineStyle:{color:C.grid,width:1}},
+    axisLabel:{color:C.text3,fontSize:11,formatter:o.fmt||fmtAxis}};
 }
-function ecLegend(extra){
-  return Object.assign({show:true,top:2,right:0,icon:"roundRect",itemWidth:14,itemHeight:4,itemGap:14,
-    textStyle:{color:C.text2,fontFamily:C.mono||C.font,fontSize:11}},extra||{});
+function axisCat(data,o={}){
+  return{type:"category",data,boundaryGap:o.gap!==false,name:o.name||"",nameLocation:"middle",nameGap:o.nameGap||26,
+    nameTextStyle:{color:C.text3,fontSize:11},inverse:!!o.inverse,
+    axisTick:{show:false},axisLine:{lineStyle:{color:C.axis}},axisLabel:{color:o.labelColor||C.text3,fontSize:11,hideOverlap:true,
+      width:o.labelWidth,overflow:o.labelWidth?"truncate":undefined,formatter:o.fmt}};
 }
-function ecArea(color){  // 纵向渐变面积: 上浓下淡; 必须用 LinearGradient 类实例
-  const base=/^#?[0-9a-fA-F]{6}$/.test(String(color))?color:"#6950E8";  // 非法色兜底: 历史上漏传颜色曾致 addColorStop(undefined)
-  const stops=[{offset:0,color:withAlpha(base,.26)},{offset:1,color:withAlpha(base,.02)}];
-  return{color:new window.echarts.graphic.LinearGradient(0,0,0,1,stops)};
+function legendOf(names,kind="line"){
+  return{show:names.length>1,top:0,left:0,itemGap:16,textStyle:{color:C.text2,fontSize:12},data:names,
+    icon:kind==="line"?"rect":"roundRect",itemWidth:kind==="line"?16:10,itemHeight:kind==="line"?3:10};
 }
-function ecEmpty(inst,text){
-  inst.setOption(Object.assign(ecBase(),{title:{text:text||"无数据",left:"center",top:"middle",
-    textStyle:{color:C.text,fontSize:12,fontFamily:C.mono||C.font}}}),true);
+function sLine(name,color,data,o={}){
+  return{name,type:"line",data,connectNulls:true,symbol:"circle",symbolSize:8,showSymbol:o.dots!==false,
+    lineStyle:{width:2,color},itemStyle:{color,borderColor:C.surface,borderWidth:2},
+    areaStyle:o.area?areaFill(color):undefined,emphasis:{focus:"series"},z:o.z||2};
 }
-
-function ecPrefill(a,b,cvId,lgId){
-  const inst=ecCtx(cvId);
-  if(!inst)return;
-  $(lgId).innerHTML="";
-  const pa=prefillSeries(a),pb=b?prefillSeries(b):null;
-  if(!pa){ecEmpty(inst,"该运行不包含 Prefill 阶段数据");return}
-  const labels=[];[pa,pb].forEach(ps=>(ps||[]).forEach(p=>{if(!labels.includes(p.label))labels.push(p.label)}));
-  const mk=(pts,tag,color)=>({name:tag+" · Prefill 吞吐",type:"line",smooth:.3,symbolSize:7,
-    lineStyle:{width:2,color},itemStyle:{color},areaStyle:ecArea(color),
-    data:pts.map(p=>({value:[p.label,p.prefill_tps_med||0],ttft:p.ttft_med_s,inTok:p.in_tokens}))});
-  const series=[mk(pa,"A",C.a)];
-  if(pb)series.push(mk(pb,"B",C.b));
-  inst.setOption(Object.assign(ecBase(),ecAxis(true),{
-    color:[C.a,C.b],legend:ecLegend(),
-    xAxis:{type:"category",data:labels,boundaryGap:false,axisTick:{show:false},
-      axisLine:{lineStyle:{color:C.axis}},axisLabel:{color:C.text,fontFamily:C.mono||C.font,fontSize:10.5}},
-    yAxis:Object.assign(ecAxis().yAxis,{name:"tok/s"}),
-    tooltip:Object.assign(ecBase().tooltip,{formatter:ps=>{
-      const rows=ps.map(p=>`${p.marker}${esc(p.seriesName)} <b>${fmtInt(p.value[1])}</b> tok/s`+
-        `<span style="color:${C.text};opacity:.75"> · TTFT ${fmt(p.data.ttft,2)}s · 输入 ${fmtInt(p.data.inTok)}</span>`);
-      return `<b>${esc(ps[0].axisValue)}</b><br>`+rows.join("<br>");}}),
-    series}),true);
-  inst.resize();
+function sBar(name,color,data,o={}){
+  return{name,type:"bar",data,barMaxWidth:o.maxWidth||24,barGap:"12%",barCategoryGap:o.catGap||"36%",stack:o.stack,
+    itemStyle:{color,borderRadius:o.flat?0:(o.horizontal?[0,4,4,0]:[4,4,0,0])},
+    label:o.label?{show:true,position:o.horizontal?"right":"top",color:C.text2,fontSize:11,formatter:o.label}:undefined,
+    emphasis:{focus:"series"}};
 }
-
-function ecConc(a,b,cvId,lgId){
-  const inst=ecCtx(cvId);
-  if(!inst)return;
-  $(lgId).innerHTML="";
-  const pa=phase(a,"concurrency"),pb=b?phase(b,"concurrency"):null;
-  if(!pa||!pa.points.length){ecEmpty(inst,"该运行不包含并发阶段数据");return}
-  const concs=[...new Set([...pa.points,...(pb?pb.points:[])].map(p=>p.conc))].sort((x,y)=>x-y);
-  const mkConc=(p,tag,color)=>[
-    {name:tag+" · 聚合吞吐",type:"line",smooth:.3,symbolSize:7,lineStyle:{width:2,color},
-     itemStyle:{color},areaStyle:ecArea(color),yAxisIndex:0,
-     data:concs.map(c=>{const q=p.points.find(x=>x.conc===c);return q?{value:[c,q.agg_tps||0],q}:null}).filter(Boolean)},
-    {name:tag+" · 单流吞吐",type:"line",smooth:.3,symbol:"none",yAxisIndex:0,
-     lineStyle:{width:1.5,color:withAlpha(color,.55),type:"dashed"},
-     data:concs.map(c=>{const q=p.points.find(x=>x.conc===c);return q&&q.per_stream_tps_med!=null?[c,q.per_stream_tps_med]:null})},
-    {name:tag+" · TTFT p95",type:"line",smooth:.3,symbolSize:5,yAxisIndex:1,
-     lineStyle:{width:1.5,color:C.t,type:"dashed"},itemStyle:{color:C.t},
-     data:concs.map(c=>{const q=p.points.find(x=>x.conc===c);return q&&q.ttft_p95_s!=null?[c,q.ttft_p95_s]:null})}];
-  const series=mkConc(pa,"A",C.a);
-  if(pb)series.push(...mkConc(pb,"B",C.b));
-  inst.setOption(Object.assign(ecBase(),{
-    color:[C.a,C.b],
-    legend:ecLegend(),  // 不用 scroll: 双运行 6 项图例自动换行, 避免截断箭头
-    grid:{left:56,right:52,top:50,bottom:30},
-    tooltip:Object.assign(ecBase().tooltip,{formatter:ps=>{
-      const c=ps[0].axisValue;
-      const agg=ps.find(p=>p.seriesName.endsWith("聚合吞吐"));
-      const extra=agg&&agg.data.q?`<span style="color:${C.text};opacity:.75">TTFT p50 ${fmt(agg.data.q.ttft_p50_s,2)}s · 成功 ${agg.data.q.ok}/${agg.data.q.ok+agg.data.q.fail}</span>`:"";
-      return `<b>并发 ${c}</b><br>`+ps.map(p=>`${p.marker}${esc(p.seriesName)} <b>${fmt(p.value[1],p.seriesName.includes("TTFT")?2:1)}</b>${p.seriesName.includes("TTFT")?" s":" tok/s"}`).join("<br>")+(extra?`<br>`+extra:"");}}),
-    xAxis:{type:"value",name:"",axisTick:{show:false},axisLine:{lineStyle:{color:C.axis}},
-      axisLabel:{color:C.text,fontFamily:C.mono||C.font,fontSize:10.5,formatter:v=>fmtAxis(v)}},
-    yAxis:[{type:"value",name:"tok/s",splitLine:{lineStyle:{color:C.grid}},
-       axisLabel:{color:C.text,fontFamily:C.mono||C.font,fontSize:10.5,formatter:fmtAxis},
-       nameTextStyle:{color:C.text,fontFamily:C.mono||C.font,fontSize:10.5,align:"left"}},
-      {type:"value",name:"TTFT s",splitLine:{show:false},
-       axisLabel:{color:C.text,fontFamily:C.mono||C.font,fontSize:10.5},
-       nameTextStyle:{color:C.text,fontFamily:C.mono||C.font,fontSize:10.5,align:"right"}}],
-    series}),true);
-  inst.resize();
+/* 同一条轴统一数字格式: 最大值过万时全部用 k, 否则用千分位 */
+function axisFmtFor(series){
+  const mx=Math.max(0,...series.flatMap(s=>s.data.map(v=>Math.abs(Array.isArray(v)?v[1]:v)||0)));
+  return mx>=10000?(v=>v===0?"0":(v/1000).toFixed(v%1000?1:0)+"k"):(v=>Math.abs(v)>=1000?Math.round(v).toLocaleString():fmtAxis(v));
 }
-
-function ecMetrics(a){
-  const inst=ecCtx("cMetrics");
-  if(!inst)return;
-  const s=a.metrics_samples||[];
-  const usable=s.filter(m=>m.gpu_cache_usage!=null||m.prefix_cache_hit!=null);
-  $("metricsPanel").hidden=!usable.length;
-  if(!usable.length||$("metricsPanel").classList.contains("is-collapsed"))return;
-  $("lMetrics").innerHTML="";
-  const t0=s[0].t;
-  const norm=(k,v)=>v==null?null:(k==="gpu_cache_usage"&&v<=1.05?v*100:v);
-  const mk=(k,name,color)=>({name,type:"line",smooth:.25,symbol:"none",step:false,
-    lineStyle:{width:1.75,color},areaStyle:k==="gpu_cache_usage"?ecArea(color):undefined,
-    data:s.filter(m=>norm(k,m[k])!=null).map(m=>[Math.round(m.t-t0),norm(k,m[k]),m])});
-  inst.setOption(Object.assign(ecBase(),ecAxis(false),{
-    color:[C.a,C.b],legend:ecLegend(),
-    yAxis:Object.assign(ecAxis().yAxis,{name:"%",max:100}),
-    xAxis:{type:"value",axisTick:{show:false},axisLine:{lineStyle:{color:C.axis}},
-      axisLabel:{color:C.text,fontFamily:C.mono||C.font,fontSize:10.5,
-        formatter:v=>v>=120?Math.round(v/60)+"min":v+"s"}},
-    tooltip:Object.assign(ecBase().tooltip,{formatter:ps=>{
-      const m=ps[0].data[2];
-      return `<b>t + ${Math.round(ps[0].axisValue)} s</b><br>`+
-        ps.map(p=>`${p.marker}${esc(p.seriesName)} <b>${fmt(p.value[1])}</b>%`).join("<br>")+
-        `<br><span style="color:${C.text};opacity:.75">运行 / 排队 ${fmtInt(m.requests_running||0)} / ${fmtInt(m.requests_waiting||0)}</span>`;}}),
-    series:[mk("gpu_cache_usage","KV Cache 使用率",C.a),mk("prefix_cache_hit","前缀缓存命中率",C.b)]}),true);
-  inst.resize();
+function chartEmpty(id,text){
+  const inst=chartInst(id);if(!inst)return;
+  inst.setOption({graphic:{type:"text",left:"center",top:"middle",style:{text:text||"没有数据",fill:C.text3,fontSize:13,fontFamily:C.font}},
+    xAxis:{show:false},yAxis:{show:false},series:[]},true);
 }
-
-function ecOpenloop(pa,pb,ids){
-  const inst=ecCtx(ids.cv);
-  if(!inst)return;
-  $(ids.lg).innerHTML="";
-  const runs=[["A",pa,C.a],["B",pb,C.b]].filter(([_,p])=>p);
-  const series=[];
-  runs.forEach(([tag,p,base])=>p.points.forEach((pt,j)=>{
-    const ts=pt.inflight_ts||[];
-    if(ts.length<2)return;
-    const color=runs.length>1?base:C.series[j%C.series.length];
-    series.push({name:`${tag} ${pt.rate} rps`,type:"line",smooth:.25,symbol:"none",
-      lineStyle:{width:1.75,color},areaStyle:ecArea(color),
-      data:ts.map(([t,v])=>[t,v,pt.rate])});
-  }));
-  if(!series.length){ecEmpty(inst,"无在途采样数据");return}
-  inst.setOption(Object.assign(ecBase(),ecAxis(false),{
-    legend:ecLegend({type:"scroll"}),
-    yAxis:Object.assign(ecAxis().yAxis,{name:"在途"}),
-    xAxis:{type:"value",axisTick:{show:false},axisLine:{lineStyle:{color:C.axis}},
-      axisLabel:{color:C.text,fontFamily:C.mono||C.font,fontSize:10.5,formatter:v=>v+"s"}},
-    tooltip:Object.assign(ecBase().tooltip,{valueFormatter:v=>fmtInt(v)+" 个"}),
-    series}),true);
-  inst.resize();
+function setChart(id,opt){
+  const inst=chartInst(id);if(!inst)return null;
+  inst.setOption(opt,true);inst.resize();
+  return inst;
 }
-/* ECharts 层结束 */
-
-function drawPrefill(a,b,cvId,lgId){
-  if(ecReady())return ecPrefill(a,b,cvId,lgId);
-  const cv=$(cvId);if(!cv||!cv.clientWidth)return;
-  const {g,w,h}=setupCanvas(cv);
-  const pa=prefillSeries(a),pb=b?prefillSeries(b):null;
-  const sets=[pa&&VIS.pre.a&&{pts:pa,color:C.a,tag:"A"},pb&&VIS.pre.b&&{pts:pb,color:C.b,tag:"B"}].filter(Boolean);
-  $(lgId).innerHTML=(pa?legendBtn("pre.a",C.a,"A · Prefill 吞吐",{on:VIS.pre.a}):"")+(pb?legendBtn("pre.b",C.b,"B · Prefill 吞吐",{on:VIS.pre.b}):"");
-  if(!pa){noData(g,w,h,"该运行不包含 Prefill 阶段数据");return}
-  const labels=[];[pa,pb].forEach(ps=>(ps||[]).forEach(p=>{if(!labels.includes(p.label))labels.push(p.label)}));
-  const all=sets.flatMap(s=>s.pts.map(p=>p.prefill_tps_med||0));
-  const ymax=niceMax(Math.max(...all,1)*1.08);
-  const pad={l:Math.ceil(g.measureText(fmtAxis(ymax)).width)+18,r:16,t:24,b:28};
-  drawGrid(g,{pad,w,h,ymax});
-  const X=catX(pad,w,labels.length),Y=v=>pad.t+(h-pad.t-pad.b)*(1-v/ymax);
-  drawXLabels(g,labels,X,h,pad);
-  axisTitles(g,pad,w,"Prefill (tok/s)");
-  sets.forEach(s=>{
-    const pts=s.pts.map(p=>({x:X(labels.indexOf(p.label)),y:Y(p.prefill_tps_med||0),p}));
-    strokeSeries(g,pts,s.color);dots(g,pts,s.color);
-    pts.forEach(q=>cv._hit.push({x:q.x,y:q.y,html:tt(`${s.tag} · ${q.p.label}`,[
-      [s.color,"Prefill",fmtInt(q.p.prefill_tps_med)+" tok/s"],["","TTFT",fmt(q.p.ttft_med_s,2)+" s"],["","输入",fmtInt(q.p.in_tokens)+" tokens"]])}));
-  });
-  bindTips(cv);
+/* 常用: 类目横轴 + 多条折线, 单一数值轴(同一单位) */
+function lineChart(id,{cats,series,unit,digits=1,yName,xName,area=false,tip}){
+  if(!series.some(s=>s.data.some(v=>v!=null))){chartEmpty(id);return}
+  setChart(id,baseOption({
+    color:series.map(s=>s.color),
+    legend:legendOf(series.map(s=>s.name)),
+    grid:{left:4,right:16,top:series.length>1?44:30,bottom:xName?26:4,containLabel:true},
+    xAxis:axisCat(cats,{gap:false,name:xName}),
+    yAxis:axisValue({name:yName||unit,fmt:axisFmtFor(series)}),
+    tooltip:Object.assign(baseOption().tooltip,{formatter:ps=>{
+      const i=ps[0].dataIndex;
+      return tt(tip&&tip.title?tip.title(i):String(ps[0].axisValue),
+        ps.filter(p=>p.value!=null).map(p=>[p.color,p.seriesName,fmt(p.value,digits)+" "+(unit||"")]),tip&&tip.sub?tip.sub(i,ps):"");}}),
+    series:series.map(s=>sLine(s.name,s.color,s.data,{area:area&&series.length===1}))}));
 }
-function concChart(a,b,cvId,lgId){
-  if(ecReady())return ecConc(a,b,cvId,lgId);
-  const cv=$(cvId);if(!cv||!cv.clientWidth)return;
-  const {g,w,h}=setupCanvas(cv);
-  const pa=phase(a,"concurrency"),pb=b?phase(b,"concurrency"):null;
-  let lg="";
-  if(pa){lg+=legendBtn("conc.a",C.a,"A · 聚合",{on:VIS.conc.a})+legendBtn("conc.a",C.a,"A · 单流",{dash:true,on:VIS.conc.a})}
-  if(pb){lg+=legendBtn("conc.b",C.b,"B · 聚合",{on:VIS.conc.b})+legendBtn("conc.b",C.b,"B · 单流",{dash:true,on:VIS.conc.b})}
-  if(pa)lg+=legendBtn("conc.t",C.t,"TTFT p95",{dash:true,on:VIS.conc.t});
-  $(lgId).innerHTML=lg;
-  if(!pa||!pa.points.length){noData(g,w,h,"该运行不包含并发阶段数据");return}
-  const concs=[...new Set([...pa.points,...(pb?pb.points:[])].map(p=>p.conc))].sort((x,y)=>x-y);
-  const sets=[VIS.conc.a&&{p:pa,color:C.a,tag:"A"},pb&&VIS.conc.b&&{p:pb,color:C.b,tag:"B"}].filter(Boolean);
-  const ymax=niceMax(Math.max(1,...sets.flatMap(s=>s.p.points.map(q=>Math.max(q.agg_tps||0,q.per_stream_tps_med||0))))*1.08);
-  const tmax=niceMax(Math.max(.01,...[pa,pb].filter(Boolean).flatMap(p=>p.points.map(q=>q.ttft_p95_s||0)))*1.08);
-  const fmtT=v=>fmt(v,tmax<1?2:1);
-  const pad={l:Math.ceil(g.measureText(fmtAxis(ymax)).width)+18,r:VIS.conc.t?Math.ceil(g.measureText(fmtT(tmax)).width)+18:16,t:24,b:28};
-  drawGrid(g,{pad,w,h,ymax,right:VIS.conc.t?{max:tmax,fmt:fmtT}:null});
-  const X=catX(pad,w,concs.length),Xc=c=>X(concs.indexOf(c));
-  const Y=v=>pad.t+(h-pad.t-pad.b)*(1-v/ymax),Y2=v=>pad.t+(h-pad.t-pad.b)*(1-v/tmax);
-  drawXLabels(g,concs,X,h,pad);
-  axisTitles(g,pad,w,"吞吐 (tok/s) · 横轴为并发数",VIS.conc.t?"TTFT p95 (s)":"");
-  sets.forEach(s=>{
-    const agg=s.p.points.map(q=>({x:Xc(q.conc),y:Y(q.agg_tps||0),q}));
-    const per=s.p.points.map(q=>({x:Xc(q.conc),y:q.per_stream_tps_med==null?null:Y(q.per_stream_tps_med)}));
-    strokeSeries(g,per,withAlpha(s.color,.6),{width:1.5,dash:[5,4]});
-    strokeSeries(g,agg,s.color);dots(g,agg,s.color);
-    agg.forEach(o=>cv._hit.push({x:o.x,y:o.y,html:tt(`${s.tag} · 并发 ${o.q.conc}`,[
-      [s.color,"聚合吞吐",fmtInt(o.q.agg_tps)+" tok/s"],["","单流吞吐",fmt(o.q.per_stream_tps_med)+" tok/s"],
-      ["","TTFT p50 / p95",`${fmt(o.q.ttft_p50_s,2)} / ${fmt(o.q.ttft_p95_s,2)} s`],["","成功",`${o.q.ok} / ${o.q.ok+o.q.fail}`]])}));
-  });
-  if(VIS.conc.t){
-    [[pa,"A",[2,4]],[pb,"B",[6,4]]].forEach(([p,tag,dash])=>{
-      if(!p)return;
-      const pts=p.points.map(q=>({x:Xc(q.conc),y:q.ttft_p95_s==null?null:Y2(q.ttft_p95_s),q}));
-      strokeSeries(g,pts,C.t,{width:1.5,dash});
-      pts.forEach(o=>{if(o.y!=null)cv._hit.push({x:o.x,y:o.y,html:tt(`${tag} · 并发 ${o.q.conc}`,[[C.t,"TTFT p95",fmt(o.q.ttft_p95_s,2)+" s"]])})});
-    });
-  }
-  bindTips(cv);
-}
-function metricsChart(a){
-  if(ecReady())return ecMetrics(a);
-  const s=a.metrics_samples||[];
-  const panel=$("metricsPanel");
-  const usable=s.filter(m=>m.gpu_cache_usage!=null||m.prefix_cache_hit!=null);
-  panel.hidden=!usable.length;
-  if(!usable.length||panel.classList.contains("is-collapsed"))return;
-  const cv=$("cMetrics");if(!cv.clientWidth)return;
-  const {g,w,h}=setupCanvas(cv,.22,180,260);
-  const t0=s[0].t,tspan=Math.max(1,s[s.length-1].t-t0);
-  const pad={l:Math.ceil(g.measureText("100%").width)+18,r:16,t:24,b:28};
-  drawGrid(g,{pad,w,h,ymax:100,fmtY:v=>Math.round(v)+"%"});
-  axisTitles(g,pad,w,"占比 (%) · 横轴为测试时间");
-  g.fillStyle=C.text;
-  for(let i=0;i<=4;i++){const t=tspan*i/4;g.textAlign=i===0?"left":(i===4?"right":"center");
-    g.fillText(t>=120?Math.round(t/60)+" min":Math.round(t)+" s",pad.l+(w-pad.l-pad.r)*i/4,h-pad.b+14)}
-  g.textAlign="left";
-  const norm=(k,v)=>v==null?null:(k==="gpu_cache_usage"&&v<=1.05?v*100:v);
-  const series=[["gpu_cache_usage",C.a,"KV Cache 使用率"],["prefix_cache_hit",C.b,"前缀缓存命中率"]];
-  const X=t=>pad.l+(w-pad.l-pad.r)*(t-t0)/tspan,Y=v=>pad.t+(h-pad.t-pad.b)*(1-v/100);
-  series.forEach(([k,col,name])=>{
-    const pts=s.map(m=>({x:X(m.t),y:norm(k,m[k])==null?null:Y(norm(k,m[k])),m,v:norm(k,m[k])})).filter(p=>p.y!=null);
-    strokeSeries(g,pts,col,{width:1.75});
-    pts.forEach((p,i)=>{if(i%2)return;cv._hit.push({x:p.x,y:p.y,html:tt(`t + ${Math.round(p.m.t-t0)} s`,[
-      [col,name,fmt(p.v)+"%"],["","运行 / 排队",`${fmt(p.m.requests_running,0)} / ${fmt(p.m.requests_waiting,0)}`]])})});
-  });
-  $("lMetrics").innerHTML=series.map(([k,c,n])=>legendBtn("",c,n)).join("");
-  bindTips(cv);
+/* 常用: 类目 + 分组柱, 单一数值轴 */
+function barChart(id,{cats,series,unit,digits=1,yName,horizontal=false,labels=false,tip,height,catLabelWidth}){
+  if(!series.some(s=>s.data.some(v=>v!=null))){chartEmpty(id);return}
+  const cat=axisCat(cats,{inverse:horizontal,labelWidth:catLabelWidth});
+  const val=axisValue({name:yName||unit,fmt:axisFmtFor(series)});
+  const lab=labels?(p=>p.value==null?"":fmt(p.value,digits)):null;
+  setChart(id,baseOption({
+    color:series.map(s=>s.color),
+    legend:legendOf(series.map(s=>s.name),"rect"),
+    grid:{left:4,right:labels&&horizontal?48:16,top:series.length>1?44:30,bottom:4,containLabel:true},
+    xAxis:horizontal?val:cat,yAxis:horizontal?cat:val,
+    tooltip:Object.assign(baseOption().tooltip,{trigger:"axis",axisPointer:{type:"shadow",shadowStyle:{color:withAlpha(C.primary&&C.primary.length===7?C.primary:"#6950E8",.06)}},
+      formatter:ps=>{const i=ps[0].dataIndex;
+        return tt(tip&&tip.title?tip.title(i):String(ps[0].axisValue),
+          ps.filter(p=>p.value!=null).map(p=>[p.color,p.seriesName,fmt(p.value,digits)+" "+(unit||"")]),tip&&tip.sub?tip.sub(i,ps):"");}}),
+    series:series.map(s=>sBar(s.name,s.color,s.data,{horizontal,label:lab}))}));
+  if(height)$(id).style.height=height+"px";
 }
 
 /* ============================================================
-   性能基准
+   页面积木: 章节 / 图表卡 / 指标块 / 结论卡 / 对比标记
+   ============================================================ */
+function sec(id,title,desc,body,jump){
+  return `<section class="sec" id="${id}" data-jump="${esc(jump||title)}"><div class="sec-head"><div><h2 class="sec-title">${title}</h2>${desc?`<p class="sec-desc">${desc}</p>`:""}</div></div>${body}</section>`;
+}
+function stripTags(h){return String(h).replace(/<[^>]*>/g,"")}
+/* 图表卡: 右上角「数据」切换到同内容的表格(不靠悬停也能读到每个数) */
+function ccard(id,title,{desc="",h=280,table="",span=false}={}){
+  return `<div class="ccard${span?" span-all":""}"><div class="ccard-head"><div><h3 class="ccard-title">${title}</h3>${desc?`<p class="ccard-desc">${desc}</p>`:""}</div>
+    ${table?`<button type="button" class="btn btn-ghost btn-sm" data-flip aria-pressed="false" title="切换为数据表">${icon("table")}数据</button>`:""}</div>
+    <div class="chart" id="${id}" style="height:${h}px" role="img" aria-label="${esc(stripTags(title))}"></div>
+    ${table?`<div class="ccard-table">${table}</div>`:""}</div>`;
+}
+function buildJump(navId,root){
+  const nav=$(navId);if(!nav)return;
+  const secs=root?[...root.querySelectorAll("section.sec[data-jump]")]:[];
+  nav.innerHTML=secs.length>2?secs.map(s=>`<a href="javascript:void 0" data-jumpto="${esc(s.id)}">${esc(s.dataset.jump)}</a>`).join(""):"";
+}
+function kpi(label,value,unit,{sub="",delta="",hero=false,tip=""}={}){
+  return `<div class="kpi${hero?" is-hero":""}"${tip?` title="${esc(tip)}"`:""}><div class="kpi-head"><span class="kpi-label">${label}</span>${delta}</div>
+    <div class="kpi-value">${value}${unit&&value!=="—"?`<small>${unit}</small>`:""}</div>${sub?`<div class="kpi-sub">${sub}</div>`:""}</div>`;
+}
+function summaryCard(title,items,foot=""){
+  const ic={good:"check-circle",bad:"x-circle",warn:"alert",info:"bulb"};
+  if(!items.length)return "";
+  return `<div class="summary"><div class="summary-head">${icon("bulb")}<span class="summary-title">${title}</span></div>
+    <ul class="summary-list">${items.map(i=>`<li class="is-${i.tone||"info"}">${icon(ic[i.tone||"info"])}<span>${i.html}</span></li>`).join("")}</ul>
+    ${foot?`<div class="summary-foot">${foot}</div>`:""}</div>`;
+}
+/* 变化标记: dir=1 越高越好, -1 越低越好; mode=pp 用百分点 */
+function deltaPill(va,vb,dir,{mode="pct",prefix=""}={}){
+  if(va==null||vb==null)return `<span class="delta flat">—</span>`;
+  const d=mode==="pp"?vb-va:(va?(vb-va)/Math.abs(va)*100:0);
+  const flat=Math.abs(d)<(mode==="pp"?.5:1);
+  const unit=mode==="pp"?" 个百分点":"%";
+  if(flat)return `<span class="delta flat" title="${dir<0?"越低越好":"越高越好"}，基本持平">${icon("minus")}${prefix}持平</span>`;
+  const good=d*dir>0;
+  return `<span class="delta ${good?"up":"down"}" title="${dir<0?"越低越好":"越高越好"}，${good?"更好":"更差"}">${icon(d>0?"arrow-up":"arrow-down")}${prefix}${d>=0?"+":""}${fmt(d,1)}${unit}</span>`;
+}
+function pctChange(va,vb){return va==null||vb==null||!va?null:(vb-va)/Math.abs(va)*100}
+/* 表格: head=[列名...], rows=[[单元格 HTML...]...] */
+function table(head,rows,{maxH}={}){
+  return `<div class="table-wrap"${maxH?` style="max-height:${maxH}px"`:""}><table class="table"><thead><tr>${head.map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+/* A/B 对照单元格: 主值 + 下方小字 B 值 */
+function abCell(va,vb,f,hasB){return `${f(va)}${hasB?`<span class="sub">B ${f(vb)}</span>`:""}`}
+
+/* ============================================================
+   速度测试: 新建 / 列表 / 指标
    ============================================================ */
 let RUNS={},RUNS_LOADED=false,perfPoll=null;
-const FULL={};  /* 运行完整文档缓存(列表接口只返回摘要) */
+const FULL={};  /* 测试完整记录缓存(列表接口只返回摘要) */
 let renderSeq=0,cmpSeq=0;
 async function ensureRuns(ids){
   await Promise.all(ids.filter(id=>id&&!FULL[id]).map(async id=>{FULL[id]=await getJSON("/api/run?id="+encodeURIComponent(id))}));
@@ -787,8 +688,7 @@ function suitePlaceholders(){
   $("fConc").placeholder={quick:"默认 1,4,8",standard:"默认 1,2,4,8,16",full:"默认 1,2,4,8,16,32,48,64"}[s]||"";
   $("fLens").placeholder={quick:"默认 1K、4K、8K",standard:"默认 1K–8K 共 8 档",full:"默认 1K–16K 共 8 档"}[s]||"";
 }
-
-/* 原生 details 下拉: 打开时测量, 右溢出则右对齐锚点, 避免中窄宽度下面板被切/漂移 */
+/* 原生 details 下拉: 打开时测量, 右侧放不下则右对齐 */
 function fitDropdown(dt){
   const panel=dt.querySelector(".dropdown-panel");if(!panel)return;
   panel.style.left="";panel.style.right="";
@@ -798,125 +698,14 @@ function fitDropdown(dt){
 document.querySelectorAll("details.dropdown").forEach(dt=>dt.addEventListener("toggle",()=>{if(dt.open)fitDropdown(dt)}));
 window.addEventListener("resize",()=>document.querySelectorAll("details.dropdown[open]").forEach(fitDropdown));
 
-/* ============================================================
-   模型端点配置: 地址/Key/模型 命名存服务端, 三个页面一键填入
-   ============================================================ */
-let EPS=[];
-const EP_FIELDS={perf:["fBase","fKey","fModel"],iq:["iqBase","iqKey","iqModel"],gen:["genBase","genKey","genModel"]};
-const EP_SEL={perf:"fEpSel",iq:"iqEpSel",gen:"genEpSel"};
-function loadEndpoints(){
-  return getJSON("/api/endpoints").then(l=>{EPS=Array.isArray(l)?l:[];renderEpSelects()}).catch(()=>{});
-}
-function renderEpSelects(){
-  Object.values(EP_SEL).forEach(id=>{
-    const sel=$(id);if(!sel)return;
-    const cur=sel.value;
-    sel.innerHTML='<option value="">选择后一键填入 地址 / Key / 模型</option>'+
-      EPS.map(e=>`<option value="${esc(e.id)}">${esc(e.name)}</option>`).join("");
-    if([...sel.options].some(o=>o.value===cur))sel.value=cur;
-  });
-}
-function epFill(page,ep){
-  const [b,k,m]=EP_FIELDS[page]||[];
-  if(!b)return;
-  if(ep.url){$(b).value=ep.url;$(b).dispatchEvent(new Event("input"))}
-  $(k).value=ep.api_key||"";
-  if(ep.model){$(m).value=ep.model;$(m).dispatchEvent(new Event("input"))}
-}
-function onEpSelect(page){
-  const sel=$(EP_SEL[page]),ep=EPS.find(x=>x.id===sel.value);
-  sel.value="";
-  if(!ep)return;
-  epFill(page,ep);
-  postJSON("/api/endpoint-use",{id:ep.id}).catch(()=>{});
-  toast(`已填入「${ep.name}」`,"success");
-}
-async function epSave(){
-  const editing=EP_EDIT?EPS.find(x=>x.id===EP_EDIT):null;
-  const body={id:EP_EDIT||null,name:$("epName").value.trim(),url:$("epUrl").value.trim(),
-              api_key:$("epKey").value,model:$("epModel").value.trim()};
-  if(!body.url||!body.model){msg("epOut","warning","API 地址与模型名称必填");return}
-  const d=await postJSON("/api/endpoints",body);
-  if(!d.ok){msg("epOut","error","保存失败："+d.error);return}
-  EPS=d.endpoints||EPS;EP_EDIT=null;renderEpSelects();
-  toast(editing?"配置已更新":"已添加「"+d.endpoint.name+"」","success");
-  manageEndpoints();
-}
-function epEdit(id){EP_EDIT=id;manageEndpoints()}
-function maskKey(k){k=String(k||"");return k?k.slice(0,4)+"…"+k.slice(-4):"—"}
-function epHost(url){const m=String(url||"").match(/^https?:\/\/([^/?#]+)/i);return m?m[1]:String(url||"")}
-let EP_EDIT=null;  /* 编辑中的配置 id; null = 新增模式 */
-function manageEndpoints(){
-  let editing=EP_EDIT?EPS.find(x=>x.id===EP_EDIT):null;
-  if(EP_EDIT&&!editing)EP_EDIT=null;
-  const val=v=>esc(editing?(v||""):"");
-  const cards=EPS.map(e=>{
-    const on=editing&&editing.id===e.id;
-    return `<article class="ep-card${on?" is-on":""}">
-      <div class="ep-card-main">
-        <div class="ep-name">${esc(e.name)}</div>
-        <div class="ep-sub" title="${esc(e.url)}">
-          <span class="ep-model">${esc(e.model||"—")}</span><span class="ep-dot">·</span>
-          <span class="ep-host">${esc(epHost(e.url))}</span><span class="ep-dot">·</span>
-          <span class="ep-keymask">${esc(maskKey(e.api_key))}</span>
-        </div>
-      </div>
-      <div class="ep-card-actions">
-        <button type="button" class="btn btn-secondary btn-sm" data-ep-use="${esc(e.id)}" title="填入性能、能力、代码生成三个表单">填入</button>
-        <button type="button" class="btn btn-ghost btn-icon btn-sm" data-ep-edit="${esc(e.id)}" title="编辑" aria-label="编辑">${icon("sliders")}</button>
-        <button type="button" class="btn btn-ghost btn-icon btn-sm ep-del" data-ep-del="${esc(e.id)}" title="删除" aria-label="删除">${icon("trash")}</button>
-      </div>
-    </article>`;
-  }).join("");
-  const form=`<form class="ep-form" autocomplete="off" onsubmit="epSave();return false">
-      <div class="eyebrow">${editing?"正在编辑":"新建"}</div>
-      <div class="ep-fields">
-        <div class="field span-2"><label for="epName">名称</label><input class="input" id="epName" placeholder="留空则用「模型 · 主机」" value="${editing?esc(editing.name):""}"></div>
-        <div class="field span-2"><label for="epUrl">API 地址</label><input class="input" id="epUrl" placeholder="http://127.0.0.1:8000" value="${val(editing&&editing.url)}"></div>
-        <div class="field"><label for="epModel">模型</label><input class="input" id="epModel" placeholder="模型名称" value="${val(editing&&editing.model)}"></div>
-        <div class="field"><label for="epKey">API Key</label>
-          <div class="ep-keywrap"><input class="input" id="epKey" type="password" autocomplete="off" placeholder="可选" value="${val(editing&&editing.api_key)}">
-          <button type="button" class="btn btn-ghost btn-icon btn-sm" data-ep-reveal title="显示 Key" aria-label="显示 Key">${icon("eye")}</button></div></div>
-      </div>
-      <div class="ep-actions">
-        <span class="inline-msg" id="epOut"></span>
-        ${editing?'<button type="button" class="btn btn-ghost btn-sm" data-ep-cancel>取消</button>':""}
-        <button type="submit" class="btn btn-primary btn-sm">${editing?"保存":"添加"}</button>
-      </div>
-    </form>`;
-  Modal.open("模型管理",`
-    <div class="ep-shell">
-      <div class="ep-list-head"><span class="eyebrow">已保存</span><span class="ep-count">${EPS.length}</span></div>
-      <div class="ep-list">${cards||'<p class="ep-empty">还没有配置</p>'}</div>
-      ${form}
-      <p class="ep-note">存在本机数据库。填入会同步到性能、能力、代码生成三个页面。</p>
-    </div>`,{panel:true});
-}
-async function epApply(id){
-  const ep=EPS.find(x=>x.id===id);if(!ep)return;
-  Object.keys(EP_FIELDS).forEach(page=>epFill(page,ep));
-  Modal.close();
-  postJSON("/api/endpoint-use",{id}).catch(()=>{});
-  toast(`已填入「${ep.name}」· 性能 / 能力 / 代码生成三个表单`,"success");
-}
-async function epRemove(id){
-  const ep=EPS.find(x=>x.id===id);if(!ep)return;
-  const ok=await confirmDialog({title:"删除模型配置",message:"确定删除「"+ep.name+"」吗？已填入表单的内容不受影响。",confirmText:"删除",danger:true});
-  if(!ok){manageEndpoints();return}
-  await postJSON("/api/endpoint-delete",{id});
-  await loadEndpoints();
-  manageEndpoints();
-}
-Object.keys(EP_SEL).forEach(page=>{const sel=$(EP_SEL[page]);if(sel)sel.addEventListener("change",()=>onEpSelect(page))});
-
-/* ---------- 任务场景: 模板 chips / 条件参数 / 资产(任务集/图片包) ---------- */
+/* ---------- 模拟真实业务: 类型 / 条件参数 / 素材(任务集、图片) ---------- */
 const SCN_TPL=[
-  ["chat","对话问答","短答与长文混合的通用问答"],
-  ["code","代码生成","实现函数/类/脚本/修 bug"],
-  ["json","结构化抽取","商品信息→标准 JSON(合法率)"],
-  ["rag","RAG 问答","长上下文+引用式回答, 可选档位"],
-  ["vision","图片理解","图片描述/图表解读/文字提取"],
-  ["custom","自定义任务集","上传你自己的请求 JSONL"],
+  ["chat","对话问答","短回答和长回答混合的日常问答"],
+  ["code","写代码","实现函数、类、脚本或修 bug"],
+  ["json","提取成 JSON","把商品描述整理成标准 JSON，统计格式是否合法"],
+  ["rag","看资料回答","给一段长资料再提问，要求注明出处；可选资料长度"],
+  ["vision","看图回答","描述图片、解读图表、识别文字"],
+  ["custom","自定义任务集","上传你自己的请求（JSONL）"],
 ];
 const RAG_CTX_OPTS=[[1500,"1.5K"],[4000,"4K"],[16000,"16K"]];
 function scnChip(val,label,tip,checked){
@@ -926,11 +715,9 @@ function renderScnChips(){
   const sel=new Set(lsGet("llm-bench-pro-scn").tasks||[]);
   $("scnChips").innerHTML=SCN_TPL.map(([id,name,tip])=>scnChip(id,name,tip,sel.has(id))).join("");
   const ctxSel=new Set(lsGet("llm-bench-pro-scn").rag_ctx||[4000]);
-  $("ragCtxChips").innerHTML=RAG_CTX_OPTS.map(([v,l])=>scnChip(v,l,"上下文约 "+l+" tokens",ctxSel.has(v))).join("");
+  $("ragCtxChips").innerHTML=RAG_CTX_OPTS.map(([v,l])=>scnChip(v,l,"资料约 "+l+" token",ctxSel.has(v))).join("");
 }
-function scnSelected(){
-  return [...document.querySelectorAll("#scnChips input:checked")].map(x=>x.value);
-}
+function scnSelected(){return [...document.querySelectorAll("#scnChips input:checked")].map(x=>x.value)}
 function scnSyncVisibility(){
   const sel=new Set(scnSelected());
   $("scnCommon").hidden=!sel.size;
@@ -966,14 +753,14 @@ $("fImgUpload").addEventListener("change",async e=>{
   const files=[...e.target.files];
   e.target.value="";
   if(!files.length)return;
-  if(files.reduce((s,f)=>s+f.size,0)>15*1024*1024){msg("probeOut","error","图片总量超过 15MB：请分批上传或放服务器目录后填路径");return}
+  if(files.reduce((s,f)=>s+f.size,0)>15*1024*1024){msg("probeOut","error","图片总共超过 15MB：请分批上传，或放到服务器文件夹后填路径");return}
   msg("probeOut","info","正在上传 "+files.length+" 张图片…");
   try{
     const payload=await Promise.all(files.map(async f=>({name:f.name,data:await readFileBase64(f)})));
     const d=await postJSON("/api/scenario-upload",{kind:"images",files:payload});
     if(!d.ok){msg("probeOut","error","上传失败："+d.error);return}
     await loadScenarioAssets(d.image_id);
-    msg("probeOut","success",`已上传图片包：${d.count} 张（${(d.size/1048576).toFixed(1)} MB）`);
+    msg("probeOut","success",`已上传图片：${d.count} 张（${(d.size/1048576).toFixed(1)} MB）`);
   }catch(err){msg("probeOut","error",err.message)}
 });
 $("fTaskUpload").addEventListener("change",async e=>{
@@ -985,7 +772,7 @@ $("fTaskUpload").addEventListener("change",async e=>{
     const d=await postJSON("/api/scenario-upload",{kind:"tasks",name:f.name,content:await f.text()});
     if(!d.ok){msg("probeOut","error","上传失败："+d.error);return}
     await loadScenarioAssets(null,d.file_id);
-    msg("probeOut","success",`已上传任务集：${fmtInt(d.lines)} 条可用请求${d.bad_lines?`（${d.bad_lines} 行无效已忽略）`:""}`);
+    msg("probeOut","success",`已上传任务集：${fmtInt(d.lines)} 条可用请求${d.bad_lines?`（${d.bad_lines} 行格式不对，已忽略）`:""}`);
   }catch(err){msg("probeOut","error",err.message)}
 });
 $("fSuite").addEventListener("change",suitePlaceholders);
@@ -995,12 +782,12 @@ async function probe(){
   const btn=$("btnProbe");setBusy(btn,true);msg("probeOut","info","正在连接…");
   try{
     const d=await postJSON("/api/probe",{base:$("fBase").value,api_key:$("fKey").value});
-    if(!d.ok){msg("probeOut","error","连接失败："+d.error);return}
-    $("modelList").innerHTML=d.models.map(m=>`<option value="${esc(m.id)}">${m.max_model_len?"上下文 "+Math.round(m.max_model_len/1024)+"K":""}</option>`).join("");
+    if(!d.ok){msg("probeOut","error","连不上："+d.error);return}
+    $("modelList").innerHTML=d.models.map(m=>`<option value="${esc(m.id)}">${m.max_model_len?"最长上下文 "+Math.round(m.max_model_len/1024)+"K":""}</option>`).join("");
     if(d.models.length&&!$("fModel").value)$("fModel").value=d.models[0].id;
     if(!$("fFw").value&&d.framework)$("fFw").value=d.framework;
     if(!$("fFwVer").value&&d.fw_version)$("fFwVer").value=d.fw_version;
-    msg("probeOut","success",`连接成功 · 延迟 ${d.latency_ms} ms · 可用模型 ${d.count} 个${d.framework?" · "+d.framework+(d.fw_version?" "+d.fw_version:""):""}`);
+    msg("probeOut","success",`连接成功 · 响应 ${d.latency_ms} 毫秒 · 可用模型 ${d.count} 个${d.framework?" · "+d.framework+(d.fw_version?" "+d.fw_version:""):""}`);
     saveForm();
   }finally{setBusy(btn,false)}
 }
@@ -1017,8 +804,7 @@ async function start(){
     const ragCtx=[...document.querySelectorAll("#ragCtxChips input:checked")].map(x=>+x.value);
     if(tasks.includes("rag")&&ragCtx.length)scen.rag_ctx=ragCtx;
     if(tasks.includes("vision")){
-      scen.vision_src={image_id:$("fImgSel").value||undefined,dir:$("fImgDir").value.trim()||undefined,
-        images:parseInt($("fImgN").value)||1};
+      scen.vision_src={image_id:$("fImgSel").value||undefined,dir:$("fImgDir").value.trim()||undefined,images:parseInt($("fImgN").value)||1};
     }
     if(tasks.includes("custom")&&$("fTaskSel").value)scen.custom_file_id=$("fTaskSel").value;
   }
@@ -1037,7 +823,7 @@ async function start(){
   if(!d)return;
   if(!d.ok){msg("probeOut","error",d.error);return}
   msg("probeOut","",null);
-  watchPerf("运行中 · "+model);
+  watchPerf("进行中 · "+model);
 }
 function watchPerf(title){
   $("btnStart").disabled=true;
@@ -1060,37 +846,37 @@ $("fReplayFile").addEventListener("change",async e=>{
   const f=e.target.files[0];
   e.target.value="";
   if(!f)return;
-  if(f.size>15*1024*1024){msg("probeOut","error","文件超过 15MB：请放到运行服务的机器上，用 CLI --replay-file 引用");return}
+  if(f.size>15*1024*1024){msg("probeOut","error","文件超过 15MB：请放到运行服务的机器上，用命令行 --replay-file 引用");return}
   msg("probeOut","info","正在上传 "+f.name+"…");
   try{
     const d=await postJSON("/api/replay-upload",{name:f.name,content:await f.text()});
     if(!d.ok){msg("probeOut","error","上传失败："+d.error);return}
     await loadReplayFiles(d.file_id);
-    msg("probeOut","success",`已上传 ${f.name}：${fmtInt(d.lines)} 条可用请求${d.bad_lines?`（${d.bad_lines} 行无效已忽略）`:""}`);
+    msg("probeOut","success",`已上传 ${f.name}：${fmtInt(d.lines)} 条可用请求${d.bad_lines?`（${d.bad_lines} 行格式不对，已忽略）`:""}`);
   }catch(err){msg("probeOut","error","读取文件失败："+err.message)}
 });
 
-/* ---------- 离线报告导出 ---------- */
+/* ---------- 导出离线报告 ---------- */
 function exportReport(view){
   const idA=view==="cmp"?$("cmpA").value:$("runA").value;
-  if(!idA){toast("请先选择运行","warning");return}
+  if(!idA){toast("请先选择要导出的测试","warning");return}
   const idB=view==="cmp"?$("cmpB").value:$("runB").value;
   const url="/api/report?id="+encodeURIComponent(idA)+(idB?"&cmp="+encodeURIComponent(idB):"");
   const a=document.createElement("a");
   a.href=url;a.rel="noopener";
   document.body.appendChild(a);a.click();a.remove();
-  toast("已开始下载离线报告（自包含 HTML，可直接发送他人打开）","success",3500);
+  toast("已开始下载报告（一个网页文件，可以直接发给别人打开）","success",3500);
 }
 
 async function refresh(focusNew){
   status("加载中…");
-  if(!RUNS_LOADED)$("dashEmpty").innerHTML=`<div class="kpi-grid">${'<div class="kpi"><div class="skeleton" style="height:12px;width:50%"></div><div class="skeleton" style="height:28px;width:70%;margin-top:12px"></div></div>'.repeat(4)}</div>`;
+  if(!RUNS_LOADED)$("dashEmpty").innerHTML=`<div class="kpi-grid">${'<div class="kpi"><div class="skeleton" style="height:12px;width:50%"></div><div class="skeleton" style="height:30px;width:70%;margin-top:12px"></div></div>'.repeat(4)}</div>`;
   try{
     const list=await getJSON("/api/results?summary=1");
     if(!SERVER.version)setConn(true,"服务已连接");
     const prev=new Set(Object.keys(RUNS));
     RUNS={};list.forEach(r=>RUNS[r.run_id]=r);
-    Object.keys(FULL).forEach(id=>{const m=RUNS[id];  /* 已删除或状态/完成时间变化的运行重新加载详情 */
+    Object.keys(FULL).forEach(id=>{const m=RUNS[id];  /* 已删除或状态变化的测试重新加载详情 */
       if(!m||m.status!==FULL[id].status||m.finished_utc!==FULL[id].finished_utc)delete FULL[id]});
     RUNS_LOADED=true;
     const names=Object.keys(RUNS).sort().reverse();
@@ -1102,25 +888,26 @@ async function refresh(focusNew){
     $("runB").innerHTML=`<option value="">不对比</option>`+opts(keepB);
     const cA=RUNS[$("cmpA").value]?$("cmpA").value:names[0],cB=RUNS[$("cmpB").value]?$("cmpB").value:(names[1]||"");
     $("cmpA").innerHTML=opts(cA);
-    $("cmpB").innerHTML=`<option value="">选择运行 B</option>`+opts(cB);
-    status(names.length?`共 ${names.length} 次运行`:"");
-    if(!names.length)toggleLauncher("launcher",true);
-    redrawVisible();
+    $("cmpB").innerHTML=`<option value="">选择测试 B</option>`+opts(cB);
+    status(names.length?`共 ${names.length} 次测试`:"");
+    if(!names.length&&VIEW==="dash")toggleLauncher("launcher",true);
+    if(VIEW==="dash"||VIEW==="cmp")redrawVisible();
   }catch(e){
     setConn(false,"服务未连接");
     status("");
-    $("dashEmpty").innerHTML=emptyState("无法连接后端服务","请确认 python run.py 正在运行（"+e.message+"）",{iconName:"alert"});
+    $("dashEmpty").innerHTML=emptyState("连不上后端服务","请确认 python run.py 正在运行（"+e.message+"）",{iconName:"alert"});
     $("dashBody").hidden=true;
   }
 }
+function runFw(r){return r.framework&&r.framework.name?`${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:""}
 function label(r){
-  const fw=r.framework&&r.framework.name?`${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:null;
-  return [r.model||"?",fw,SUITE_NAME[r.suite]||r.suite,r.tag||"",r.status&&r.status!=="done"?STATUS_NAME[r.status]||r.status:"",shortTime(r.started_utc)].filter(Boolean).join(" · ");
+  return [r.model||"?",runFw(r),SUITE_NAME[r.suite]||r.suite,r.tag||"",r.status&&r.status!=="done"?STATUS_NAME[r.status]||r.status:"",shortTime(r.started_utc)].filter(Boolean).join(" · ");
 }
 function status(s){$("status").textContent=s}
 function phase(run,id){return run&&(run.phases||[]).find(p=>p.id===id)}
+function hostOf(url){return String(url||"").replace(/https?:\/\//,"").replace(/\/v1\/chat\/completions$/,"")}
 
-/* 指标提取: KPI / 对比卡 / 差异表共用; dir=1 越高越好, -1 越低越好 */
+/* 指标提取: 指标块 / 对比 / 差异表共用; dir=1 越高越好, -1 越低越好 */
 function perfCtx(r){
   const dp=phase(r,"decode"),pp=phase(r,"prefill"),cp=phase(r,"concurrency"),pcp=phase(r,"prefill_conc");
   const rpp=phase(r,"replay"),olp=phase(r,"openloop");
@@ -1129,396 +916,527 @@ function perfCtx(r){
   let jok=0,jtot=0,scnLast=null;
   scn.forEach(p=>(p.points||[]).forEach(pt=>{
     jok+=pt.json_ok||0;jtot+=pt.json_total||0;
-    if(pt.ctx_tokens==null&&(!scnLast||(pt.conc||0)>(scnLast.conc||0)))scnLast=pt;  // 非RAG场景的最高并发点
+    if(pt.ctx_tokens==null&&(!scnLast||(pt.conc||0)>(scnLast.conc||0)))scnLast=pt;  // 非资料问答场景的最高并发点
   }));
+  const cpts=cp?[...cp.points].sort((x,y)=>x.conc-y.conc):[];
   return{
     zh:dp&&dp.cases.find(c=>c.lang==="zh"),en:dp&&dp.cases.find(c=>c.lang==="en"),
-    peak:cp&&cp.points.length?cp.points.reduce((m,p)=>p.agg_tps>m.agg_tps?p:m):null,
+    peak:cpts.length?cpts.reduce((m,p)=>p.agg_tps>m.agg_tps?p:m):null,
+    c1:cpts.find(p=>p.conc===1)||cpts[0]||null,
     pLast:pp&&pp.points.length?pp.points[pp.points.length-1]:null,
-    cLast:cp&&cp.points.length?cp.points[cp.points.length-1]:null,
-    pcp,s:pcp&&pcp.summary,succ:tot?100*ok/tot:null,
+    cLast:cpts.length?cpts[cpts.length-1]:null,
+    pcp,s:pcp&&pcp.summary,succ:tot?100*ok/tot:null,fails:tot-ok,
     scnLast,jsonRate:jtot?100*jok/jtot:null,
     rpLast:rpp&&rpp.points.length?rpp.points[rpp.points.length-1]:null,
     olLast:olp&&olp.points.length?olp.points[olp.points.length-1]:null,
     olMax:olp&&olp.points.length?Math.max(...olp.points.map(p=>p.max_inflight||0)):null};
 }
 const PERF_METRICS=[
-  {key:"zh",label:()=>"单流解码 · 中文",unit:"tok/s",dir:1,val:m=>m.zh&&m.zh.decode_tps_med,sub:m=>m.zh?`${m.zh.out_tokens} tokens · Burst ${fmt(m.zh.spec_burst_med,2)}`:""},
-  {key:"en",label:()=>"单流解码 · 英文",unit:"tok/s",dir:1,val:m=>m.en&&m.en.decode_tps_med,sub:m=>m.en?`ITL p50 ${fmt(m.en.itl_p50_ms_med)} ms`:""},
-  {key:"peak",label:()=>"峰值聚合吞吐",unit:"tok/s",dir:1,val:m=>m.peak&&m.peak.agg_tps,sub:m=>m.peak?`并发 ${m.peak.conc}`:""},
-  {key:"mpre",label:m=>`矩阵 Prefill 均值${m.pcp?"（"+m.pcp.conc+" 并发）":""}`,unit:"tok/s",dir:1,digits:0,val:m=>m.s&&m.s.prefill_avg,sub:m=>m.s?`范围 ${fmtInt(m.s.prefill_min)}–${fmtInt(m.s.prefill_max)}`:""},
-  {key:"mdec",label:m=>`矩阵输出均值${m.pcp?"（"+m.pcp.conc+" 并发）":""}`,unit:"tok/s",dir:1,val:m=>m.s&&m.s.decode_avg,sub:m=>m.s?`单流 P50 ${fmt(m.s.per_stream_decode_p50)} · P95 ${fmt(m.s.per_stream_decode_p95)}`:""},
-  {key:"pmax",label:m=>`Prefill @${m.pLast?m.pLast.label:"最大长度"}`,unit:"tok/s",dir:1,digits:0,val:m=>m.pLast&&m.pLast.prefill_tps_med,sub:m=>m.pLast?`TTFT ${fmt(m.pLast.ttft_med_s,2)} s`:""},
-  {key:"ttft",label:()=>"TTFT p95（最大并发）",unit:"s",dir:-1,digits:2,val:m=>m.cLast&&m.cLast.ttft_p95_s,sub:m=>m.cLast?`并发 ${m.cLast.conc}`:""},
-  {key:"succ",label:()=>"请求成功率",unit:"%",dir:1,val:m=>m.succ,sub:()=>"并发测试阶段"},
+  {key:"zh",label:()=>"单个请求生成速度 · 中文",term:"decode",unit:"token/秒",dir:1,val:m=>m.zh&&m.zh.decode_tps_med,
+    sub:m=>m.zh?`每次写 ${m.zh.out_tokens} token · 出字间隔 ${fmt(m.zh.itl_p50_ms_med)} 毫秒`:""},
+  {key:"en",label:()=>"单个请求生成速度 · 英文",term:"decode",unit:"token/秒",dir:1,val:m=>m.en&&m.en.decode_tps_med,
+    sub:m=>m.en?`每次写 ${m.en.out_tokens} token · 出字间隔 ${fmt(m.en.itl_p50_ms_med)} 毫秒`:""},
+  {key:"peak",label:()=>"最高总生成速度",term:"agg",unit:"token/秒",dir:1,val:m=>m.peak&&m.peak.agg_tps,
+    sub:m=>m.peak?`同时 ${m.peak.conc} 个请求时${m.c1&&m.c1.agg_tps&&m.peak.conc!==m.c1.conc?`，是 1 个请求时的 ${fmt(m.peak.agg_tps/m.c1.agg_tps,1)} 倍`:""}`:""},
+  {key:"ttft",label:()=>"首字等待 · 请求最多时（较慢）",term:"ttft",unit:"秒",dir:-1,digits:2,val:m=>m.cLast&&m.cLast.ttft_p95_s,ref:m=>m.cLast&&m.cLast.conc,
+    sub:m=>m.cLast?`同时 ${m.cLast.conc} 个请求 · 一般 ${fmtSec(m.cLast.ttft_p50_s)} 秒`:""},
+  {key:"pmax",label:m=>`读入速度 · 输入 ${m.pLast?m.pLast.label:"最长"}`,term:"prefill",unit:"token/秒",dir:1,digits:0,val:m=>m.pLast&&m.pLast.prefill_tps_med,ref:m=>m.pLast&&m.pLast.label,
+    sub:m=>m.pLast?`首字等待 ${fmtSec(m.pLast.ttft_med_s)} 秒`:""},
+  {key:"mpre",label:m=>`长输入同时 ${m.pcp?m.pcp.conc:"多"} 个请求 · 平均读入速度`,term:"prefill",unit:"token/秒",dir:1,digits:0,val:m=>m.s&&m.s.prefill_avg,
+    sub:m=>m.s?`范围 ${fmtInt(m.s.prefill_min)}–${fmtInt(m.s.prefill_max)}`:""},
+  {key:"mdec",label:m=>`长输入同时 ${m.pcp?m.pcp.conc:"多"} 个请求 · 平均总生成速度`,term:"agg",unit:"token/秒",dir:1,val:m=>m.s&&m.s.decode_avg,
+    sub:m=>m.s?`单个请求一般 ${fmt(m.s.per_stream_decode_p50)} · 较慢 ${fmt(m.s.per_stream_decode_p95)}`:""},
+  {key:"succ",label:()=>"请求成功率",unit:"%",dir:1,val:m=>m.succ,sub:m=>m.fails?`失败 ${m.fails} 个`:"同时请求测试中全部成功"},
 ];
 const CMP_EXTRA=[
-  {key:"itl",label:()=>"ITL p50 · 英文",unit:"ms",dir:-1,val:m=>m.en&&m.en.itl_p50_ms_med},
-  {key:"burst",label:()=>"Burst · 中文",unit:"tok/chunk",dir:1,digits:2,val:m=>m.zh&&m.zh.spec_burst_med},
-  {key:"ttftmax",label:m=>`TTFT @${m.pLast?m.pLast.label:"最大长度"}`,unit:"s",dir:-1,digits:2,val:m=>m.pLast&&m.pLast.ttft_med_s},
-  {key:"p50",label:()=>"矩阵单流输出 P50",unit:"tok/s",dir:1,val:m=>m.s&&m.s.per_stream_decode_p50},
-  {key:"scnreq",label:()=>"任务场景 请求/秒",unit:"req/s",dir:1,digits:2,val:m=>m.scnLast&&m.scnLast.req_s,
-    sub:m=>m.scnLast?`并发 ${m.scnLast.conc}${m.jsonRate!=null?" · JSON 合法 "+fmt(m.jsonRate,0)+"%":""}`:""},
-  {key:"rps",label:()=>"回放闭环 请求/秒",unit:"req/s",dir:1,digits:2,val:m=>m.rpLast&&m.rpLast.req_s,
-    sub:m=>m.rpLast?`并发 ${m.rpLast.conc} · 最大在途 ${fmtInt(m.rpLast.max_inflight)}`:""},
-  {key:"inf",label:m=>`开环最大在途${m.olLast?" @"+m.olLast.rate+" rps":""}`,unit:"个",dir:-1,digits:0,val:m=>m.olMax,
-    sub:m=>m.olLast?`完成 ${fmt(m.olLast.completed_rps,2)} / 目标 ${m.olLast.rate} req/s`:""},
+  {key:"itl",label:()=>"出字间隔 · 英文（一般）",term:"itl",unit:"毫秒",dir:-1,val:m=>m.en&&m.en.itl_p50_ms_med},
+  {key:"burst",label:()=>"每次返回的 token 数 · 中文",term:"burst",unit:"个",dir:1,digits:2,val:m=>m.zh&&m.zh.spec_burst_med},
+  {key:"ttftmax",label:m=>`首字等待 · 输入 ${m.pLast?m.pLast.label:"最长"}`,term:"ttft",unit:"秒",dir:-1,digits:2,val:m=>m.pLast&&m.pLast.ttft_med_s,ref:m=>m.pLast&&m.pLast.label},
+  {key:"p50",label:()=>"长输入时单个请求生成速度（一般）",term:"per",unit:"token/秒",dir:1,val:m=>m.s&&m.s.per_stream_decode_p50},
+  {key:"scnreq",label:()=>"模拟业务 · 每秒完成请求数",term:"rps",unit:"个/秒",dir:1,digits:2,val:m=>m.scnLast&&m.scnLast.req_s,ref:m=>m.scnLast&&m.scnLast.conc,
+    sub:m=>m.scnLast?`同时 ${m.scnLast.conc} 个请求${m.jsonRate!=null?" · JSON 合格 "+fmt(m.jsonRate,0)+"%":""}`:""},
+  {key:"rps",label:()=>"回放真实请求 · 每秒完成请求数",term:"rps",unit:"个/秒",dir:1,digits:2,val:m=>m.rpLast&&m.rpLast.req_s,ref:m=>m.rpLast&&m.rpLast.conc,
+    sub:m=>m.rpLast?`同时 ${m.rpLast.conc} 个 · 最多积压 ${fmtInt(m.rpLast.max_inflight)} 个`:""},
+  {key:"inf",label:m=>`按固定速率发送 · 最多积压${m.olLast?"（"+m.olLast.rate+" 个/秒）":""}`,term:"inflight",unit:"个",dir:-1,digits:0,val:m=>m.olMax,ref:m=>m.olLast&&m.olLast.rate,
+    sub:m=>m.olLast?`实际完成 ${fmt(m.olLast.completed_rps,2)} / 目标 ${m.olLast.rate} 个/秒`:""},
 ];
+/* 两次测试的参照档位是否一致(例如"请求最多时"一个是 64 个、一个是 16 个就不可比) */
+function sameRef(k,ma,mb){if(!k.ref)return true;try{return k.ref(ma)===k.ref(mb)}catch(e){return false}}
 function safeVal(f,m){try{const v=f(m);return v==null||!isFinite(v)?null:v}catch(e){return null}}
-function deltaPill(va,vb,dir,{mode="pct",prefix=""}={}){
-  if(va==null||vb==null)return `<span class="delta flat">—</span>`;
-  const d=mode==="pp"?vb-va:(va?(vb-va)/Math.abs(va)*100:0);
-  const flat=Math.abs(d)<(mode==="pp"?.5:1);
-  if(flat)return `<span class="delta flat" title="${dir<0?"越低越好":"越高越好"}">${icon("minus")}${prefix}±${fmt(Math.abs(d),1)}${mode==="pp"?" pp":"%"}</span>`;
-  const good=d*dir>0;
-  const cls=good?"up":"down";
-  const ic=d>0?"arrow-up":"arrow-down";
-  return `<span class="delta ${cls}" title="${dir<0?"越低越好":"越高越好"}">${icon(ic)}${prefix}${d>=0?"+":""}${fmt(d,1)}${mode==="pp"?" pp":"%"}</span>`;
-}
+function safeSub(k,m){try{return k.sub?k.sub(m):""}catch(e){return""}}
+function metricLabel(k,m){try{return k.label(m)}catch(e){return k.key}}
+function metricVal(k,v){const d=k.digits??1;return v==null?"—":(k.unit==="%"?fmt(v,d):(d===0?fmtInt(v):fmt(v,d)))}
 
-async function render(){
-  if(!RUNS_LOADED)return;
-  const idA=$("runA").value,idB=$("runB").value;
-  if(!RUNS[idA]){
-    $("dashBody").hidden=true;
-    $("dashEmpty").innerHTML=emptyState("暂无运行记录","新建一次性能测试后，结果会显示在这里",
-      {action:`<button class="btn btn-primary" data-toggle="launcher">${icon("plus")}新建测试</button>`});
-    return;
-  }
-  const seq=++renderSeq;
-  try{await ensureRuns([idA,RUNS[idB]?idB:""])}
-  catch(e){$("dashEmpty").innerHTML=emptyState("加载运行详情失败",e.message,{iconName:"alert",inline:true});return}
-  if(seq!==renderSeq)return;  /* 期间切换了选择, 以最新一次为准 */
-  const a=FULL[idA],b=RUNS[idB]?FULL[idB]:null;
-  $("dashEmpty").innerHTML="";$("dashBody").hidden=false;
-  const ov=a.overrides||{};
-  $("meta").innerHTML=[
-    ["模型",a.model],["套件",SUITE_NAME[a.suite]||a.suite],["端点",(a.url||"").replace(/https?:\/\//,"").replace(/\/v1\/chat\/completions$/,"")],
-    ov.conc_ladder&&["并发梯度",ov.conc_ladder.join(", ")],ov.matrix_conc&&["矩阵并发",ov.matrix_conc],
-    ov.lens&&["输入长度",ov.lens.map(k=>k+"K").join(", ")],
-    a.framework&&a.framework.name&&["框架",a.framework.name+(a.framework.version?" "+a.framework.version:"")],
-    a.tag&&["标签",a.tag],["开始",timeText(a.started_utc)],
-    ov.fixed_output!=null&&["输出长度",ov.fixed_output?"固定（ignore_eos）":(ov.fixed_output_note?"未固定（端点不支持）":"未固定")],
-    a.status&&a.status!=="done"&&["状态",STATUS_NAME[a.status]||a.status],
-  ].filter(Boolean).map(([k,v])=>`<span class="badge${k==="状态"?" is-warning":""}">${esc(k)} <b>${esc(v)}</b></span>`).join("");
-  const hints=perfAnomalies(a);
-  $("anomalies").innerHTML=hints.length?`<div class="alert is-info">${icon("info")}<div><b>数据提示</b><ul class="hint-list">${hints.map(h=>`<li>${esc(h)}</li>`).join("")}</ul></div></div>`:"";
-  renderKPIs(a,b);
-  pcTable(a,b);
-  drawPrefill(a,b,"cPrefill","lPre");
-  concChart(a,b,"cConc","lConc");
-  decodeTable(a,b);
-  metricsChart(a);
-  scnPanels(a,b,"dashGrid","replayPanel");
-  replayTable(a,b);
-  olPanel(a,b);
-}
-/* 自动识别值得关注的数据现象(不代表测试出错, 提示人工确认) */
+/* ============================================================
+   速度测试: 结果页 (结论 → 指标 → 各章节图表, 每节可展开具体数字)
+   ============================================================ */
+/* 自动识别值得注意的数据现象(不代表测试出错, 提示人工确认) */
 function perfAnomalies(r){
   const out=[...(r.notes||[])];
   const ov=r.overrides||{},cp=phase(r,"concurrency");
   if(cp&&cp.points.length>1){
-    const pts=cp.points;
+    const pts=[...cp.points].sort((x,y)=>x.conc-y.conc);
     for(let i=1;i<pts.length;i++){
       const p0=pts[i-1],p1=pts[i];
       if(p0.agg_tps>0&&p1.agg_tps<p0.agg_tps*0.95)
-        out.push(`并发 ${p0.conc} → ${p1.conc} 时聚合吞吐不升反降（${fmt(p0.agg_tps)} → ${fmt(p1.agg_tps)} tok/s），扩展性异常`);
+        out.push(`同时请求从 ${p0.conc} 个加到 ${p1.conc} 个时，总生成速度不升反降（${fmt(p0.agg_tps)} → ${fmt(p1.agg_tps)} token/秒），说明服务已到上限或在排队`);
     }
     const c1=pts.find(p=>p.conc===1),c2=pts.find(p=>p.conc>1);
     const dp=phase(r,"decode"),zh=dp&&dp.cases.find(c=>c.lang==="zh");
     if(c1&&c2&&c1.per_stream_tps_med&&c2.per_stream_tps_med&&c2.per_stream_tps_med<c1.per_stream_tps_med*0.5)
-      out.push(`单流速度从并发 1 的 ${fmt(c1.per_stream_tps_med)} 降到并发 ${c2.conc} 的 ${fmt(c2.per_stream_tps_med)} tok/s（下降 ${fmt(100-100*c2.per_stream_tps_med/c1.per_stream_tps_med,0)}%）`+
-        (zh&&zh.spec_burst_med>1.3?`；单并发时 Burst 为 ${fmt(zh.spec_burst_med,2)}，投机解码可能只在单并发时生效`:""));
+      out.push(`请求一多，每个请求的速度掉了一大半：从 1 个请求时的 ${fmt(c1.per_stream_tps_med)} 降到 ${c2.conc} 个时的 ${fmt(c2.per_stream_tps_med)} token/秒（下降 ${fmt(100-100*c2.per_stream_tps_med/c1.per_stream_tps_med,0)}%）`+
+        (zh&&zh.spec_burst_med>1.3?`。1 个请求时每次返回 ${fmt(zh.spec_burst_med,2)} 个 token，投机解码加速可能只在请求很少时有效`:""));
     const fail=pts.reduce((s,p)=>s+(p.fail||0),0);
-    if(fail)out.push(`并发阶段有 ${fail} 个请求失败`);
+    if(fail)out.push(`同时请求测试中有 ${fail} 个请求失败`);
   }
-  if(ov.fixed_output===false&&ov.fixed_output_note)out.push(ov.fixed_output_note+"：模型提前结束时吞吐会偏高，不同后端之间不可直接比较");
-  if(r.status&&!["done","running"].includes(r.status))out.push(`该运行${STATUS_NAME[r.status]||r.status}${r.error?"（"+r.error+"）":""}，部分阶段可能缺失`);
+  if(ov.fixed_output===false&&ov.fixed_output_note)out.push(ov.fixed_output_note+"：模型提前结束时速度会偏高，不同服务之间不能直接比较");
+  if(r.status&&!["done","running"].includes(r.status))out.push(`这次测试${STATUS_NAME[r.status]||r.status}${r.error?"（"+r.error+"）":""}，部分项目可能缺失`);
   return out;
 }
-function renderKPIs(a,b){
+function perfConclusions(a,b){
+  const m=perfCtx(a),out=[];
+  if(m.zh||m.en){
+    const parts=[m.zh&&`中文 <b>${fmt(m.zh.decode_tps_med)}</b>`,m.en&&`英文 <b>${fmt(m.en.decode_tps_med)}</b>`].filter(Boolean).join("、");
+    out.push({tone:"info",html:`只有 1 个请求时，每秒能写 ${parts} 个 token。`});
+  }
+  if(m.peak&&m.c1){
+    const x=m.c1.agg_tps?m.peak.agg_tps/m.c1.agg_tps:null;
+    out.push({tone:"info",html:`同时 <b>${m.peak.conc}</b> 个请求时${term("agg","总速度")}最高，每秒 <b>${fmtInt(m.peak.agg_tps)}</b> token${x&&m.peak.conc>1?`，是 1 个请求时的 <b>${fmt(x,1)}</b> 倍`:""}。`});
+    if(m.cLast&&m.cLast.conc>m.peak.conc&&m.cLast.agg_tps<m.peak.agg_tps*0.95)
+      out.push({tone:"warn",html:`再加到 ${m.cLast.conc} 个请求时总速度反而降到 ${fmtInt(m.cLast.agg_tps)}，${m.peak.conc} 个左右已经是这台服务的上限。`});
+  }
+  if(m.cLast&&m.cLast.ttft_p95_s!=null){
+    const t=m.cLast.ttft_p95_s;
+    out.push({tone:t>10?"bad":t>3?"warn":"good",html:`同时 ${m.cLast.conc} 个请求时，${term("ttft")}一般 <b>${fmtSec(m.cLast.ttft_p50_s)}</b> 秒，较慢时 <b>${fmtSec(t)}</b> 秒${t>10?"，用户会明显感到卡":t>3?"，高峰时用户会觉得慢":""}。`});
+  }
+  if(m.pLast&&m.pLast.ttft_med_s!=null){
+    const t=m.pLast.ttft_med_s;
+    out.push({tone:t>10?"warn":"info",html:`输入 ${esc(m.pLast.label)}（约 ${fmtInt(m.pLast.in_tokens)} token）时，要等 <b>${fmtSec(t)}</b> 秒才开始回答（${term("prefill")} ${fmtInt(m.pLast.prefill_tps_med)} token/秒）。`});
+  }
+  if(m.s)out.push({tone:"info",html:`长输入同时 ${m.pcp.conc} 个请求：平均${term("prefill")} <b>${fmtInt(m.s.prefill_avg)}</b>、平均${term("agg")} <b>${fmt(m.s.decode_avg)}</b> token/秒。`});
+  if(m.succ!=null&&m.succ<100)out.push({tone:"bad",html:`有 <b>${m.fails}</b> 个请求失败（成功率 ${fmt(m.succ,1)}%）。`});
+  if(b){
+    const mb=perfCtx(b);
+    const rows=[...PERF_METRICS,...CMP_EXTRA].filter(k=>sameRef(k,m,mb)).map(k=>({k,va:safeVal(k.val,m),vb:safeVal(k.val,mb)})).filter(x=>x.va!=null&&x.vb!=null)
+      .map(x=>({...x,d:pctChange(x.va,x.vb)})).filter(x=>x.d!=null);
+    const better=rows.filter(x=>x.d*x.k.dir>=1).sort((p,q)=>Math.abs(q.d)-Math.abs(p.d));
+    const worse=rows.filter(x=>x.d*x.k.dir<=-1).sort((p,q)=>Math.abs(q.d)-Math.abs(p.d));
+    const fmtD=x=>`${esc(metricLabel(x.k,m))} ${x.d>=0?"+":""}${fmt(x.d,1)}%`;
+    out.push({tone:worse.length>better.length?"warn":"good",html:`B 相比 A：<b>${better.length}</b> 项更好、<b>${worse.length}</b> 项更差、${rows.length-better.length-worse.length} 项基本持平。`+
+      (better.length?`更好：${better.slice(0,2).map(fmtD).join("；")}。`:"")+(worse.length?`更差：${worse.slice(0,2).map(fmtD).join("；")}。`:"")});
+  }
+  return out;
+}
+function perfMetaLine(r){
+  const ov=r.overrides||{};
+  return [esc(r.model||"?"),runFw(r)&&esc(runFw(r)),`${esc(SUITE_NAME[r.suite]||r.suite||"")}规模`,esc(hostOf(r.url)),`开始于 ${esc(timeText(r.started_utc))}`,
+    r.tag&&`标签 ${esc(r.tag)}`,ov.fixed_output!=null&&(ov.fixed_output?`${term("fixed","每次生成满指定长度")}`:"输出长度不固定")].filter(Boolean).join(" · ");
+}
+function perfKpis(a,b){
   const ma=perfCtx(a),mb=b?perfCtx(b):null;
-  $("kpis").innerHTML=PERF_METRICS.map(k=>{
+  return PERF_METRICS.map(k=>{
     const va=safeVal(k.val,ma),vb=mb?safeVal(k.val,mb):null;
-    const value=va==null?"—":(k.unit==="%"?fmt(va,k.digits??1):(k.digits===0?fmtInt(va):fmt(va,k.digits??1)));
-    return `<div class="kpi"><div class="kpi-head"><span class="kpi-label" title="${esc(k.label(ma))}">${esc(k.label(ma))}</span>${mb?deltaPill(va,vb,k.dir,{prefix:"B "}):""}</div>
-      <div class="kpi-value num">${value}${va!=null?`<small>${k.unit}</small>`:""}</div>
-      <div class="kpi-sub">${esc(safeSub(k,ma))}</div></div>`;
+    if(va==null&&vb==null)return "";
+    const tip=k.term&&TERMS[k.term]?TERMS[k.term].name+"（"+TERMS[k.term].tech+"）："+TERMS[k.term].desc:"";
+    return kpi(esc(metricLabel(k,ma)),metricVal(k,va),k.unit,{tip,sub:esc(safeSub(k,ma))+(mb?`<br>B：${metricVal(k,vb)} ${esc(k.unit)}`:""),delta:mb?deltaPill(va,vb,k.dir,{prefix:"B "}):""});
   }).join("");
 }
-function safeSub(k,m){try{return k.sub?k.sub(m):""}catch(e){return""}}
-function abCell(va,vb,f,hasB){
-  return `${f(va)}${hasB?`<span class="sub">B ${f(vb)}</span>`:""}`;
+function dataDetails(html,title="查看具体数字"){
+  return `<details class="advanced"><summary>${icon("chevron-down")}${title}</summary><div style="margin-top:12px">${html}</div></details>`;
 }
-function pcTable(a,b){
+/* 两次测试的系列: 单次测试时只有 A */
+function runSeries(a,b,get){return [["A",a,C.a],b?["B",b,C.b]:null].filter(Boolean).map(([t,r,c])=>({tag:t,run:r,color:c,ph:get(r)})).filter(x=>x.ph)}
+
+/* ---------- 同时请求 ---------- */
+function concPoints(r){const p=phase(r,"concurrency");return p&&p.points.length?[...p.points].sort((x,y)=>x.conc-y.conc):null}
+function concSection(a,b,p){
+  const runs=runSeries(a,b,concPoints);if(!runs.length)return "";
+  const concs=[...new Set(runs.flatMap(x=>x.ph.map(q=>q.conc)))].sort((x,y)=>x-y);
+  const rows=[];
+  concs.forEach(c=>runs.forEach(x=>{const q=x.ph.find(z=>z.conc===c);if(!q)return;
+    rows.push([String(c)+(runs.length>1?` <span class="run-tag ${x.tag.toLowerCase()}">${x.tag}</span>`:""),fmtInt(q.agg_tps),fmt(q.per_stream_tps_med),fmtSec(q.ttft_p50_s),fmtSec(q.ttft_p95_s),`${q.ok} / ${q.ok+q.fail}`])}));
+  const tbl=table(["同时请求数","总生成速度（token/秒）","单个请求速度（token/秒）","首字等待 一般（秒）","首字等待 较慢（秒）","成功"],rows);
+  return sec(p+"-conc","同时请求越多，会怎样",`横轴是${term("conc")}。总速度通常先涨后平；每个请求分到的速度和${term("ttft")}会随之变差`,
+    `<div class="grid-3">${ccard(p+"ConcAgg",term("agg"),{desc:"所有请求加起来每秒写多少 token · 越高越好"})}
+      ${ccard(p+"ConcPer",term("per"),{desc:"每个请求分到的生成速度 · 越高越好"})}
+      ${ccard(p+"ConcTtft",term("ttft")+"（较慢的情况）",{desc:"95% 的请求比这更快拿到第一个字 · 越短越好"})}</div>`+dataDetails(tbl),"同时请求");
+}
+function drawConc(a,b,p){
+  const runs=runSeries(a,b,concPoints);if(!runs.length)return;
+  const concs=[...new Set(runs.flatMap(x=>x.ph.map(q=>q.conc)))].sort((x,y)=>x-y);
+  const get=(x,c,k)=>{const q=x.ph.find(z=>z.conc===c);return q&&q[k]!=null?q[k]:null};
+  const ser=k=>runs.map(x=>({name:x.tag,color:x.color,data:concs.map(c=>get(x,c,k))}));
+  const title=i=>`同时 ${concs[i]} 个请求`;
+  lineChart(p+"ConcAgg",{cats:concs.map(String),xName:"同时请求数",unit:"token/秒",series:ser("agg_tps"),area:true,
+    tip:{title,sub:i=>runs.map(x=>{const q=x.ph.find(z=>z.conc===concs[i]);return q?`${x.tag} 成功 ${q.ok}/${q.ok+q.fail}`:""}).filter(Boolean).join(" · ")}});
+  lineChart(p+"ConcPer",{cats:concs.map(String),xName:"同时请求数",unit:"token/秒",series:ser("per_stream_tps_med"),tip:{title}});
+  lineChart(p+"ConcTtft",{cats:concs.map(String),xName:"同时请求数",unit:"秒",digits:2,series:ser("ttft_p95_s"),
+    tip:{title,sub:i=>runs.map(x=>`${x.tag} 一般 ${fmtSec(get(x,concs[i],"ttft_p50_s"))} 秒`).join(" · ")}});
+}
+
+/* ---------- 输入长度(单个请求) ---------- */
+function prefillPoints(r){const p=phase(r,"prefill");return p&&p.points.length?p.points:null}
+function lenLabels(runs,key="label"){
+  const m=new Map();runs.forEach(x=>x.ph.forEach(q=>{if(!m.has(q[key]))m.set(q[key],q.in_tokens||0)}));
+  return [...m.entries()].sort((x,y)=>x[1]-y[1]).map(x=>x[0]);
+}
+function prefillSection(a,b,p){
+  const runs=runSeries(a,b,prefillPoints);if(!runs.length)return "";
+  const labels=lenLabels(runs);
+  const rows=[];
+  labels.forEach(l=>runs.forEach(x=>{const q=x.ph.find(z=>z.label===l);if(!q)return;
+    rows.push([esc(l)+(runs.length>1?` <span class="run-tag ${x.tag.toLowerCase()}">${x.tag}</span>`:""),fmtInt(q.in_tokens),fmtInt(q.prefill_tps_med),fmtSec(q.ttft_med_s)])}));
+  const tbl=table(["输入长度","实际 token 数","读入速度（token/秒）","首字等待（秒）"],rows);
+  return sec(p+"-prefill","输入越长，要等多久",`只有 1 个请求时，不同输入长度下的${term("prefill")}和${term("ttft")}`,
+    `<div class="grid-2">${ccard(p+"PreTps",term("prefill"),{desc:"每秒读入多少 token · 越高越好"})}
+      ${ccard(p+"PreTtft",term("ttft"),{desc:"输入越长通常要等越久 · 越短越好"})}</div>`+dataDetails(tbl),"输入长度");
+}
+function drawPrefill(a,b,p){
+  const runs=runSeries(a,b,prefillPoints);if(!runs.length)return;
+  const labels=lenLabels(runs);
+  const get=(x,l,k)=>{const q=x.ph.find(z=>z.label===l);return q&&q[k]!=null?q[k]:null};
+  const ser=k=>runs.map(x=>({name:x.tag,color:x.color,data:labels.map(l=>get(x,l,k))}));
+  const title=i=>{const q=runs.map(x=>x.ph.find(z=>z.label===labels[i])).find(Boolean);return `输入 ${labels[i]}${q?`（约 ${fmtInt(q.in_tokens)} token）`:""}`};
+  lineChart(p+"PreTps",{cats:labels,xName:"输入长度",unit:"token/秒",digits:0,series:ser("prefill_tps_med"),area:true,tip:{title}});
+  lineChart(p+"PreTtft",{cats:labels,xName:"输入长度",unit:"秒",digits:2,series:ser("ttft_med_s"),tip:{title}});
+}
+
+/* ---------- 长输入 + 同时请求(矩阵) ---------- */
+function matrixPhase(r){const p=phase(r,"prefill_conc");return p&&p.points.length?p.points:null}
+function matrixSection(a,b,p){
   const pa=phase(a,"prefill_conc"),pb=b?phase(b,"prefill_conc"):null;
-  const el=$("pcTbl");
-  if(!pa){el.innerHTML=emptyState("该运行不包含此阶段数据","旧版本生成的结果，重新运行即可获得",{inline:true});return}
+  if(!pa||!pa.points.length)return "";
   const two=!!pb;
-  let html=`<div class="table-wrap"><table class="table"><thead><tr><th>输入长度</th><th>TTFT 均值 (ms)</th><th>ITL 均值 (ms)</th><th>聚合 Prefill (tok/s)</th><th>聚合输出 (tok/s)</th><th>成功</th></tr></thead><tbody>`;
-  pa.points.forEach(p=>{
-    const q=two?pb.points.find(x=>x.label===p.label)||null:null;
-    const has=two;
-    const det=(x,who)=>x?`<b>${who}</b> 单流 Prefill：${x.stream_prefill_tps.map(v=>fmtInt(v)).join(" / ")} tok/s　单流输出：${x.stream_decode_tps.map(v=>fmt(v)).join(" / ")} tok/s`:"";
-    html+=`<tr class="expandable" data-expand aria-expanded="false"><td>${icon("chevron-right","icon-sm")}${esc(p.label)}<span class="sub">${fmtInt(p.in_tokens)} tokens</span></td>
-      <td>${abCell(p.ttft_avg_ms,q&&q.ttft_avg_ms,v=>fmtInt(v),has)}</td>
-      <td>${abCell(p.itl_avg_ms,q&&q.itl_avg_ms,v=>fmt(v),has)}</td>
-      <td>${abCell(p.prefill_tps_agg,q&&q.prefill_tps_agg,v=>fmtInt(v),has)}</td>
-      <td>${abCell(p.decode_tps_agg,q&&q.decode_tps_agg,v=>fmt(v),has)}</td>
-      <td>${p.ok} / ${p.ok+p.fail}${has?`<span class="sub">B ${q?q.ok+" / "+(q.ok+q.fail):"—"}</span>`:""}</td></tr>
-      <tr class="detail" hidden><td colspan="6">${det(p,"A")}${q?"<br>"+det(q,"B"):""}</td></tr>`;
+  let t=`<div class="table-wrap"><table class="table"><thead><tr><th>输入长度</th><th>首字等待 平均（毫秒）</th><th>出字间隔 平均（毫秒）</th><th>总读入速度（token/秒）</th><th>总生成速度（token/秒）</th><th>成功</th></tr></thead><tbody>`;
+  pa.points.forEach(q=>{
+    const z=two?pb.points.find(x=>x.label===q.label)||null:null;
+    const det=(x,who)=>x?`<b>${who}</b> 每个请求的读入速度：${(x.stream_prefill_tps||[]).map(v=>fmtInt(v)).join(" / ")} token/秒；每个请求的生成速度：${(x.stream_decode_tps||[]).map(v=>fmt(v)).join(" / ")} token/秒`:"";
+    t+=`<tr class="expandable" data-expand aria-expanded="false"><td>${icon("chevron-right","icon-sm")}${esc(q.label)}<span class="sub">${fmtInt(q.in_tokens)} token</span></td>
+      <td>${abCell(q.ttft_avg_ms,z&&z.ttft_avg_ms,v=>fmtInt(v),two)}</td><td>${abCell(q.itl_avg_ms,z&&z.itl_avg_ms,v=>fmt(v),two)}</td>
+      <td>${abCell(q.prefill_tps_agg,z&&z.prefill_tps_agg,v=>fmtInt(v),two)}</td><td>${abCell(q.decode_tps_agg,z&&z.decode_tps_agg,v=>fmt(v),two)}</td>
+      <td>${q.ok} / ${q.ok+q.fail}${two?`<span class="sub">B ${z?z.ok+" / "+(z.ok+z.fail):"—"}</span>`:""}</td></tr>
+      <tr class="detail" hidden><td colspan="6">${det(q,"A")}${z?"<br>"+det(z,"B"):""}</td></tr>`;
   });
-  html+=`</tbody></table></div>`;
-  const rows=[[pa.summary,"A"],two&&[pb.summary,"B"]].filter(x=>x&&x[0]);
-  if(rows.length){
-    html+=`<div class="table-caption">汇总</div><div class="table-wrap"><table class="table"><thead><tr><th>运行</th><th>Prefill 范围 / 均值 (tok/s)</th><th>输出范围 / 均值 (tok/s)</th><th>单流 Prefill P50 / P90 / P95</th><th>单流输出 P50 / P90 / P95</th></tr></thead><tbody>`+
-      rows.map(([s,who])=>`<tr><td><span class="run-tag ${who.toLowerCase()}">${who}</span></td>
-        <td>${fmtInt(s.prefill_min)} – ${fmtInt(s.prefill_max)} / <b>${fmtInt(s.prefill_avg)}</b></td>
-        <td>${fmt(s.decode_min)} – ${fmt(s.decode_max)} / <b>${fmt(s.decode_avg)}</b></td>
-        <td>${fmtInt(s.per_stream_prefill_p50)} / ${fmtInt(s.per_stream_prefill_p90)} / ${fmtInt(s.per_stream_prefill_p95)}</td>
-        <td>${fmt(s.per_stream_decode_p50)} / ${fmt(s.per_stream_decode_p90)} / ${fmt(s.per_stream_decode_p95)}</td></tr>`).join("")+
-      `</tbody></table></div>`;
-  }
-  el.innerHTML=html;
+  t+=`</tbody></table></div>`;
+  const sums=[[pa.summary,"A"],two&&[pb.summary,"B"]].filter(x=>x&&x[0]);
+  if(sums.length)t+=`<div class="table-caption">汇总（点上表的行可展开看每个请求）</div>`+table(["测试","读入速度 最低–最高 / 平均","总生成速度 最低–最高 / 平均","单个请求读入 一般 / 较慢 / 最慢","单个请求生成 一般 / 较慢 / 最慢"],
+    sums.map(([s,who])=>[`<span class="run-tag ${who.toLowerCase()}">${who}</span>`,`${fmtInt(s.prefill_min)}–${fmtInt(s.prefill_max)} / <b>${fmtInt(s.prefill_avg)}</b>`,
+      `${fmt(s.decode_min)}–${fmt(s.decode_max)} / <b>${fmt(s.decode_avg)}</b>`,`${fmtInt(s.per_stream_prefill_p50)} / ${fmtInt(s.per_stream_prefill_p90)} / ${fmtInt(s.per_stream_prefill_p95)}`,
+      `${fmt(s.per_stream_decode_p50)} / ${fmt(s.per_stream_decode_p90)} / ${fmt(s.per_stream_decode_p95)}`]));
+  return sec(p+"-matrix",`长输入时同时 ${pa.conc||""} 个请求`,`每种输入长度下同时发 ${pa.conc||"多"} 个请求，看要等多久、总速度多少`,
+    `<div class="grid-3">${ccard(p+"MxTtft",term("ttft")+"（平均）",{desc:"越短越好"})}
+      ${ccard(p+"MxPre","总"+term("prefill"),{desc:"所有请求合计 · 越高越好"})}
+      ${ccard(p+"MxDec",term("agg"),{desc:"所有请求合计 · 越高越好"})}</div>`+dataDetails(t),"长输入并发");
 }
+function drawMatrix(a,b,p){
+  const runs=runSeries(a,b,matrixPhase);if(!runs.length)return;
+  const labels=lenLabels(runs);
+  const get=(x,l,k,f=v=>v)=>{const q=x.ph.find(z=>z.label===l);return q&&q[k]!=null?f(q[k]):null};
+  const title=i=>`输入 ${labels[i]}`;
+  barChart(p+"MxTtft",{cats:labels,unit:"秒",digits:2,series:runs.map(x=>({name:x.tag,color:x.color,data:labels.map(l=>get(x,l,"ttft_avg_ms",v=>v/1000))})),tip:{title}});
+  barChart(p+"MxPre",{cats:labels,unit:"token/秒",digits:0,series:runs.map(x=>({name:x.tag,color:x.color,data:labels.map(l=>get(x,l,"prefill_tps_agg"))})),tip:{title}});
+  barChart(p+"MxDec",{cats:labels,unit:"token/秒",series:runs.map(x=>({name:x.tag,color:x.color,data:labels.map(l=>get(x,l,"decode_tps_agg"))})),tip:{title}});
+}
+
+/* ---------- 单个请求的生成细节 ---------- */
 function decodeStats(c){
   if(!c)return null;
   const runs=c.runs||[];
   const m=k=>median(runs.map(r=>r[k]));
   return{out:c.out_tokens,tps:c.decode_tps_med,best:c.decode_tps_best,tpot:m("tpot_ms"),p50:c.itl_p50_ms_med,p95:m("itl_p95_ms"),p99:m("itl_p99_ms"),jit:m("itl_jitter_ms"),burst:c.spec_burst_med};
 }
-function decodeTable(a,b){
-  const da=phase(a,"decode"),db=b?phase(b,"decode"):null;
-  if(!da){$("decodeTbl").innerHTML=emptyState("该运行不包含此阶段数据","",{inline:true});return}
-  const cols=[["tps","解码速度 (tok/s)",1],["best","最佳 (tok/s)",1],["tpot","TPOT (ms)",2],["p50","ITL p50 (ms)",1],["p95","ITL p95 (ms)",1],["p99","ITL p99 (ms)",1],["jit","抖动 (ms)",1],["burst","Burst",2]];
-  let html=`<div class="table-wrap"><table class="table"><thead><tr><th>场景</th>${cols.map(c=>`<th>${c[1]}</th>`).join("")}</tr></thead><tbody>`;
+function decodeSection(a,b,p){
+  const da=phase(a,"decode"),db=b?phase(b,"decode"):null;if(!da)return "";
+  const rows=[];
   for(const lang of ["zh","en"]){
-    const sa=decodeStats(da.cases.find(c=>c.lang===lang)),sb=db?decodeStats(db.cases.find(c=>c.lang===lang)):null;
-    if(!sa)continue;
-    html+=`<tr><td>${lang==="zh"?"中文":"英文"}<span class="sub">${sa.out} tokens / 次</span></td>`+
-      cols.map(([k,,d])=>`<td>${abCell(sa[k],sb&&sb[k],v=>fmt(v,d),!!db)}</td>`).join("")+`</tr>`;
+    [[da,"A"],[db,"B"]].forEach(([d,tag])=>{if(!d)return;const s=decodeStats(d.cases.find(c=>c.lang===lang));if(!s)return;
+      rows.push([(lang==="zh"?"中文":"英文")+(db?` <span class="run-tag ${tag.toLowerCase()}">${tag}</span>`:"")+`<span class="sub">每次写 ${s.out} token</span>`,
+        fmt(s.tps),fmt(s.best),fmt(s.tpot,2),fmt(s.p50),fmt(s.p95),fmt(s.p99),fmt(s.jit),fmt(s.burst,2)])});
   }
-  $("decodeTbl").innerHTML=html+`</tbody></table></div>`;
+  const tbl=table(["内容",`${term("decode")}（token/秒）`,"最快一次","平均每个 token（毫秒）",`${term("itl")} 一般`,"较慢","最慢",term("jitter","波动")+"（毫秒）",term("burst")],rows);
+  return sec(p+"-decode","单个请求写得多快、稳不稳",`只有 1 个请求时的${term("decode")}和${term("itl")}；${term("burst")}明显大于 1 通常表示开了投机解码`,
+    `<div class="grid-2">${ccard(p+"DecTps",term("decode"),{desc:"每秒写多少 token · 越高越好"})}
+      ${ccard(p+"DecItl",term("itl")+"（毫秒）",{desc:`${term("pct","一般 / 较慢 / 最慢")}三种情况 · 越短越平滑`})}</div>`+dataDetails(tbl),"单个请求");
+}
+function drawDecode(a,b,p){
+  const runs=runSeries(a,b,r=>phase(r,"decode"));if(!runs.length)return;
+  const st=(x,lang)=>decodeStats(x.ph.cases.find(c=>c.lang===lang));
+  barChart(p+"DecTps",{cats:["中文","英文"],unit:"token/秒",labels:true,series:runs.map(x=>({name:x.tag,color:x.color,data:["zh","en"].map(l=>{const s=st(x,l);return s?s.tps:null})}))});
+  const cats=["中文 · 一般","中文 · 较慢","中文 · 最慢","英文 · 一般","英文 · 较慢","英文 · 最慢"];
+  barChart(p+"DecItl",{cats,unit:"毫秒",series:runs.map(x=>({name:x.tag,color:x.color,data:["zh","en"].flatMap(l=>{const s=st(x,l);return s?[s.p50,s.p95,s.p99]:[null,null,null]})}))});
 }
 
-/* ============================================================
-   任务场景: 按 scn_* phase 动态生成面板(模板任意组合)
-   ============================================================ */
+/* ---------- 旧版测试的长上下文阶段 ---------- */
+function longctxSection(a,b,p){
+  const pa=phase(a,"longctx");if(!pa||!pa.points||!pa.points.length)return "";
+  const tbl=table(["输入 token","首字等待（秒）","读入速度（token/秒）","生成速度（token/秒）","出字间隔 一般 / 较慢（毫秒）"],
+    pa.points.map(q=>[fmtInt(q.in_tokens),fmtSec(q.ttft_s),fmtInt(q.prefill_tps),fmt(q.decode_tps),`${fmt(q.itl_p50_ms)} / ${fmt(q.itl_p95_ms)}`]));
+  if(pa.points.length<3)return sec(p+"-longctx","超长输入（旧版测试项）","早期版本的长上下文测试结果，数据点太少，直接列出",tbl,"超长输入");
+  return sec(p+"-longctx","超长输入（旧版测试项）","早期版本的长上下文测试结果",
+    `<div class="grid-2">${ccard(p+"LcTtft",term("ttft"),{desc:"越短越好"})}${ccard(p+"LcDec",term("decode"),{desc:"读完长输入后的生成速度 · 越高越好"})}</div>`+dataDetails(tbl),"超长输入");
+}
+function drawLongctx(a,b,p){
+  const pa=phase(a,"longctx");if(!pa||!pa.points||pa.points.length<3)return;
+  const cats=pa.points.map(q=>fmtAxis(q.in_tokens));
+  lineChart(p+"LcTtft",{cats,xName:"输入 token",unit:"秒",digits:2,series:[{name:"A",color:C.a,data:pa.points.map(q=>q.ttft_s)}]});
+  lineChart(p+"LcDec",{cats,xName:"输入 token",unit:"token/秒",series:[{name:"A",color:C.a,data:pa.points.map(q=>q.decode_tps)}]});
+}
+
+/* ---------- 模拟真实业务(scn_*) ---------- */
 const SCN_LABEL=Object.fromEntries(SCN_TPL.map(([id,name])=>[id,name]));
-function retryTag(p){return (p.attempts||1)>1?` <span class="sub" title="失败后整格重跑，明细见离线报告">重跑×${p.attempts}</span>`:""}
-function scnPanels(a,b,gridId,beforeId){
-  const grid=$(gridId),before=$(beforeId);
-  if(!grid)return;
-  grid.querySelectorAll("[data-scn-panel]").forEach(x=>x.remove());
-  const frag=[];
-  for(const p of (a.phases||[])){
-    const pid=p.id||"";
-    if(!pid.startsWith("scn_"))continue;
-    const tpl=pid.slice(4);
-    const label=(p.task&&p.task.label)||SCN_LABEL[tpl]||tpl;
+const kLabel=v=>(v/1000).toFixed(v%1000?1:0)+"K";
+function retryTag(p){return (p.attempts||1)>1?` <span class="badge is-warn" title="这一档失败后整档重跑过，明细见导出的报告">重跑 ${p.attempts} 次</span>`:""}
+function scnSection(a,b,p){
+  const blocks=[];
+  (a.phases||[]).forEach((ph,idx)=>{
+    const pid=ph.id||"";if(!pid.startsWith("scn_"))return;
+    const tpl=pid.slice(4),isRag=tpl==="rag",key=isRag?"ctx_tokens":"conc";
+    const pb=b?(b.phases||[]).find(x=>x.id===pid):null,two=!!pb;
+    const labelName=(ph.task&&ph.task.label)||SCN_LABEL[tpl]||tpl;
+    const hasJson=(ph.points||[]).some(x=>x.json_total);
+    const head=[isRag?"资料长度（token）":"同时请求数","成功",`${term("rps")}`,`${term("ttft")} 较慢（秒）`,`${term("e2e")} 较慢（秒）`,"平均输出 token","最多积压"];
+    if(hasJson)head.push("JSON 合格");
+    const rows=(ph.points||[]).map(q=>{
+      const z=two?(pb.points||[]).find(x=>x[key]===q[key]):null;
+      const r=[fmtInt(q[key])+retryTag(q)+(q.pool_wrapped?` <span class="badge" title="任务集用完一轮后重复使用">已循环</span>`:""),
+        `${q.ok} / ${q.total}${q.fail?`<span class="sub">失败 ${q.fail}</span>`:""}`,abCell(q.req_s,z&&z.req_s,v=>fmt(v,2),two),
+        abCell(q.ttft_p95_s,z&&z.ttft_p95_s,fmtSec,two),abCell(q.e2e_p95_s,z&&z.e2e_p95_s,fmtSec,two),
+        `${fmt(q.out_tokens_avg,0)}${q.out_tokens_p90!=null?`<span class="sub">多的时候 ${fmt(q.out_tokens_p90,0)}</span>`:""}`,q.max_inflight!=null?fmtInt(q.max_inflight):"—"];
+      if(hasJson)r.push(q.json_total!=null?`${fmtInt(q.json_ok)} / ${fmtInt(q.json_total)}<span class="sub">${q.json_rate!=null?fmt(100*q.json_rate,0)+"%":""}</span>`:"—");
+      return r;
+    });
+    const t=ph.task||{};
+    const jOk=(ph.points||[]).reduce((s2,q)=>s2+(q.json_ok||0),0),jTot=(ph.points||[]).reduce((s2,q)=>s2+(q.json_total||0),0);
+    const desc=[jTot?`JSON 合格率 ${fmt(100*jOk/jTot,0)}%`:"",t.max_tokens?"每次最多 "+t.max_tokens+" token":"",t.requests_per_worker?"每个并发发 "+t.requests_per_worker+" 次":"",
+      t.images?"图片 "+t.images+" 张"+(t.images_per_request?"，每次带 "+t.images_per_request+" 张":""):"",t.pool_size?"任务集 "+t.pool_size+" 条":"",
+      Array.isArray(t.rag_ctx)?"资料长度 "+t.rag_ctx.map(x=>(x/1000)+"K").join(" / "):""].filter(Boolean).join(" · ");
+    blocks.push(`<div class="stack" style="margin-bottom:20px"><div><h3 class="ccard-title" style="font-size:15px">${esc(labelName)}</h3>
+      <p class="ccard-desc">按真实方式结束（不强制写满长度）${desc?" · "+esc(desc):""}</p></div>
+      <div class="grid-2">${ccard(`${p}Scn${idx}Rps`,term("rps"),{desc:(isRag?"横轴是资料长度":"横轴是同时请求数")+" · 越高越好",h:240})}
+        ${ccard(`${p}Scn${idx}E2e`,term("e2e")+"（较慢的情况）",{desc:"95% 的请求比这更快拿到完整回答 · 越短越好",h:240})}</div>${dataDetails(table(head,rows))}</div>`);
+  });
+  if(!blocks.length)return "";
+  return sec(p+"-scn","模拟真实业务","不同业务类型的请求按真实方式结束，看每秒能处理多少、用户要等多久",blocks.join(""),"真实业务");
+}
+function drawScn(a,b,p){
+  (a.phases||[]).forEach((ph,idx)=>{
+    const pid=ph.id||"";if(!pid.startsWith("scn_"))return;
+    const isRag=pid==="scn_rag",key=isRag?"ctx_tokens":"conc";
     const pb=b?(b.phases||[]).find(x=>x.id===pid):null;
-    const isRag=tpl==="rag",key=isRag?"ctx_tokens":"conc";
-    const hasJson=(p.points||[]).some(x=>x.json_total);
-    const two=!!pb;
-    const cols=[isRag?"上下文 tokens":"并发","ok/total","请求/秒","TTFT p95 (s)","端到端 p95 (s)","出 tokens 均值","最大在途"];
-    if(hasJson)cols.push("JSON 合法");
-    let rows="";
-    for(const pt of (p.points||[])){
-      const q=two?(pb.points||[]).find(x=>x[key]===pt[key]):null;
-      const jr=pt.json_total!=null?`${fmtInt(pt.json_ok)}/${fmtInt(pt.json_total)}<span class="sub">${pt.json_rate!=null?fmt(100*pt.json_rate,0)+"%":""}</span>`:"—";
-      const meta=[(pt.attempts||1)>1?`重跑×${pt.attempts}`:"",pt.pool_wrapped?"池已回绕":""].filter(Boolean).map(x=>`<span class="sub">${esc(x)}</span>`).join(" ");
-      rows+=`<tr><td>${isRag?fmtInt(pt[key]):fmtInt(pt[key])}${retryTag(pt)}</td>
-        <td>${pt.ok}/${pt.total}${pt.fail?`<span class="sub">失败 ${pt.fail}</span>`:""}</td>
-        <td>${abCell(pt.req_s,q&&q.req_s,v=>fmt(v,2),two)}</td>
-        <td>${abCell(pt.ttft_p95_s,q&&q.ttft_p95_s,v=>fmt(v,2),two)}</td>
-        <td>${abCell(pt.e2e_p95_s,q&&q.e2e_p95_s,v=>fmt(v,2),two)}</td>
-        <td>${fmt(pt.prompt_tokens_avg?pt.out_tokens_avg:null)}${pt.out_tokens_p90!=null?`<span class="sub">p90 ${fmt(pt.out_tokens_p90,0)}</span>`:""}</td>
-        <td>${pt.max_inflight!=null?fmtInt(pt.max_inflight):"—"}</td>
-        ${hasJson?`<td>${jr}</td>`:""}${meta?`</tr><tr><td colspan="${cols.length}" class="sub">${meta}</td>`:""}</tr>`;
-    }
-    const t=p.task||{};
-    const desc=[t.max_tokens?("max_tokens "+t.max_tokens):"",t.requests_per_worker?("每并发 "+t.requests_per_worker+" 请求"):"",
-      t.images?("图片池 "+t.images+" 张"+(t.images_per_request?("/请求 "+t.images_per_request+" 张"):"")):"",
-      t.pool_size?("任务集 "+t.pool_size+" 条"):"",Array.isArray(t.rag_ctx)?("档位 "+t.rag_ctx.map(x=>(x/1000)+"K").join("/")):""]
-      .filter(Boolean).join(" · ");
-    frag.push(`<div class="panel span-all" data-scn-panel><div class="panel-head"><div><h3 class="panel-title">场景 · ${esc(label)}</h3>
-      <p class="panel-desc">真实任务行为（不发送 ignore_eos）${desc?" · "+esc(desc):""}</p></div></div>
-      <div class="panel-body"><div class="table-wrap"><table class="table"><thead><tr>${cols.map(c=>`<th>${c}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div></div></div>`);
-  }
-  if(frag.length)before.insertAdjacentHTML("beforebegin",frag.join(""));
-}
-function replayTable(a,b,ids){
-  ids=ids||{panel:"replayPanel",tbl:"replayTbl"};
-  const pa=phase(a,"replay"),pb=b?phase(b,"replay"):null;
-  const panel=$(ids.panel);
-  if(!pa){panel.hidden=true;return}
-  panel.hidden=false;
-  const two=!!pb,pool=pa.pool||{};
-  let html=`<div class="table-caption">回放池 ${fmtInt(pool.size)} 条${pool.wrapped?` · <span class="sub">已回绕（部分请求重复发送，前缀缓存可能使后段偏快）</span>`:""}${a.replay&&a.replay.file?` · ${esc(a.replay.file)}`:""}</div>
-    <div class="table-wrap"><table class="table"><thead><tr><th>并发</th><th>请求/秒</th><th>TTFT p95 (s)</th><th>端到端 p95 (s)</th><th>入/出 tokens 均值</th><th>最大在途</th><th>成功</th></tr></thead><tbody>`;
-  pa.points.forEach(p=>{
-    const q=two?pb.points.find(x=>x.conc===p.conc):null;
-    html+=`<tr><td>${fmtInt(p.conc)}${retryTag(p)}</td>
-      <td>${abCell(p.req_s,q&&q.req_s,v=>fmt(v,2),two)}</td>
-      <td>${abCell(p.ttft_p95_s,q&&q.ttft_p95_s,v=>fmt(v,2),two)}</td>
-      <td>${abCell(p.e2e_p95_s,q&&q.e2e_p95_s,v=>fmt(v,2),two)}</td>
-      <td>${fmtInt(p.prompt_tokens_avg)} / ${fmtInt(p.out_tokens_avg)}</td>
-      <td>${fmtInt(p.max_inflight)}</td>
-      <td>${p.ok}/${p.total}${p.fail?`<span class="sub">失败 ${p.fail}</span>`:""}</td></tr>`;
+    const keys=[...new Set([...(ph.points||[]),...((pb&&pb.points)||[])].map(q=>q[key]))].sort((x,y)=>x-y);
+    const runs=[{tag:"A",color:C.a,pts:ph.points||[]},pb?{tag:"B",color:C.b,pts:pb.points||[]}:null].filter(Boolean);
+    const get=(x,k,f)=>{const q=x.pts.find(z=>z[key]===k);return q&&q[f]!=null?q[f]:null};
+    const cats=keys.map(k=>isRag?kLabel(k):String(k)),xName=isRag?"资料长度（token）":"同时请求数";
+    const title=i=>isRag?`资料约 ${fmtInt(keys[i])} token`:`同时 ${keys[i]} 个请求`;
+    lineChart(`${p}Scn${idx}Rps`,{cats,xName,unit:"个/秒",digits:2,series:runs.map(x=>({name:x.tag,color:x.color,data:keys.map(k=>get(x,k,"req_s"))})),area:true,tip:{title}});
+    lineChart(`${p}Scn${idx}E2e`,{cats,xName,unit:"秒",digits:2,series:runs.map(x=>({name:x.tag,color:x.color,data:keys.map(k=>get(x,k,"e2e_p95_s"))})),
+      tip:{title,sub:i=>runs.map(x=>`${x.tag} 首字等待较慢 ${fmtSec(get(x,keys[i],"ttft_p95_s"))} 秒`).join(" · ")}});
   });
-  $(ids.tbl).innerHTML=html+`</tbody></table></div>`;
-}
-function olPanel(a,b,ids){
-  ids=ids||{panel:"olPanel",tbl:"olTbl",cv:"cOpenloop",lg:"lOpenloop"};
-  const pa=phase(a,"openloop"),pb=b?phase(b,"openloop"):null;
-  const panel=$(ids.panel);
-  if(!pa){panel.hidden=true;return}
-  panel.hidden=false;
-  const two=!!pb;
-  let html=`<div class="table-wrap"><table class="table"><thead><tr><th>速率 (req/s)</th><th>发送/丢弃</th><th>完成 (req/s)</th><th>TTFT p95 (s)</th><th>端到端 p95 (s)</th><th>最大在途</th><th>成功</th></tr></thead><tbody>`;
-  pa.points.forEach(p=>{
-    const q=two?pb.points.find(x=>x.rate===p.rate):null;
-    const lag=p.completed_rps!=null&&p.rate&&p.completed_rps<p.rate*0.9;
-    html+=`<tr><td>${fmt(p.rate,p.rate<10?1:0)}${retryTag(p)}</td>
-      <td>${fmtInt(p.sent)}${p.shed?`<span class="sub">丢弃 ${p.shed}</span>`:""}</td>
-      <td>${abCell(p.completed_rps,q&&q.completed_rps,v=>fmt(v,2),two)}${lag?`<span class="sub" style="color:var(--warning)">目标 ${fmt(p.rate,p.rate<10?1:0)}</span>`:""}</td>
-      <td>${abCell(p.ttft_p95_s,q&&q.ttft_p95_s,v=>fmt(v,2),two)}</td>
-      <td>${abCell(p.e2e_p95_s,q&&q.e2e_p95_s,v=>fmt(v,2),two)}</td>
-      <td>${fmtInt(p.max_inflight)}</td>
-      <td>${p.ok}/${p.total}${p.fail?`<span class="sub">失败 ${p.fail}</span>`:""}</td></tr>`;
-  });
-  $(ids.tbl).innerHTML=html+`</tbody></table></div>`;
-  drawOpenloop(pa,pb,ids);
-}
-function drawOpenloop(pa,pb,ids){
-  if(ecReady())return ecOpenloop(pa,pb,ids);
-  const cv=$(ids.cv);
-  if(!cv||!cv.clientWidth)return;
-  const {g,w,h}=setupCanvas(cv);
-  const runs=[["A",pa,C.a],["B",pb,C.b]].filter(([_,p])=>p);
-  const series=[];
-  runs.forEach(([tag,p,base])=>p.points.forEach((pt,j)=>{
-    if((pt.inflight_ts||[]).length>1)series.push({pt,color:runs.length>1?base:C.series[j%C.series.length],
-      name:(runs.length>1?tag+" ":"")+pt.rate+" rps"});
-  }));
-  if(!series.length){noData(g,w,h,"无在途采样数据");$(ids.lg).innerHTML="";return}
-  const maxT=Math.max(...series.map(s=>s.pt.inflight_ts[s.pt.inflight_ts.length-1][0]),1);
-  const ym=niceMax(Math.max(...series.map(s=>Math.max(...s.pt.inflight_ts.map(x=>x[1]||0))),1));
-  const pad={l:44,r:14,t:12,b:24};
-  drawGrid(g,{pad,w,h,ymax:ym,fmtY:fmtAxis});
-  const X=t=>pad.l+(w-pad.l-pad.r)*t/maxT,Y=v=>pad.t+(h-pad.t-pad.b)*(1-v/ym);
-  series.forEach(s=>{
-    const pts=s.pt.inflight_ts.map(([t,v])=>({x:X(t),y:Y(v),t,v})).filter(p=>p.y!=null);
-    strokeSeries(g,pts,s.color,{width:1.75});
-    pts.forEach((p,i)=>{if(i%3)return;cv._hit.push({x:p.x,y:p.y,
-      html:tt(`${s.name} · t+${Math.round(p.t)}s`,[[s.color,"在途请求",fmtInt(p.v)]])})});
-  });
-  g.fillStyle=C.text;g.textAlign="center";
-  for(let i=0;i<=4;i++){const t=maxT*i/4;g.fillText(Math.round(t)+"s",X(t),h-pad.b+14)}
-  g.textAlign="left";
-  axisTitles(g,pad,w,"在途请求","","");
-  $(ids.lg).innerHTML=series.map(s=>legendBtn("",s.color,s.name)).join("");
-  bindTips(cv);
 }
 
-async function deleteRun(kind){
-  const sel={perf:"runA",iq:"iqMainSel",gen:"genMainSel"}[kind],id=$(sel).value;
-  const meta={perf:RUNS,iq:IQ_RUNS,gen:GEN_RUNS}[kind][id];
-  if(!meta){toast("没有可删除的运行","warning");return}
-  const name={perf:label,iq:iqLabel,gen:genLabel}[kind](meta);
-  const ok=await confirmDialog({title:"删除运行",confirmText:"删除",danger:true,
-    message:`删除后不可恢复${kind==="gen"?"，作品文件与检测截图也会一并删除":""}。\n\n${name}`});
-  if(!ok)return;
-  const d=await postJSON("/api/run-delete",{run_id:id});
-  if(!d.ok){toast("删除失败："+d.error,"error");return}
-  toast("已删除运行","success",2500);
-  if(kind==="perf"){delete FULL[id];refresh()}
-  else if(kind==="iq"){IQ_CMP.delete(id);loadIqResults()}
-  else loadGenResults();
+/* ---------- 回放真实请求 ---------- */
+function replaySection(a,b,p){
+  const pa=phase(a,"replay"),pb=b?phase(b,"replay"):null,oa=phase(a,"openloop"),ob=b?phase(b,"openloop"):null;
+  if(!pa&&!oa)return "";
+  let body="";
+  if(pa){
+    const two=!!pb,pool=pa.pool||{};
+    const rows=pa.points.map(q=>{const z=two?pb.points.find(x=>x.conc===q.conc):null;
+      return [fmtInt(q.conc)+retryTag(q),abCell(q.req_s,z&&z.req_s,v=>fmt(v,2),two),abCell(q.ttft_p95_s,z&&z.ttft_p95_s,fmtSec,two),abCell(q.e2e_p95_s,z&&z.e2e_p95_s,fmtSec,two),
+        `${fmtInt(q.prompt_tokens_avg)} / ${fmtInt(q.out_tokens_avg)}`,fmtInt(q.max_inflight),`${q.ok} / ${q.total}${q.fail?`<span class="sub">失败 ${q.fail}</span>`:""}`]});
+    body+=`<div class="stack" style="margin-bottom:20px"><div><h3 class="ccard-title" style="font-size:15px">${term("closed")}</h3>
+      <p class="ccard-desc">请求池 ${fmtInt(pool.size)} 条${pool.wrapped?"（已循环使用，后面的请求可能因为重复内容复用而偏快）":""}${a.replay&&a.replay.file?" · "+esc(a.replay.file):""}</p></div>
+      <div class="grid-2">${ccard(p+"RpRps",term("rps"),{desc:"横轴是同时请求数 · 越高越好",h:240})}${ccard(p+"RpE2e",term("e2e")+"（较慢的情况）",{desc:"越短越好",h:240})}</div>
+      ${dataDetails(table(["同时请求数",term("rps"),"首字等待 较慢（秒）","完整响应 较慢（秒）","平均输入 / 输出 token","最多积压","成功"],rows))}</div>`;
+  }
+  if(oa){
+    const two=!!ob;
+    const rows=oa.points.map(q=>{const z=two?ob.points.find(x=>x.rate===q.rate):null;
+      const lag=q.completed_rps!=null&&q.rate&&q.completed_rps<q.rate*0.9;
+      return [fmt(q.rate,q.rate<10?1:0)+retryTag(q),`${fmtInt(q.sent)}${q.shed?`<span class="sub">丢弃 ${q.shed}</span>`:""}`,
+        abCell(q.completed_rps,z&&z.completed_rps,v=>fmt(v,2),two)+(lag?`<span class="sub warn">跟不上目标速率</span>`:""),
+        abCell(q.ttft_p95_s,z&&z.ttft_p95_s,fmtSec,two),abCell(q.e2e_p95_s,z&&z.e2e_p95_s,fmtSec,two),fmtInt(q.max_inflight),`${q.ok} / ${q.total}${q.fail?`<span class="sub">失败 ${q.fail}</span>`:""}`]});
+    body+=`<div class="stack"><div><h3 class="ccard-title" style="font-size:15px">${term("open")}</h3>
+      <p class="ccard-desc">按设定速率随机间隔地发请求；两次测试的发送时间点完全相同。${term("inflight")}一直往上涨，说明服务跟不上</p></div>
+      <div class="grid-2">${ccard(p+"OlInf",term("inflight")+"数量随时间变化",{desc:"横轴是开始后的秒数",h:260})}${ccard(p+"OlRate","目标速率 vs 实际完成速率",{desc:"实际明显低于目标说明处理不过来",h:260})}</div>
+      ${dataDetails(table(["目标速率（个/秒）","发出","实际完成（个/秒）","首字等待 较慢（秒）","完整响应 较慢（秒）","最多积压","成功"],rows))}</div>`;
+  }
+  return sec(p+"-replay","回放真实请求","用线上导出的真实请求施压",body,"真实回放");
+}
+function drawReplay(a,b,p){
+  const pa=phase(a,"replay"),pb=b?phase(b,"replay"):null;
+  if(pa){
+    const runs=[{tag:"A",color:C.a,pts:pa.points},pb?{tag:"B",color:C.b,pts:pb.points}:null].filter(Boolean);
+    const concs=[...new Set(runs.flatMap(x=>x.pts.map(q=>q.conc)))].sort((x,y)=>x-y);
+    const get=(x,c,k)=>{const q=x.pts.find(z=>z.conc===c);return q&&q[k]!=null?q[k]:null};
+    lineChart(p+"RpRps",{cats:concs.map(String),xName:"同时请求数",unit:"个/秒",digits:2,series:runs.map(x=>({name:x.tag,color:x.color,data:concs.map(c=>get(x,c,"req_s"))})),area:true});
+    lineChart(p+"RpE2e",{cats:concs.map(String),xName:"同时请求数",unit:"秒",digits:2,series:runs.map(x=>({name:x.tag,color:x.color,data:concs.map(c=>get(x,c,"e2e_p95_s"))}))});
+  }
+  const oa=phase(a,"openloop"),ob=b?phase(b,"openloop"):null;
+  if(oa){
+    const runs=[["A",oa,C.a],["B",ob,C.b]].filter(x=>x[1]);
+    const series=[];
+    runs.forEach(([tag,ph,base],ri)=>ph.points.forEach((pt,j)=>{
+      const ts=pt.inflight_ts||[];if(ts.length<2)return;
+      const color=runs.length>1?base:C.series[j%C.series.length];
+      series.push({name:`${runs.length>1?tag+" ":""}${pt.rate} 个/秒`,color,data:ts.map(([t,v])=>[t,v])});
+    }));
+    if(series.length){
+      setChart(p+"OlInf",baseOption({color:series.map(s=>s.color),legend:legendOf(series.map(s=>s.name)),
+        grid:{left:4,right:16,top:series.length>1?44:30,bottom:26,containLabel:true},
+        xAxis:Object.assign(axisValue({fmt:v=>v+"s"}),{name:"开始后的秒数",nameLocation:"middle",nameGap:26,axisLine:{show:true,lineStyle:{color:C.axis}},splitLine:{show:false}}),
+        yAxis:axisValue({name:"个"}),
+        tooltip:Object.assign(baseOption().tooltip,{formatter:ps=>tt(`开始后 ${Math.round(ps[0].value[0])} 秒`,ps.map(q=>[q.color,q.seriesName,fmtInt(q.value[1])+" 个处理中"]))}),
+        series:series.map(s=>Object.assign(sLine(s.name,s.color,s.data,{dots:false,area:series.length===1}),{symbolSize:0}))}));
+    }else chartEmpty(p+"OlInf","没有记录处理中的请求数");
+    const rates=[...new Set(runs.flatMap(([,ph])=>ph.points.map(q=>q.rate)))].sort((x,y)=>x-y);
+    const done=runs.map(([tag,ph,c])=>({name:tag+" 实际完成",color:c,data:rates.map(r=>{const q=ph.points.find(z=>z.rate===r);return q?q.completed_rps:null})}));
+    barChart(p+"OlRate",{cats:rates.map(r=>r+" 个/秒"),unit:"个/秒",digits:2,labels:true,series:[{name:"目标速率",color:C.grid&&C.axis?C.axis:"#999",data:rates},...done]});
+  }
+}
+
+/* ---------- 服务端状态 ---------- */
+function metricsUsable(r){return (r.metrics_samples||[]).filter(m=>m.gpu_cache_usage!=null||m.prefix_cache_hit!=null)}
+function engineSection(a,b,p){
+  if(!metricsUsable(a).length)return "";
+  return sec(p+"-engine","服务端状态",`测试期间服务端的${term("kv")}和${term("prefix")}（来自 vLLM /metrics）`,
+    ccard(p+"Eng",term("kv")+" 与 "+term("prefix"),{desc:"显存缓存接近 100% 时新请求要排队；复用率越高越省时",h:260}),"服务端");
+}
+function drawEngine(a,b,p){
+  const s=a.metrics_samples||[];if(!metricsUsable(a).length)return;
+  const t0=s[0].t;
+  const norm=(k,v)=>v==null?null:(k==="gpu_cache_usage"&&v<=1.05?v*100:v);
+  const mk=(k,name,color)=>Object.assign(sLine(name,color,s.filter(m=>norm(k,m[k])!=null).map(m=>[Math.round(m.t-t0),norm(k,m[k]),m]),{dots:false,area:k==="gpu_cache_usage"}),{symbolSize:0});
+  setChart(p+"Eng",baseOption({color:[C.a,C.b],legend:legendOf(["显存缓存占用","重复内容复用率"]),
+    grid:{left:4,right:16,top:44,bottom:26,containLabel:true},
+    xAxis:Object.assign(axisValue({fmt:v=>(s[s.length-1].t-t0)>120?`${Math.floor(v/60)}:${pad2(Math.round(v%60))}`:v+" 秒"}),{name:(s[s.length-1].t-t0)>120?"测试开始后（分:秒）":"测试开始后",nameLocation:"middle",nameGap:26,axisLine:{show:true,lineStyle:{color:C.axis}},splitLine:{show:false}}),
+    yAxis:axisValue({name:"%",max:100}),
+    tooltip:Object.assign(baseOption().tooltip,{formatter:ps=>{const m=ps[0].data[2]||{};
+      return tt(`开始后 ${Math.round(ps[0].value[0])} 秒`,ps.map(q=>[q.color,q.seriesName,fmt(q.value[1])+"%"]),`处理中 ${fmtInt(m.requests_running||0)} 个 · 排队 ${fmtInt(m.requests_waiting||0)} 个`)}}),
+    series:[mk("gpu_cache_usage","显存缓存占用",C.a),mk("prefix_cache_hit","重复内容复用率",C.b)]}));
+}
+
+/* ---------- 组装 ---------- */
+function perfSectionsHTML(a,b,p){
+  return [concSection,prefillSection,matrixSection,decodeSection,longctxSection,scnSection,replaySection,engineSection].map(f=>f(a,b,p)).join("");
+}
+function drawPerfCharts(a,b,p){
+  [drawConc,drawPrefill,drawMatrix,drawDecode,drawLongctx,drawScn,drawReplay,drawEngine].forEach(f=>{
+    try{f(a,b,p)}catch(e){console.error(f.name,e)}
+  });
+}
+async function render(){
+  if(!RUNS_LOADED)return;
+  const idA=$("runA").value,idB=$("runB").value;
+  const body=$("dashBody");
+  if(!RUNS[idA]){
+    body.hidden=true;buildJump("dashJump",null);
+    $("dashEmpty").innerHTML=emptyState("还没有速度测试","点右上角「新建速度测试」，测完的结果会显示在这里",
+      {action:`<button class="btn btn-primary" data-toggle="launcher">${icon("plus")}新建速度测试</button>`});
+    return;
+  }
+  const seq=++renderSeq;
+  try{await ensureRuns([idA,RUNS[idB]&&idB!==idA?idB:""])}
+  catch(e){$("dashEmpty").innerHTML=emptyState("加载测试详情失败",e.message,{iconName:"alert",inline:true});return}
+  if(seq!==renderSeq)return;  /* 期间切换了选择, 以最新一次为准 */
+  const a=FULL[idA],b=RUNS[idB]&&idB!==idA?FULL[idB]:null;
+  $("dashEmpty").innerHTML="";body.hidden=false;
+  const hints=perfAnomalies(a);
+  body.innerHTML=`<div class="stack">
+      ${summaryCard("结论",perfConclusions(a,b),perfMetaLine(a)+(b?`<br>B：${esc(label(b))}`:""))}
+      ${hints.length?alertBox("warn",`<b>需要注意</b><ul class="hint-list">${hints.map(h=>`<li>${esc(h)}</li>`).join("")}</ul>`):""}
+      <div class="kpi-grid">${perfKpis(a,b)}</div></div>`+perfSectionsHTML(a,b,"d");
+  disposeDetached();
+  drawPerfCharts(a,b,"d");
+  buildJump("dashJump",body);
 }
 
 /* ============================================================
-   运行对比
+   速度对比
    ============================================================ */
 function swapCmp(){const a=$("cmpA").value,b=$("cmpB").value;if(!b)return;$("cmpA").value=b;$("cmpB").value=a;renderCmp()}
 function runCard(r,tag){
-  const fw=r.framework&&r.framework.name?`${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:"框架未标注";
   return `<div class="card cmp-run"><span class="run-tag ${tag.toLowerCase()}">${tag}</span><div style="min-width:0">
     <div class="cmp-run-name">${esc(r.model||"?")}</div>
-    <div class="cmp-run-meta">${esc([fw,SUITE_NAME[r.suite]||r.suite,r.tag,timeText(r.started_utc)].filter(Boolean).join(" · "))}</div></div></div>`;
+    <div class="cmp-run-meta">${esc([runFw(r)||"推理框架未填写",(SUITE_NAME[r.suite]||r.suite||"")+"规模",r.tag,hostOf(r.url),timeText(r.started_utc)].filter(Boolean).join(" · "))}</div></div></div>`;
+}
+function cmpRows(a,b){
+  const ma=perfCtx(a),mb=perfCtx(b);
+  return [...PERF_METRICS,...CMP_EXTRA].map(k=>{
+    const va=safeVal(k.val,ma),vb=safeVal(k.val,mb),same=sameRef(k,ma,mb),d=same?pctChange(va,vb):null;
+    return{k,label:metricLabel(k,ma),va,vb,d,same,refB:same?"":metricLabel(k,mb),gain:d==null?null:d*k.dir};  /* gain>0 表示 B 更好 */
+  }).filter(x=>x.va!=null||x.vb!=null);
 }
 async function renderCmp(){
   if(!RUNS_LOADED)return;
   const idA=$("cmpA").value,idB=$("cmpB").value;
   const el=$("cmpBody");
-  if(!RUNS[idA]){el.innerHTML=emptyState("暂无运行记录","先在性能基准页完成至少两次运行");return}
-  if(!RUNS[idB]){el.innerHTML=runCardsOnly(RUNS[idA])+emptyState("选择运行 B 以查看对比","例如不同框架版本、不同量化方案或不同推理引擎",{iconName:"compare"});return}
+  if(!RUNS[idA]){el.innerHTML=emptyState("还没有速度测试","先在「速度测试」页完成至少两次测试");buildJump("cmpJump",null);return}
+  if(!RUNS[idB]||idA===idB){
+    el.innerHTML=`<div class="cmp-runs">${runCard(RUNS[idA],"A")}</div><div style="margin-top:16px">`+
+      emptyState("再选一个测试 B","比如换了推理框架、量化方式或显卡之后再测一次，放在一起比",{iconName:"compare"})+`</div>`;
+    buildJump("cmpJump",null);return;
+  }
   const seq=++cmpSeq;
-  try{await ensureRuns([idA,idB])}catch(e){el.innerHTML=emptyState("加载运行详情失败",e.message,{iconName:"alert"});return}
+  try{await ensureRuns([idA,idB])}catch(e){el.innerHTML=emptyState("加载测试详情失败",e.message,{iconName:"alert"});return}
   if(seq!==cmpSeq)return;
   const a=FULL[idA],b=FULL[idB];
-  const ma=perfCtx(a),mb=perfCtx(b);
-  const cards=[...PERF_METRICS,...CMP_EXTRA].map(k=>{
-    const va=safeVal(k.val,ma),vb=safeVal(k.val,mb),d=k.digits??1;
-    const f=v=>v==null?"—":(d===0?fmtInt(v):fmt(v,d));
-    return `<div class="kpi"><div class="kpi-head"><span class="kpi-label" title="${esc(k.label(ma))}">${esc(k.label(ma))}</span>${deltaPill(va,vb,k.dir)}</div>
-      <div class="cmp-values num"><span>${f(va)}</span><span class="arrow">→</span><span>${f(vb)}</span><small class="faint" style="font-size:12px;font-weight:400">${k.unit}</small></div></div>`;
+  const rows=cmpRows(a,b),both=rows.filter(x=>x.gain!=null);
+  const better=both.filter(x=>x.gain>=1).sort((p,q)=>q.gain-p.gain),worse=both.filter(x=>x.gain<=-1).sort((p,q)=>p.gain-q.gain);
+  const concl=[];
+  concl.push({tone:worse.length>better.length?"warn":better.length?"good":"info",
+    html:`${both.length} 项指标里，B 有 <b>${better.length}</b> 项更好、<b>${worse.length}</b> 项更差、${both.length-better.length-worse.length} 项基本持平（差别小于 1%）。`});
+  if(better.length)concl.push({tone:"good",html:"B 更好的地方："+better.slice(0,3).map(x=>`${esc(x.label)} <b>${fmt(Math.abs(x.d),1)}%</b>`).join("；")+"。"});
+  if(worse.length)concl.push({tone:"bad",html:"B 更差的地方："+worse.slice(0,3).map(x=>`${esc(x.label)} <b>${fmt(Math.abs(x.d),1)}%</b>`).join("；")+"。"});
+  const notSame=rows.filter(x=>!x.same&&x.va!=null&&x.vb!=null);
+  if(notSame.length)concl.push({tone:"info",html:`${notSame.length} 项因为两次测试的档位不同（例如最多同时请求数、最长输入不一样）没有计入：${notSame.map(x=>esc(x.label)).join("、")}。`});
+  const ov=[a,b].map(r=>(r.overrides||{}).fixed_output);
+  if(ov[0]!==ov[1])concl.push({tone:"warn",html:"两次测试的输出长度设置不同（一次固定、一次不固定），速度类指标不能直接比较。"});
+  if(a.suite!==b.suite)concl.push({tone:"info",html:`两次测试规模不同（${esc(SUITE_NAME[a.suite]||a.suite)} / ${esc(SUITE_NAME[b.suite]||b.suite)}），只比较两边都有的项目。`});
+  const kpis=rows.map(x=>{
+    const dg=x.k.digits??1,f=v=>v==null?"—":(dg===0?fmtInt(v):fmt(v,dg));
+    const tip=x.k.term&&TERMS[x.k.term]?TERMS[x.k.term].name+"（"+TERMS[x.k.term].tech+"）："+TERMS[x.k.term].desc:"";
+    return `<div class="kpi"${tip?` title="${esc(tip)}"`:""}><div class="kpi-head"><span class="kpi-label">${esc(x.label)}</span>${x.same?deltaPill(x.va,x.vb,x.k.dir):`<span class="delta flat" title="B 的对应项是「${esc(x.refB)}」">档位不同</span>`}</div>
+      <div class="kpi-value" style="font-size:22px">${f(x.va)}<span class="faint" style="font-size:14px;font-weight:400"> → </span>${f(x.vb)}<small>${esc(x.k.unit)}</small></div>
+      <div class="kpi-sub">A → B · ${x.k.dir<0?"越低越好":"越高越好"}${x.same?"":` · B 是「${esc(x.refB)}」，不可比`}</div></div>`;
   }).join("");
-  el.innerHTML=`<div class="cmp-runs">${runCard(a,"A")}${runCard(b,"B")}</div>
-    <div class="kpi-grid">${cards}</div>
-    <div class="grid-2" id="cmpGrid">
-      <div class="panel"><div class="panel-head"><div><h3 class="panel-title">Prefill 吞吐对比</h3><p class="panel-desc">单流 Prefill 速度随输入长度的变化</p></div></div>
-        <div class="panel-body"><canvas class="chart" id="cCmpPrefill"></canvas><div class="legend" id="lCmpPre"></div></div></div>
-      <div class="panel"><div class="panel-head"><div><h3 class="panel-title">并发扩展性对比</h3><p class="panel-desc">聚合吞吐、单流吞吐与 TTFT p95</p></div></div>
-        <div class="panel-body"><canvas class="chart" id="cCmpConc"></canvas><div class="legend" id="lCmpConc"></div></div></div>
-      <div class="panel span-all"><div class="panel-head"><div><h3 class="panel-title">按输入长度对比</h3><p class="panel-desc">输入长度 × 并发矩阵中同档位的聚合吞吐</p></div></div>
-        <div class="panel-body" id="cmpMatrix"></div></div>
-      <div class="panel span-all"><div class="panel-head"><div><h3 class="panel-title">指标差异</h3><p class="panel-desc">颜色按指标优劣标注，延迟类指标越低越好</p></div></div>
-        <div class="panel-body" id="diffTbl"></div></div>
-      <div class="panel span-all" id="replayPanelC" hidden><div class="panel-head"><div><h3 class="panel-title">真实请求回放 · 闭环对比</h3><p class="panel-desc">同一回放池、同一请求顺序</p></div></div>
-        <div class="panel-body" id="replayTblC"></div></div>
-      <div class="panel span-all" id="olPanelC" hidden><div class="panel-head"><div><h3 class="panel-title">真实请求回放 · 开环对比</h3><p class="panel-desc">泊松到达时间轴相同（固定种子），A/B 差异全部来自服务端</p></div></div>
-        <div class="panel-body"><canvas class="chart" id="cOpenloopC"></canvas><div class="legend" id="lOpenloopC"></div><div id="olTblC"></div></div></div>
-    </div>`;
-  drawPrefill(a,b,"cCmpPrefill","lCmpPre");
-  concChart(a,b,"cCmpConc","lCmpConc");
-  cmpMatrix(a,b);
-  diffTable(a,b);
-  scnPanels(a,b,"cmpGrid","replayPanelC");
-  replayTable(a,b,{panel:"replayPanelC",tbl:"replayTblC"});
-  olPanel(a,b,{panel:"olPanelC",tbl:"olTblC",cv:"cOpenloopC",lg:"lOpenloopC"});
+  const diff=table(["指标","方向","A","B","差值","变化"],rows.map(x=>{
+    const dg=x.k.digits??1,dd=x.va!=null&&x.vb!=null&&x.same?x.vb-x.va:null;
+    const cls=dd==null||Math.abs(dd)<1e-9?"na":(dd*x.k.dir>0?"up":"down");
+    return [`${esc(x.label)}<span class="sub">${esc(x.k.unit)}</span>`,`<span class="faint">${x.k.dir<0?"越低越好":"越高越好"}</span>`,fmt(x.va,dg),fmt(x.vb,dg),
+      `<span class="${cls}">${dd==null||!x.same?"—":(dd>=0?"+":"")+fmt(dd,dg)}</span>`,x.same?deltaPill(x.va,x.vb,x.k.dir):`<span class="delta flat">档位不同</span>`];
+  }));
+  const h=Math.max(220,both.length*30+60);
+  el.innerHTML=`<div class="stack"><div class="cmp-runs">${runCard(a,"A")}${runCard(b,"B")}</div>
+      ${summaryCard("对比结论",concl)}</div>`+
+    sec("c-diff","B 相对 A 的变化","往右是 B 更好，往左是 B 更差；延迟类指标（越短越好）已按“好坏”方向换算",
+      ccard("cDiff","各项指标的变化（%）",{desc:"灰色表示差别小于 1%，基本持平",h,table:diff})+
+      `<div class="kpi-grid" style="margin-top:16px">${kpis}</div>`,"变化一览")+
+    perfSectionsHTML(a,b,"c");
+  disposeDetached();
+  drawDiffChart("cDiff",both);
+  drawPerfCharts(a,b,"c");
+  buildJump("cmpJump",el);
 }
-function runCardsOnly(a){return `<div class="cmp-runs">${runCard(a,"A")}</div>`}
-function cmpMatrix(a,b){
-  const pA=phase(a,"prefill_conc"),pB=phase(b,"prefill_conc");
-  if(!pA||!pB){$("cmpMatrix").innerHTML=emptyState("两次运行需都包含输入长度 × 并发矩阵阶段","",{inline:true});return}
-  let t=`<div class="table-wrap"><table class="table"><thead><tr><th>输入长度</th><th>A Prefill</th><th>B Prefill</th><th>变化</th><th>A 输出</th><th>B 输出</th><th>变化</th></tr></thead><tbody>`;
-  pA.points.forEach(p=>{
-    const q=pB.points.reduce((best,x)=>Math.abs(x.in_tokens-p.in_tokens)<Math.abs(best.in_tokens-p.in_tokens)?x:best,pB.points[0]);
-    const far=q&&Math.abs(q.in_tokens-p.in_tokens)/p.in_tokens>.3;
-    const dl=(x,y)=>far?`<td class="na" title="B 最接近的档位为 ${esc(q.label)}">档位不匹配</td>`:`<td>${deltaPill(x,y,1)}</td>`;
-    t+=`<tr><td>${esc(p.label)}<span class="sub">${fmtInt(p.in_tokens)} tokens</span></td>
-      <td>${fmtInt(p.prefill_tps_agg)}</td><td>${far?"—":fmtInt(q.prefill_tps_agg)}</td>${dl(p.prefill_tps_agg,q.prefill_tps_agg)}
-      <td>${fmt(p.decode_tps_agg)}</td><td>${far?"—":fmt(q.decode_tps_agg)}</td>${dl(p.decode_tps_agg,q.decode_tps_agg)}</tr>`;
-  });
-  $("cmpMatrix").innerHTML=t+`</tbody></table></div>`;
-}
-function diffTable(a,b){
-  const ma=perfCtx(a),mb=perfCtx(b);
-  let t=`<div class="table-wrap"><table class="table"><thead><tr><th>指标</th><th>方向</th><th><span class="run-tag a">A</span></th><th><span class="run-tag b">B</span></th><th>差值</th><th>变化</th></tr></thead><tbody>`;
-  [...PERF_METRICS,...CMP_EXTRA].forEach(k=>{
-    const va=safeVal(k.val,ma),vb=safeVal(k.val,mb),dg=k.digits??1;
-    if(va==null&&vb==null)return;
-    const d=va!=null&&vb!=null?vb-va:null;
-    const cls=d==null||Math.abs(d)<1e-9?"na":(d*k.dir>0?"up":"down");
-    t+=`<tr><td>${esc(k.label(ma))}<span class="sub">${esc(k.unit)}</span></td><td class="faint">${k.dir<0?"越低越好":"越高越好"}</td>
-      <td>${fmt(va,dg)}</td><td>${fmt(vb,dg)}</td><td class="${cls}">${d==null?"—":(d>=0?"+":"")+fmt(d,dg)}</td><td>${deltaPill(va,vb,k.dir)}</td></tr>`;
-  });
-  $("diffTbl").innerHTML=t+`</tbody></table></div>`;
+function drawDiffChart(id,rows){
+  if(!rows.length){chartEmpty(id,"两次测试没有共同的指标");return}
+  const lim=niceMax(Math.max(8,...rows.map(x=>Math.abs(x.gain)))*1.12);
+  const colorOf=g=>Math.abs(g)<1?C.axis:(g>0?C.goodMark:C.badMark);
+  setChart(id,baseOption({
+    grid:{left:4,right:24,top:8,bottom:4,containLabel:true},
+    xAxis:Object.assign(axisValue({min:-lim,max:lim,fmt:v=>(v>0?"+":"")+Math.round(v)+"%"}),{splitNumber:4}),
+    yAxis:axisCat(rows.map(x=>x.label),{inverse:true,labelWidth:220,labelColor:C.text2}),
+    tooltip:Object.assign(baseOption().tooltip,{trigger:"item",formatter:p=>{const x=rows[p.dataIndex],dg=x.k.digits??1;
+      return tt(x.label,[["","A",fmt(x.va,dg)+" "+x.k.unit],["","B",fmt(x.vb,dg)+" "+x.k.unit]],
+        `数值变化 ${x.d>=0?"+":""}${fmt(x.d,1)}% · ${Math.abs(x.gain)<1?"基本持平":x.gain>0?"B 更好":"B 更差"}（${x.k.dir<0?"越低越好":"越高越好"}）`)}}),
+    series:[{type:"bar",barMaxWidth:18,data:rows.map(x=>({value:Math.max(-lim,Math.min(lim,x.gain)),itemStyle:{color:colorOf(x.gain),borderRadius:x.gain>=0?[0,4,4,0]:[4,0,0,4]}})),
+      label:{show:true,position:"right",color:C.text2,fontSize:11,formatter:p=>{const g=rows[p.dataIndex].gain;return Math.abs(g)<1?"持平":(g>0?"更好 ":"更差 ")+fmt(Math.abs(g),1)+"%"}},
+      labelLayout:p=>{const g=rows[p.dataIndex]&&rows[p.dataIndex].gain;return g<0?{x:p.rect.x-4,align:"right"}:{}},
+      markLine:{silent:true,symbol:"none",label:{show:false},lineStyle:{color:C.axis,width:1,type:"solid"},data:[{xAxis:0}]}}]}));
 }
 
 /* ============================================================
-   能力评测
+   能力测试
    ============================================================ */
 let IQ_RUNS={},IQ_BANKS=[],IQ_LOADED=false,iqPoll=null;
 const IQ_CMP=new Set();
@@ -1534,8 +1452,8 @@ function samplingBody(){
 }
 function samplingText(s){
   if(!s)return"";
-  if(!s.temperature)return"贪心解码";
-  return [`T ${s.temperature}`,s.top_p!=null?`top_p ${s.top_p}`:"",s.top_k!=null?`top_k ${s.top_k}`:""].filter(Boolean).join(" · ");
+  if(!s.temperature)return"每次取最可能的答案（temperature 0）";
+  return [`temperature ${s.temperature}`,s.top_p!=null?`top_p ${s.top_p}`:"",s.top_k!=null?`top_k ${s.top_k}`:"",s.seed!=null?`随机种子 ${s.seed}`:""].filter(Boolean).join(" · ");
 }
 const IQ_CMP_CACHE={};
 function iqCompare(a,b){
@@ -1548,12 +1466,10 @@ async function iqResume(runId){
   const r=IQ_RUNS[runId];
   const d=await postWithConflict("/api/iq-resume",{run_id:runId,api_key:$("iqKey").value});
   if(!d)return;
-  if(!d.ok){toast("续跑失败："+d.error,"error");return}
+  if(!d.ok){toast("接着跑失败："+d.error,"error");return}
   toggleLauncher("iqLauncher",true);
-  watchIq("续跑 · "+(r?iqLabel(r):runId));
-  $("iqLog").scrollIntoView({behavior:"smooth",block:"nearest"});
+  watchIq("接着跑 · "+(r?iqLabel(r):runId));
 }
-
 async function loadBanks(){
   try{
     IQ_BANKS=await getJSON("/api/banks");
@@ -1565,11 +1481,11 @@ async function loadBanks(){
 }
 function bankInfo(){
   const b=IQ_BANKS.find(x=>x.bank_id===$("iqBank").value);
-  $("iqBankInfo").textContent=b?`${b.total} 题：`+(b.subjects||[]).map(s=>`${s.name} ${s.n}`).join("、"):"暂无题集，请在“题集管理”中更新";
+  $("iqBankInfo").textContent=b?`共 ${b.total} 题：`+(b.subjects||[]).map(s=>`${s.name} ${s.n}`).join("、"):"还没有题集，请在「更多设置」里点「更新题集」";
 }
 async function bankUpdate(){
   const btn=$("iqBtnBank");setBusy(btn,true);
-  msg("iqMsg","info","正在下载题集（MMLU、GSM8K、MATH-500、ARC、HellaSwag、C-Eval、IFEval），预计 3–5 分钟，请保持页面打开");
+  msg("iqMsg","info","正在下载题集（MMLU、GSM8K、MATH-500、ARC、HellaSwag、C-Eval、指令遵循），大约 3–5 分钟，请不要关闭页面");
   try{
     const d=await postJSON("/api/bank-update",{proxy:$("iqProxy").value||""});
     if(!d.ok){msg("iqMsg","error","题集更新失败："+d.error+(d.hint?"\n"+d.hint:""));return}
@@ -1589,17 +1505,16 @@ async function iqStart(){
   if(!d)return;
   if(!d.ok){msg("iqMsg","error",d.error);return}
   msg("iqMsg","",null);
-  watchIq("运行中 · "+model);
+  watchIq("进行中 · "+model);
 }
 function watchIq(title){
   $("iqBtnStart").disabled=true;iqLog.start(title);
   clearInterval(iqPoll);
   iqPoll=pollStatus("/api/iq-status",iqLog,{onDone:()=>{$("iqBtnStart").disabled=false;loadIqResults(true)}});
 }
-function runFw(r){return r.framework&&r.framework.name?`${r.framework.name}${r.framework.version?" "+r.framework.version:""}`:""}
 function iqLabel(r){
   const acc=r.overall&&r.overall.acc!=null?r.overall.acc+"%":(STATUS_NAME[r.status]||"未完成");
-  return [r.model||"?",runFw(r),r.thinking?"思考":"非思考",acc,r.tag||"",shortTime(r.started_utc)].filter(Boolean).join(" · ");
+  return [r.model||"?",runFw(r),r.thinking?"思考":"不思考",acc,r.tag||"",shortTime(r.started_utc)].filter(Boolean).join(" · ");
 }
 async function loadIqResults(focusNew){
   try{
@@ -1612,47 +1527,57 @@ async function loadIqResults(focusNew){
     const keep=fresh||(IQ_RUNS[$("iqMainSel").value]?$("iqMainSel").value:names[0]);
     $("iqMainSel").innerHTML=names.map(n=>`<option value="${esc(n)}" ${n===keep?"selected":""}>${esc(iqLabel(IQ_RUNS[n]))}</option>`).join("");
     [...IQ_CMP].forEach(id=>{if(!IQ_RUNS[id])IQ_CMP.delete(id)});
-    if(!names.length)toggleLauncher("iqLauncher",true);
+    if(!names.length&&VIEW==="iq")toggleLauncher("iqLauncher",true);
     renderIq();
-  }catch(e){$("iqResult").innerHTML=emptyState("无法加载评测结果",e.message,{iconName:"alert"})}
+  }catch(e){$("iqResult").innerHTML=emptyState("无法加载测试结果",e.message,{iconName:"alert"})}
 }
 function renderIqCmpList(mainId){
   const names=Object.keys(IQ_RUNS).sort().reverse().filter(n=>n!==mainId);
   IQ_CMP.delete(mainId);
   $("iqCmpList").innerHTML=names.length?names.map(n=>`<label class="option-row"><input type="checkbox" value="${esc(n)}" ${IQ_CMP.has(n)?"checked":""}>
-    <span class="grow">${esc(iqLabel(IQ_RUNS[n]))}</span></label>`).join(""):`<div class="option-row faint">没有其他运行</div>`;
-  $("iqCmpLabel").textContent=IQ_CMP.size?`对比运行（${IQ_CMP.size}）`:"对比运行";
+    <span class="grow">${esc(iqLabel(IQ_RUNS[n]))}</span></label>`).join(""):`<div class="option-row faint">没有其他测试</div>`;
+  $("iqCmpLabel").textContent=IQ_CMP.size?`对比中（${IQ_CMP.size}）`:"加入对比";
 }
 $("iqCmpList").addEventListener("change",e=>{
   if(e.target.type!=="checkbox")return;
   e.target.checked?IQ_CMP.add(e.target.value):IQ_CMP.delete(e.target.value);
   renderIq();
 });
-/* Token 花销维度: 输出预算明示 + 入/出总量 + 每题输出均值(对比时较 A 增减) */
 function budgetText(r){
-  if(r.thinking)return "思考模式 · 输出上限 32K";
+  if(r.thinking)return "思考模式 · 每题最长 32K token";
   const b=(r.params&&r.params.budgets)||{mcq:16,math:2048,math500:4096,instruct:320};
-  return `输出预算 选择题 ${b.mcq} · GSM8K ${b.math} · MATH-500 ${b.math500} · 指令 ${b.instruct}`;
+  return `每题最长：选择题 ${b.mcq} · GSM8K ${b.math} · MATH-500 ${b.math500} · 按要求作答 ${b.instruct} token`;
 }
 function tokStat(r){
   const ss=r.subjects||[];
   const inT=ss.reduce((t,x)=>t+(x.in_tokens||0),0),outT=ss.reduce((t,x)=>t+(x.out_tokens||0),0),n=ss.reduce((t,x)=>t+(x.n||0),0);
-  return {inT,outT,per:n?outT/n:null};
+  return{inT,outT,per:n?outT/n:null};
 }
-function iqCostLine(s,baseS){
-  const t=tokStat(s.r),b0=baseS?tokStat(baseS.r):null;
-  const d=(s.tag!=="A"&&b0&&b0.per&&t.per)?` <span class="sub" title="每题输出 token 相对 A">较A ${t.per>=b0.per?"+":""}${fmt((t.per-b0.per)/b0.per*100,0)}%</span>`:"";
-  if(!t.inT&&!t.outT)return "";
-  return `<div class="kpi-sub" title="Token 花销（能力维度之一：同等正确率下花得更少更高效）">`+
-    `入 ${fmtInt(Math.round(t.inT))} · 出 ${fmtInt(Math.round(t.outT))} tok${t.per!=null?` · ${fmt(t.per,0)} tok/题${d}`:""}</div>`+
-    `<div class="kpi-sub">${esc(budgetText(s.r))}</div>`;
+function verLt(v,target){const a=String(v||"0").split(".").map(Number),b=target.split(".").map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==b[i])return (a[i]||0)<b[i]}return false}
+function iqVersionWarning(r){
+  if(verLt(r.iq_version,"1.1.0")&&r.thinking)return `这次测试用的是旧版评测程序（${r.iq_version}）：思考模式下选择题最多只能写 8 个 token，思考被截断后全部记错，MATH-500 判分也有问题，分数不可信，请重新测试`;
+  if(verLt(r.iq_version,"1.1.0"))return `这次测试用的是旧版评测程序（${r.iq_version}）：MATH-500 判分有问题（全判错），总分偏低，请重新测试`;
+  if(verLt(r.iq_version,"1.2.0")&&r.thinking)return `这次测试用的是 ${r.iq_version} 版评测程序：思考模式能写的长度偏短，想得久的题会被截断记错，建议重新测试`;
+  if(verLt(r.iq_version,"1.3.0")&&!r.thinking)return `这次测试用的是 ${r.iq_version} 版评测程序：数学题能写的长度偏短（900 / 1280 token），部分题会被截断记错，数学分偏低`;
+  if(verLt(r.iq_version,"1.3.0")&&r.thinking)return `这次测试用的是 ${r.iq_version} 版评测程序：思考模式没有加随机性，容易反复绕圈被截断，建议用新版重新测试`;
+  if(verLt(r.iq_version,"1.4.0"))return `这次测试用的是 ${r.iq_version} 版评测程序：之后修正了答案识别、MATH-500 等价判断和部分按要求作答的规则，限题量时 MMLU 只覆盖少数学科，请求失败的题也记为答错。与 1.4.0 之后的分数不宜直接比较`;
+  return "";
 }
-function renderIq(){  /* 渲染异常不再静默白屏: 明确展示错误便于定位, 也避免"面板空白+点击无反应"的无提示状态 */
+function iqIssues(r){
+  const o=r.overall||{},out=[];
+  if(o.truncated)out.push(`${o.truncated} 题没答完`);
+  if(o.errors)out.push(`${o.errors} 题请求失败`);
+  return out;
+}
+const shortSub=n=>String(n||"").replace(/（官方）|\(官方\)|\(中文\)|（中文）/g,"").trim();
+/* 雷达图顶点名称: MMLU 保留分组(中学/大学…), 其他只留题集名 */
+const radarName=n=>{const t=shortSub(n);return /^MMLU/.test(t)?t:t.split(/\s+/)[0]};
+function renderIq(){  /* 渲染出错时明确显示错误, 不静默白屏 */
   try{_renderIq()}
   catch(e){
     console.error("renderIq failed:",e);
     const el=$("iqResult");
-    if(el)el.innerHTML=emptyState("结果渲染出错",String((e&&e.message)||e),{iconName:"alert",inline:true});
+    if(el)el.innerHTML=emptyState("结果显示出错",String((e&&e.message)||e),{iconName:"alert",inline:true});
   }
 }
 function _renderIq(){
@@ -1660,170 +1585,176 @@ function _renderIq(){
   const el=$("iqResult");
   const mainId=$("iqMainSel").value,a=IQ_RUNS[mainId];
   renderIqCmpList(mainId);
-  if(!a){el.innerHTML=emptyState("暂无评测结果","新建一次能力评测后，成绩会显示在这里",
-    {action:`<button class="btn btn-primary" data-toggle="iqLauncher">${icon("plus")}新建评测</button>`});return}
+  if(!a){el.innerHTML=emptyState("还没有能力测试","点右上角「新建能力测试」，成绩会显示在这里",
+    {action:`<button class="btn btn-primary" data-toggle="iqLauncher">${icon("plus")}新建能力测试</button>`});buildJump("iqJump",null);return}
   const series=[{r:a,color:C.series[0],tag:"A"},...[...IQ_CMP].filter(id=>IQ_RUNS[id]).slice(0,5).map((id,i)=>({r:IQ_RUNS[id],color:C.series[i+1],tag:String.fromCharCode(66+i)}))];
   const base=a.overall||{};
-  let html=`<div class="score-cards">`+series.map(s=>{
-    const o=s.r.overall||{};
-    return `<div class="kpi"><div class="kpi-head"><span class="kpi-label" style="display:flex;align-items:center;gap:6px">
-        <span class="run-tag" style="background:${s.color}">${s.tag}</span>${esc((s.r.model||"?")+(runFw(s.r)?" · "+runFw(s.r):""))}</span>
-        ${s.tag!=="A"?deltaPill(base.acc,o.acc,1,{mode:"pp"}):""}</div>
-      <div class="kpi-value num">${o.acc!=null?fmt(o.acc,1):"—"}<small>%</small></div>
-      <div class="kpi-sub" title="${esc("采样："+(samplingText(s.r.sampling)||"未记录"))}">${o.n?`95% CI ${fmt(o.ci_lo,1)}–${fmt(o.ci_hi,1)}% · ${o.correct}/${o.n}${o.macro_acc!=null?` · 宏平均 ${fmt(o.macro_acc,1)}%`:""} · ${s.r.thinking?"思考":"非思考"}`:"运行未完成"}</div>
-      ${iqCostLine(s,series[0])}
-      ${s.tag!=="A"?`<div class="kpi-sub" data-sig-card="${esc(s.r.run_id)}">配对检验计算中…</div>`:""}
-      ${iqIssues(s.r).length?`<div class="kpi-sub" style="color:var(--warning)">${esc(iqIssues(s.r).join(" · "))}</div>`:""}</div>`;
-  }).join("")+`</div>`;
-  series.forEach(s=>{const w=iqVersionWarning(s.r);if(w)html+=`<div class="alert is-warning">${icon("alert")}<span><b>${s.tag}</b>：${esc(w)}</span></div>`});
-  if(Array.isArray(a.warnings)&&a.warnings.length)
-    html+=`<div class="alert is-warning">${icon("alert")}<span><b>A 运行自检</b>：${a.warnings.map(esc).join("；")}</span></div>`;
+  /* ---- 成绩块: A 用大号数字, 对比项显示与 A 的差距和是否可信 ---- */
+  const tiles=series.map(s=>{
+    const o=s.r.overall||{},tk=tokStat(s.r);
+    const who=`<span class="run-tag" style="background:${s.color}">${s.tag}</span> ${esc((s.r.model||"?")+(runFw(s.r)?" · "+runFw(s.r):""))}`;
+    const sub=o.n?`${term("ci")} ${fmt(o.ci_lo,1)}–${fmt(o.ci_hi,1)}% · 答对 ${o.correct}/${o.n} 题${o.macro_acc!=null?` · ${term("macro")} ${fmt(o.macro_acc,1)}%`:""}`+
+      `<br>${s.r.thinking?"思考模式":"不思考"} · ${esc(samplingText(s.r.sampling)||"采样未记录")}${tk.per!=null?` · 平均每题输出 ${fmt(tk.per,0)} token`:""}`:
+      `测试没有完成（${esc(STATUS_NAME[s.r.status]||s.r.status||"")}）`;
+    const issues=iqIssues(s.r);
+    return `<div class="kpi${s.tag==="A"?" is-hero":""}"><div class="kpi-head"><span class="kpi-label" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">${who}</span>
+        ${s.tag!=="A"?deltaPill(base.acc,o.acc,1,{mode:"pp",prefix:"比 A "}):""}</div>
+      <div class="kpi-value">${o.acc!=null?fmt(o.acc,1):"—"}<small>%</small></div>
+      <div class="kpi-sub">${sub}</div>
+      ${s.tag!=="A"?`<div class="kpi-sub" data-sig-card="${esc(s.r.run_id)}">正在计算差异是否可信…</div>`:""}
+      ${issues.length?`<div class="kpi-sub warn">${esc(issues.join(" · "))}</div>`:""}</div>`;
+  }).join("");
+  /* ---- 提示 ---- */
+  let alerts="";
+  series.forEach(s=>{const w=iqVersionWarning(s.r);if(w)alerts+=alertBox("warn",`<b>${s.tag}</b>：${esc(w)}`)});
+  if(Array.isArray(a.warnings)&&a.warnings.length)alerts+=alertBox("warn",`<b>A 自检提示</b>：${a.warnings.map(esc).join("；")}`);
   const errN=(a.overall||{}).errors||0;
-  if(a.status==="done"&&errN&&SERVER.iq_version&&a.iq_version===SERVER.iq_version){
-    html+=`<div class="alert is-info">${icon("info")}<span>A 有 ${errN} 题请求失败（已计为答错）。重试只会重新作答这些题，其余结果保持不变。</span>
-      <button class="btn btn-secondary btn-sm" onclick="iqResume('${esc(a.run_id)}')">${icon("play")}重试失败的题</button></div>`;
-  }
+  if(a.status==="done"&&errN&&SERVER.iq_version&&a.iq_version===SERVER.iq_version)
+    alerts+=alertBox("info",`A 有 ${errN} 题请求失败（已记为答错）。重试只会重新回答这些题，其他结果不变。`,
+      `<button class="btn btn-secondary btn-sm" onclick="iqResume('${esc(a.run_id)}')">${icon("play")}重试失败的题</button>`);
   if(["cancelled","interrupted","failed"].includes(a.status)){
     const canResume=SERVER.iq_version&&a.iq_version===SERVER.iq_version;
     const doneN=(a.subjects||[]).reduce((t,x)=>t+(x.n||0),0);
-    html+=`<div class="alert is-info">${icon("info")}<span>A ${STATUS_NAME[a.status]||a.status}${a.error?"（"+esc(a.error)+"）":""}：已完成 ${a.subjects?a.subjects.length:0} 个科目共 ${doneN} 题，未完成科目中已作答的题目也已保存，请求失败的题续跑时会重新作答。${canResume?"续跑会沿用原来的模型端点、采样与题量设置，并使用上方表单中的 API Key。":"该运行由其他版本的评测程序生成，无法续跑。"}</span>
-      ${canResume?`<button class="btn btn-secondary btn-sm" onclick="iqResume('${esc(a.run_id)}')">${icon("play")}续跑</button>`:""}</div>`;
+    alerts+=alertBox("info",`A ${esc(STATUS_NAME[a.status]||a.status)}${a.error?"（"+esc(a.error)+"）":""}：已完成 ${a.subjects?a.subjects.length:0} 个科目共 ${doneN} 题，没做完的科目里已答的题也保存了，请求失败的题接着跑时会重新回答。${canResume?"接着跑会沿用原来的服务地址、采样和题量，使用新建面板里填的 API Key。":"这次测试由其他版本的评测程序生成，不能接着跑。"}`,
+      canResume?`<button class="btn btn-secondary btn-sm" onclick="iqResume('${esc(a.run_id)}')">${icon("play")}接着跑</button>`:"");
   }
   const mismatch=series.slice(1).filter(s=>s.r.bank_id!==a.bank_id);
   const pkey=r=>JSON.stringify([r.params&&r.params.subject_ids||null,r.params&&r.params.limit_per_subject||null]);
   const pdiff=series.slice(1).filter(s=>s.r.bank_id===a.bank_id&&pkey(s.r)!==pkey(a));
-  if(pdiff.length)html+=`<div class="alert is-warning">${icon("alert")}<span>题量设置不一致：${pdiff.map(s=>esc(s.tag)).join("、")} 与 A 选择的科目或每科题数不同，总分覆盖的题目不同，请以分科成绩和配对检验为准</span></div>`;
-  if(mismatch.length)html+=`<div class="alert is-warning">${icon("alert")}<span>题集版本不一致：${mismatch.map(s=>esc(s.tag+"（"+s.r.bank_id+"）")).join("、")} 与 A（${esc(a.bank_id)}）使用了不同题集，分数不具可比性</span></div>`;
-  html+=`<div class="iq-layout">
-    <div class="panel"><div class="panel-head"><div><h3 class="panel-title">能力分布</h3><p class="panel-desc">各科目准确率</p></div></div>
-      <div class="panel-body"><canvas class="chart" id="iqRadar"></canvas><div class="legend" id="iqRadarLg"></div></div></div>
-    <div class="panel"><div class="panel-head"><div><h3 class="panel-title">分科准确率</h3><p class="panel-desc">${series.length>1?"加粗为各科最高分":"括号内为 95% 置信区间"}</p></div></div>
-      <div class="panel-body" id="iqSubjTbl"></div></div></div>`;
-  el.innerHTML=html;
-  let t=`<div class="table-wrap" style="max-height:560px"><table class="table"><thead><tr><th>科目</th><th>题数</th>${series.map(s=>`<th><span class="run-tag" style="background:${s.color}">${s.tag}</span></th><th title="每题输出 token 均值（Token 花销）"><span class="run-tag" style="background:${s.color}">${s.tag}</span> tok/题</th>`).join("")}<th>A 截断 / 失败</th><th></th></tr></thead><tbody>`;
+  if(pdiff.length)alerts+=alertBox("warn",`题量设置不一样：${pdiff.map(s=>esc(s.tag)).join("、")} 和 A 选的科目或每科题数不同，总分覆盖的题不同，请以各科成绩和“差异是否可信”为准`);
+  if(mismatch.length)alerts+=alertBox("warn",`题集版本不一样：${mismatch.map(s=>esc(s.tag+"（"+s.r.bank_id+"）")).join("、")} 和 A（${esc(a.bank_id)}）用的不是同一套题，分数不能直接比`);
+  /* ---- 结论 ---- */
+  const subs=[...(a.subjects||[])].filter(x=>x.n);
+  const sorted=[...subs].sort((x,y)=>(y.acc||0)-(x.acc||0));
+  const concl=[];
+  if(base.n)concl.push({tone:"info",html:`A 一共答对 <b>${base.correct}</b> / ${base.n} 题，正确率 <b>${fmt(base.acc,1)}%</b>（${term("ci")} ${fmt(base.ci_lo,1)}–${fmt(base.ci_hi,1)}%）。`});
+  if(sorted.length>=3){
+    concl.push({tone:"good",html:"最擅长："+sorted.slice(0,2).map(x=>`${esc(shortSub(x.name))} <b>${fmt(x.acc,1)}%</b>`).join("、")+"。"});
+    concl.push({tone:"warn",html:"最弱："+sorted.slice(-2).reverse().map(x=>`${esc(shortSub(x.name))} <b>${fmt(x.acc,1)}%</b>`).join("、")+"。"});
+  }
+  if(base.truncated)concl.push({tone:"warn",html:`有 <b>${base.truncated}</b> 题${term("trunc")}（写到长度上限被停下），记为答错。${a.thinking?"思考模式下想得太久会出现这种情况。":"可以在「更多设置」里调大这类题的最长长度。"}`});
+  if(base.errors)concl.push({tone:"bad",html:`有 <b>${base.errors}</b> 题请求失败，记为答错，可以点「重试失败的题」。`});
+  /* ---- 各科明细表(带错题按钮) ---- */
+  let t=`<div class="table-wrap" style="max-height:640px"><table class="table"><thead><tr><th>科目</th><th>题数</th>${series.map(s=>`<th><span class="run-tag" style="background:${s.color}">${s.tag}</span> 正确率</th><th title="平均每题输出多少 token，越少越省">${s.tag} 每题 token</th>`).join("")}<th>A 没答完 / 请求失败</th><th></th></tr></thead><tbody>`;
   const tokCell=(v,v0,self)=>{
     if(!v||!v.n)return `<td class="na">—</td>`;
     const per=v.out_tokens/v.n;
-    const d=(!self&&v0&&v0.n&&series.length>1)?`<span class="sub">较A ${per>=v0.out_tokens/v0.n?"+":""}${fmt((per-v0.out_tokens/v0.n)/(v0.out_tokens/v0.n)*100,0)}%</span>`:"";
-    return `<td class="num faint">${fmt(per,0)}${d}</td>`;
+    const d=(!self&&v0&&v0.n&&series.length>1)?`<span class="sub">比 A ${per>=v0.out_tokens/v0.n?"+":""}${fmt((per-v0.out_tokens/v0.n)/(v0.out_tokens/v0.n)*100,0)}%</span>`:"";
+    return `<td class="faint">${fmt(per,0)}${d}</td>`;
   };
   (a.subjects||[]).forEach(sub=>{
-    const vals=series.map(s=>{const x=(s.r.subjects||[]).find(y=>y.id===sub.id);return x||null});
+    const vals=series.map(s=>(s.r.subjects||[]).find(y=>y.id===sub.id)||null);
     const accs=vals.map(v=>v&&v.acc).filter(v=>v!=null);
     const best=accs.length>1?Math.max(...accs):null;
     t+=`<tr><td>${esc(sub.name)}</td><td class="faint">${sub.n}</td>`+vals.map((v,i)=>
-      (v==null?`<td class="na">—</td>`:
-      `<td class="${best!=null&&v.acc===best?"best":""}" ${i?`data-sig-cell="${esc(series[i].r.run_id)}|${esc(sub.id)}"`:""}>${fmt(v.acc,1)}%${series.length===1?`<span class="sub">${fmt(v.ci_lo,1)}–${fmt(v.ci_hi,1)}</span>`:""}</td>`)+
+      (v==null?`<td class="na">—</td>`:`<td class="${best!=null&&v.acc===best?"best":""}" ${i?`data-sig-cell="${esc(series[i].r.run_id)}|${esc(sub.id)}"`:""}>${fmt(v.acc,1)}%${series.length===1?`<span class="sub">误差范围 ${fmt(v.ci_lo,1)}–${fmt(v.ci_hi,1)}</span>`:""}</td>`)+
       tokCell(v,vals[0],i===0)).join("")+
       `<td class="${(sub.truncated||sub.errors)?"down":"faint"}">${sub.truncated==null?"—":`${sub.truncated} / ${sub.errors||0}`}</td>
-      <td>${sub.correct<sub.n?`<button class="btn btn-ghost btn-sm" data-iq-wrong="${esc(sub.id)}" data-run="${esc(a.run_id)}">错题 ${sub.n-sub.correct}</button>`:""}</td></tr>`;
+      <td>${sub.correct<sub.n?`<button class="btn btn-ghost btn-sm" data-iq-wrong="${esc(sub.id)}" data-run="${esc(a.run_id)}">看错题（${sub.n-sub.correct}）</button>`:""}</td></tr>`;
   });
   const overall=series.map(s=>s.r.overall&&s.r.overall.acc);
   const bestAll=series.length>1?Math.max(...overall.filter(v=>v!=null)):null;
   const subjAll=series.map(s=>({n:(s.r.subjects||[]).reduce((t2,x)=>t2+(x.n||0),0),out_tokens:(s.r.subjects||[]).reduce((t2,x)=>t2+(x.out_tokens||0),0)}));
-  t+=`<tr class="total"><td>总体</td><td class="faint">${base.n??"—"}</td>`+overall.map((v,i)=>
+  t+=`<tr class="total"><td>总计</td><td class="faint">${base.n??"—"}</td>`+overall.map((v,i)=>
     `<td class="${bestAll!=null&&v===bestAll?"best":""}">${v!=null?fmt(v,1)+"%":"—"}</td>`+tokCell(subjAll[i],subjAll[0],i===0)).join("")+
     `<td class="${(base.truncated||base.errors)?"down":"faint"}">${base.truncated==null?"—":`${base.truncated} / ${base.errors||0}`}</td><td></td></tr></tbody></table></div>`;
-  $("iqSubjTbl").innerHTML=t;
-  drawRadar(series);
-  /* 配对显著性: 同一批题逐题比较(McNemar), 结果异步填入 */
+  const nSub=(a.subjects||[]).length;
+  const barH=Math.max(260,nSub*(series.length*16+14)+70);
+  const summ=summaryCard("结论",concl,`题集 ${esc(a.bank_id||"")} · ${esc(budgetText(a))} · 开始于 ${esc(timeText(a.started_utc))}`);
+  el.innerHTML=`<div class="stack">${series.length===1?`<div class="hero-row">${tiles}${summ}</div>${alerts}`:`<div class="score-row">${tiles}</div>${alerts}${summ}`}</div>`+
+    sec("iq-subj","各科得分","按 A 的成绩从高到低排列；只看一次测试时，横线表示"+term("ci"),
+      `<div class="grid-2" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr)">${ccard("iqBars","各科正确率",{desc:"越高越好",h:barH})}
+        ${ccard("iqRadar","能力分布",{desc:"越往外越好",h:Math.min(460,Math.max(340,barH))})}</div>`,"各科得分")+
+    sec("iq-cost","花了多少 token","同样的正确率，用的 token 越少越省时省钱",ccard("iqTok","平均每题输出多少 token",{desc:"越少越省",h:barH}),"token 花费")+
+    sec("iq-detail","逐科明细",series.length>1?"加粗的是这一科最高分；比 A 的“差异是否可信”显示在每个格子下方":"点「看错题」可以看模型答错的题和它的回答",t,"逐科明细");
+  disposeDetached();
+  drawIqCharts(series);
+  buildJump("iqJump",el);
+  /* 差异是否可信: 同一批题逐题比较, 结果异步填入 */
   series.slice(1).forEach(s=>iqCompare(a.run_id,s.r.run_id).then(d=>{
     const card=document.querySelector(`[data-sig-card="${CSS.escape(s.r.run_id)}"]`);
     if(!card)return;
-    if(!d||!d.ok){card.textContent="配对检验不可用";return}
-    if(!d.same_bank){card.textContent="题集不同，无法逐题配对检验";return}
-    if(!d.overall.n||d.overall.significant==null){card.textContent="没有双方都有效作答的共同题目，无法配对检验";return}
+    if(!d||!d.ok){card.textContent="暂时无法判断差异是否可信";return}
+    if(!d.same_bank){card.textContent="题集不同，无法逐题比较";return}
+    if(!d.overall.n||d.overall.significant==null){card.textContent="没有双方都正常作答的共同题目，无法比较";return}
     const o=d.overall;
-    card.innerHTML=`<span class="sig ${o.significant?"yes":"no"}">${o.significant?"差异显著":"差异不显著"}</span> · p=${fmtP(o.p)} · A 独对 ${o.a_only} / B 独对 ${o.b_only}`;
-    card.title=`McNemar 配对检验：${o.n} 道共同题目中，仅 A 答对 ${o.a_only} 题，仅 B 答对 ${o.b_only} 题。p<0.05 视为差异显著。`;
+    card.innerHTML=`<span class="sig ${o.significant?"yes":"no"}">${o.significant?"差异可信":"差异不明显，可能是随机波动"}</span> · 只有 A 答对 ${o.a_only} 题，只有 ${esc(s.tag)} 答对 ${o.b_only} 题`;
+    card.title=`${TERMS.sig.tech}：共同题目 ${o.n} 道，p = ${fmtP(o.p)}`;
     Object.entries(d.subjects).forEach(([sid,x])=>{
       const cell=document.querySelector(`[data-sig-cell="${CSS.escape(s.r.run_id+"|"+sid)}"]`);
-      if(cell&&x.n)cell.insertAdjacentHTML("beforeend",`<span class="sub sig ${x.significant?"yes":"no"}" title="McNemar p=${fmtP(x.p)}">${x.significant?"显著":"不显著"} p=${fmtP(x.p)}</span>`);
+      if(cell&&x.n)cell.insertAdjacentHTML("beforeend",`<span class="sub sig ${x.significant?"yes":"no"}" title="p = ${fmtP(x.p)}">${x.significant?"差异可信":"差异不明显"}</span>`);
     });
   }));
 }
-function verLt(v,target){const a=String(v||"0").split(".").map(Number),b=target.split(".").map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==b[i])return (a[i]||0)<b[i]}return false}
-function iqVersionWarning(r){
-  if(verLt(r.iq_version,"1.1.0")&&r.thinking)return `该运行使用旧版评测程序（${r.iq_version}）：思考模式下选择题输出上限仅 8 token，思考被截断后全部计错，MATH-500 判分也有缺陷，分数不可信，请重新运行`;
-  if(verLt(r.iq_version,"1.1.0"))return `该运行使用旧版评测程序（${r.iq_version}）：MATH-500 判分有缺陷（恒判错），总分偏低，请重新运行`;
-  if(verLt(r.iq_version,"1.2.0")&&r.thinking)return `该运行使用 ${r.iq_version} 评测程序：思考模式输出上限较低，长思考题目可能被截断计错且未单独标记，建议重新运行`;
-  if(verLt(r.iq_version,"1.3.0")&&!r.thinking)return `该运行使用 ${r.iq_version} 评测程序：MATH-500 / GSM8K 输出上限较低（900 / 1280 token），部分题目会被截断计错，数学科目分数偏低`;
-  if(verLt(r.iq_version,"1.3.0")&&r.thinking)return `该运行使用 ${r.iq_version} 评测程序：思考模式为贪心解码，容易陷入重复而被截断，建议用新版重新运行`;
-  if(verLt(r.iq_version,"1.4.0"))return `该运行使用 ${r.iq_version} 评测程序：之后修正了答案提取（首行字母、小写选项）、MATH-500 等价判定和部分指令遵循规则；限制题量时 MMLU 只覆盖少数学科，请求失败的题也计为答错。与 1.4.0 及之后的分数不宜直接比较`;
-  return "";
-}
-function iqIssues(r){
-  const o=r.overall||{},out=[];
-  if(o.truncated)out.push(`${o.truncated} 题达到输出上限被截断`);
-  if(o.errors)out.push(`${o.errors} 题请求失败`);
-  return out;
+function drawIqCharts(series){
+  const a=series[0].r;
+  const subs=[...(a.subjects||[])].filter(x=>x.n).sort((x,y)=>(y.acc||0)-(x.acc||0));
+  if(!subs.length){chartEmpty("iqBars");chartEmpty("iqRadar");chartEmpty("iqTok");return}
+  const names=subs.map(x=>shortSub(x.name));
+  const valOf=(s,sub,f)=>{const x=(s.r.subjects||[]).find(y=>y.id===sub.id);return x?f(x):null};
+  /* 各科正确率: 横向柱; 只看 A 时加误差范围 */
+  const barSeries=series.map(s=>sBar(s.tag,s.color,subs.map(sub=>valOf(s,sub,x=>x.acc)),{horizontal:true}));
+  if(series.length===1)barSeries[0].label={show:true,position:"insideLeft",color:"#fff",fontSize:11,fontWeight:600,formatter:p=>p.value>=12?fmt(p.value,1)+"%":""};
+  if(series.length===1)barSeries.push({type:"custom",name:"误差范围",z:10,silent:true,tooltip:{show:false},
+    data:subs.map((x,i)=>[i,x.ci_lo,x.ci_hi]),encode:{x:[1,2],y:0},
+    renderItem:(params,api)=>{
+      const i=api.value(0),p1=api.coord([api.value(1),i]),p2=api.coord([api.value(2),i]),h=7,st={stroke:C.text2,lineWidth:1};
+      return{type:"group",children:[{type:"line",shape:{x1:p1[0],y1:p1[1],x2:p2[0],y2:p2[1]},style:st},
+        {type:"line",shape:{x1:p1[0],y1:p1[1]-h/2,x2:p1[0],y2:p1[1]+h/2},style:st},{type:"line",shape:{x1:p2[0],y1:p2[1]-h/2,x2:p2[0],y2:p2[1]+h/2},style:st}]};
+    }});
+  setChart("iqBars",baseOption({
+    color:series.map(s=>s.color),legend:legendOf(series.map(s=>s.tag),"rect"),
+    grid:{left:4,right:16,top:series.length>1?40:12,bottom:4,containLabel:true},
+    xAxis:axisValue({min:0,max:100,fmt:v=>v+"%"}),yAxis:axisCat(names,{inverse:true,labelWidth:150,labelColor:C.text2}),
+    tooltip:Object.assign(baseOption().tooltip,{axisPointer:{type:"shadow",shadowStyle:{color:"rgba(128,128,128,.08)"}},formatter:ps=>{
+      const sub=subs[ps[0].dataIndex];
+      return tt(sub.name,series.map(s=>{const x=(s.r.subjects||[]).find(y=>y.id===sub.id);
+        return [s.color,s.tag,x?`${fmt(x.acc,1)}%（${x.correct}/${x.n}）`:"—"]}),series.length===1?`误差范围 ${fmt(sub.ci_lo,1)}–${fmt(sub.ci_hi,1)}%`:"")}}),
+    series:barSeries}));
+  /* 能力分布: 雷达 */
+  setChart("iqRadar",baseOption({
+    color:series.map(s=>s.color),legend:legendOf(series.map(s=>s.tag)),
+    tooltip:Object.assign(baseOption().tooltip,{trigger:"item",formatter:p=>tt(series[p.dataIndex]?series[p.dataIndex].tag:"",subs.map((sub,i)=>["",names[i],p.value[i]!=null?fmt(p.value[i],1)+"%":"—"]))}),
+    radar:{indicator:subs.map(sub=>({name:radarName(sub.name),max:100})),radius:"64%",center:["50%","56%"],splitNumber:4,
+      axisName:{color:C.text2,fontSize:11},splitLine:{lineStyle:{color:C.grid}},splitArea:{show:false},axisLine:{lineStyle:{color:C.grid}}},
+    series:[{type:"radar",symbolSize:6,data:series.map(s=>({name:s.tag,value:subs.map(sub=>valOf(s,sub,x=>x.acc)),
+      lineStyle:{width:2,color:s.color},itemStyle:{color:s.color,borderColor:C.surface,borderWidth:1},areaStyle:{color:withAlpha(s.color,.10)}}))}]}));
+  /* 平均每题 token */
+  barChart("iqTok",{cats:names,horizontal:true,unit:"token",digits:0,catLabelWidth:150,labels:series.length===1,
+    series:series.map(s=>({name:s.tag,color:s.color,data:subs.map(sub=>valOf(s,sub,x=>x.n?x.out_tokens/x.n:null))}))});
 }
 $("iqResult").addEventListener("click",async e=>{
   const b=e.target.closest("[data-iq-wrong]");if(!b)return;
   const sid=b.dataset.iqWrong,r=IQ_RUNS[b.dataset.run],sub=(r.subjects||[]).find(x=>x.id===sid);
-  setBusy(b,false);b.disabled=true;
+  b.disabled=true;
   try{
     const d=await getJSON(`/api/iq-wrong?id=${encodeURIComponent(b.dataset.run)}&sid=${encodeURIComponent(sid)}`);
     if(!d.ok){toast(d.error,"error");return}
-    const status=x=>x.err?`<span class="badge is-danger">请求失败</span>`:x.trunc?`<span class="badge is-warning">输出截断</span>`:`<span class="badge">答错</span>`;
+    const status=x=>x.err?`<span class="badge is-bad">请求失败</span>`:x.trunc?`<span class="badge is-warn">没答完</span>`:`<span class="badge">答错</span>`;
     const rows=d.rows.map(x=>`<tr>
       <td>${x.idx+1}</td>
-      <td class="text-left" style="min-width:320px;max-width:560px;white-space:normal">${esc(x.q||"（题集文件缺失，无法显示题干）")}
+      <td class="text-left" style="min-width:320px;max-width:560px;white-space:normal">${esc(x.q||"（题集文件缺失，无法显示题目）")}
         ${x.choices?`<span class="sub">${x.choices.map((c,i)=>esc("ABCD"[i]+". "+String(c).slice(0,80))).join("　")}</span>`:""}</td>
-      <td class="text-left">${esc(x.answer!=null?String(x.answer):(x.checks?"规则校验":"—"))}</td>
-      <td class="text-left">${x.pred!=null?esc(x.pred):'<span class="faint">未提取到</span>'}</td>
-      <td class="text-left">${status(x)}${x.out!=null?`<span class="sub">输出 ${x.out} tokens${x.finish?" · "+esc(x.finish):""}</span>`:""}</td>
+      <td class="text-left">${esc(x.answer!=null?String(x.answer):(x.checks?"按规则检查":"—"))}</td>
+      <td class="text-left">${x.pred!=null?esc(x.pred):'<span class="faint">没识别出答案</span>'}</td>
+      <td class="text-left">${status(x)}${x.out!=null?`<span class="sub">输出 ${x.out} token${x.finish?" · "+esc(x.finish):""}</span>`:""}</td>
       <td class="text-left mono" style="min-width:240px;max-width:420px;white-space:pre-wrap;font-size:12px">${esc(x.err||x.tail||"")}</td></tr>`).join("");
-    const legacy=verLt(d.iq_version,"1.2.0")?`<div class="alert is-info">${icon("info")}<span>该运行由 ${esc(d.iq_version)} 版评测程序生成，未记录模型答案与输出尾部，仅能看到题目与请求失败信息。</span></div>`:"";
-    Modal.open(`${sub?sub.name:sid} · 未答对 ${d.rows.length} 题`,legacy+(rows?`<div class="table-wrap" style="max-height:none"><table class="table"><thead><tr><th>#</th><th class="text-left">题目</th><th class="text-left">标准答案</th><th class="text-left">模型答案</th><th class="text-left">状态</th><th class="text-left">模型输出（末尾）</th></tr></thead><tbody>${rows}</tbody></table></div>`:emptyState("没有未答对的题目","",{inline:true})),
+    const legacy=verLt(d.iq_version,"1.2.0")?alertBox("info",`这次测试由 ${esc(d.iq_version)} 版评测程序生成，没有记录模型的答案和回答结尾，只能看到题目和请求失败信息。`):"";
+    Modal.open(`${sub?sub.name:sid} · 没答对的 ${d.rows.length} 题`,legacy+(rows?`<div class="table-wrap" style="max-height:none"><table class="table"><thead><tr><th>#</th><th class="text-left">题目</th><th class="text-left">标准答案</th><th class="text-left">模型的答案</th><th class="text-left">情况</th><th class="text-left">模型回答的结尾</th></tr></thead><tbody>${rows}</tbody></table></div>`:emptyState("没有答错的题","",{inline:true})),
       {badges:`<span class="badge">${esc(iqLabel(r))}</span>`});
   }catch(err){toast("加载错题失败："+err.message,"error")}
   finally{b.disabled=false}
 });
-function drawRadar(series){
-  const cv=$("iqRadar");if(!cv||!cv.clientWidth)return;
-  const {g,w,h}=setupCanvas(cv,.9,260,380);
-  const subs=series[0].r.subjects||[],n=subs.length;
-  $("iqRadarLg").innerHTML=series.map(s=>legendBtn("",s.color,`${s.tag} · ${s.r.overall&&s.r.overall.acc!=null?s.r.overall.acc+"%":"—"}`)).join("");
-  if(n<3){noData(g,w,h,"科目不足 3 个，无法绘制");return}
-  const cx=w/2,cy=h/2,R=Math.min(w/2-70,h/2-30),ang=i=>-Math.PI/2+2*Math.PI*i/n;
-  const pt=(i,r)=>[cx+r*Math.cos(ang(i)),cy+r*Math.sin(ang(i))];
-  g.lineWidth=1;
-  for(let ring=1;ring<=4;ring++){
-    g.strokeStyle=ring===4?C.axis:C.grid;g.beginPath();
-    for(let i=0;i<=n;i++){const [x,y]=pt(i%n,R*ring/4);i?g.lineTo(x,y):g.moveTo(x,y)}
-    g.stroke();
-    g.fillStyle=C.text;g.textAlign="left";g.fillText(String(ring*25),cx+3,cy-R*ring/4+7);
-  }
-  g.strokeStyle=C.grid;
-  for(let i=0;i<n;i++){const [x,y]=pt(i,R);g.beginPath();g.moveTo(cx,cy);g.lineTo(x,y);g.stroke()}
-  g.fillStyle=C.text2;
-  subs.forEach((s,i)=>{const [x,y]=pt(i,R+14);const c=Math.cos(ang(i));
-    g.textAlign=Math.abs(c)<.3?"center":(c>0?"left":"right");
-    let name=String(s.name||s.id).replace(/（官方）|\(官方\)|\(中文\)|（中文）/g,"").trim();
-    const maxW=Math.abs(c)<.3?w-8:(c>0?w-x-4:x-4);  /* 按可用宽度截断, 避免超出画布 */
-    while(name.length>2&&g.measureText(name).width>maxW)name=name.slice(0,-2)+"…";
-    g.fillText(name,x,y)});
-  g.textAlign="left";
-  series.forEach(s=>{
-    const ss=s.r.subjects||[];
-    const pts=subs.map((sub,i)=>{const m=ss.find(x=>x.id===sub.id);const v=m?Math.max(0,Math.min(100,m.acc||0)):0;const [x,y]=pt(i,R*v/100);return{x,y,v,name:sub.name}});
-    g.beginPath();pts.forEach((p,i)=>i?g.lineTo(p.x,p.y):g.moveTo(p.x,p.y));g.closePath();
-    g.fillStyle=withAlpha(s.color,.12);g.fill();g.strokeStyle=s.color;g.lineWidth=2;g.stroke();
-    dots(g,pts,s.color,2.5);
-    pts.forEach(p=>cv._hit.push({x:p.x,y:p.y,html:tt(p.name,[[s.color,s.tag,fmt(p.v,1)+"%"]])}));
-  });
-  bindTips(cv);
-}
 
 /* ============================================================
    代码生成
    ============================================================ */
-let GEN_RUNS={},GEN_LOADED=false,genPoll=null;
+let GEN_RUNS={},GEN_LOADED=false,genPoll=null,GEN_FILTER="all";
 const genLog=LogBox("genLog","gen");
-bindFormMemory("llm-bench-pro-gen-form",["genBase","genModel","genConc","genTag"]);
+bindFormMemory("llm-bench-pro-gen-form",["genBase","genModel","genConc","genTag","genSampling","genTemp","genTopP","genTopK","genPresence"]);
 bindFormMemory("llm-bench-pro-gen-judge",["genJudgeBase","genJudgeModel"]);
 const TIER_NAME={普通:"基础",困难:"进阶",地狱:"高难",实战:"真实场景"};
+const TIER_ORDER=["普通","困难","地狱","实战"];
 const tagName=t=>TIER_NAME[t]||t;
 const TASK_CATALOG=[
  {id:"pelican",name:"鹈鹕骑自行车",tier:"普通"},{id:"earth",name:"可拖拽 3D 地球",tier:"普通"},
@@ -1869,37 +1800,51 @@ function chipChange(){
   });
   $("genTaskCount").textContent=`已选 ${selectedTasks().length} / ${TASK_CATALOG.length}`;
 }
+function genSamplingUI(){
+  const v=$("genSampling").value;
+  document.querySelectorAll("[data-gen-custom]").forEach(f=>f.hidden=v!=="custom");
+  $("genSamplingHelp").querySelector(".help").textContent={
+    official:"官方推荐：思考时 temperature 0.6 / top_p 0.95，不思考时 0.7 / 0.8，top_k 20，固定随机种子 42。温度太低时小模型写长文件容易陷入无限重复",
+    legacy:"旧版低温：temperature 0.3。只在需要和 2.2 之前的结果对比时使用，小模型更容易陷入重复输出",
+    custom:"自定义：留空的项使用官方推荐值；presence_penalty 调高可以减少重复，但可能影响代码质量"}[v]||"";
+}
+$("genSampling").addEventListener("change",genSamplingUI);
+genSamplingUI();
+function genSamplingBody(){
+  const v=$("genSampling").value;
+  if(v!=="custom")return v;
+  return{temperature:$("genTemp").value,top_p:$("genTopP").value,top_k:$("genTopK").value,presence_penalty:$("genPresence").value};
+}
 function judgeBody(){return{judge_base:$("genJudgeBase").value.trim(),judge_model:$("genJudgeModel").value.trim(),judge_key:$("genJudgeKey").value}}
-function judgeValid(jb){if(!!jb.judge_base!==!!jb.judge_model){msg("genInfo","error","视觉评审需要同时填写评审模型地址和评审模型，或都留空");return false}return true}
+function judgeValid(jb){if(!!jb.judge_base!==!!jb.judge_model){msg("genInfo","error","AI 看图打分需要同时填写服务地址和模型，或者都留空");return false}return true}
 function evalMethodText(ev){
   if(!ev)return"";
-  const m=ev.method==="browser"?"无头浏览器运行检测":"源码检查（未找到 Chrome/Edge，结果仅供参考）";
-  return "评测方式："+m+(ev.judge_model?" + 视觉评审（"+ev.judge_model+"）":"，未配置视觉评审");
+  const m=ev.method==="browser"?"在后台浏览器里实际运行检查":"只看代码（没找到 Chrome / Edge，结果仅供参考）";
+  return "检查方式："+m+(ev.judge_model?" + AI 看图打分（"+ev.judge_model+"）":"，没有配置 AI 看图打分");
 }
 async function genStart(){
   const model=$("genModel").value.trim();
   if(!model){msg("genInfo","error","请填写模型名称");$("genModel").focus();return}
   const tasks=selectedTasks();
-  if(!tasks.length){msg("genInfo","error","请至少选择 1 道题目");return}
+  if(!tasks.length){msg("genInfo","error","请至少选 1 道题");return}
   const jb=judgeBody();if(!judgeValid(jb))return;
   const d=await postWithConflict("/api/gen-start",{base:$("genBase").value,api_key:$("genKey").value,model,conc:$("genConc").value,
-    tag:$("genTag").value,tasks,thinking:$("genThink").checked,...jb});
+    tag:$("genTag").value,tasks,thinking:$("genThink").checked,sampling:genSamplingBody(),...jb});
   if(!d)return;
   if(!d.ok){msg("genInfo","error",d.error);return}
   msg("genInfo","info",evalMethodText(d.eval));
-  watchGen(`运行中 · ${model} · ${tasks.length} 题`);
+  watchGen(`进行中 · ${model} · ${tasks.length} 题`);
 }
 async function genReeval(){
   const runId=$("genMainSel").value;
-  if(!runId){toast("没有可重新评测的运行","warning");return}
+  if(!runId){toast("没有可以重新检查的任务","warning");return}
   const jb=judgeBody();
   if(!!jb.judge_base!==!!jb.judge_model){toggleLauncher("genLauncher",true);judgeValid(jb);return}
   const d=await postJSON("/api/gen-eval",{run_id:runId,...jb});
   if(!d.ok){toast(d.error,"error");return}
   toggleLauncher("genLauncher",true);
   msg("genInfo","info",evalMethodText(d.eval));
-  watchGen("重新评测 · "+(GEN_RUNS[runId]?genLabel(GEN_RUNS[runId]):runId),runId);
-  $("genLog").scrollIntoView({behavior:"smooth",block:"nearest"});
+  watchGen("重新检查 · "+(GEN_RUNS[runId]?genLabel(GEN_RUNS[runId]):runId),runId);
 }
 function watchGen(title,keepRun){
   $("genBtnStart").disabled=true;$("genBtnEval").disabled=true;
@@ -1923,7 +1868,7 @@ async function loadGenResults(focusNew,keepRun){
     const opts=k=>names.map(n=>`<option value="${esc(n)}" ${n===k?"selected":""}>${esc(genLabel(GEN_RUNS[n]))}</option>`).join("");
     main.innerHTML=opts(keepMain);
     cmp.innerHTML=`<option value="">不对比</option>`+opts(keepCmp);
-    if(!names.length)toggleLauncher("genLauncher",true);
+    if(!names.length&&VIEW==="gen")toggleLauncher("genLauncher",true);
     renderGen();
   }catch(e){$("genResult").innerHTML=emptyState("无法加载生成结果",e.message,{iconName:"alert"})}
 }
@@ -1947,83 +1892,213 @@ function genStats(r){
 }
 function genLabel(r){
   const s=genStats(r);
-  const parts=[r.model||"?",runFw(r),r.thinking?"思考":"非思考",`完成 ${s.ok.length}/${s.planned}`,r.status&&r.status!=="done"?STATUS_NAME[r.status]||r.status:""];
-  if(s.exec!=null)parts.push(`${s.mode==="static"?"源码":"检测"} ${s.exec.toFixed(0)}%`);
-  if(s.judge!=null)parts.push(`评审 ${s.judge.toFixed(0)}`);
+  const parts=[r.model||"?",runFw(r),r.thinking?"思考":"不思考",`完成 ${s.ok.length}/${s.planned}`,r.status&&r.status!=="done"?STATUS_NAME[r.status]||r.status:""];
+  if(s.exec!=null)parts.push(`${s.mode==="static"?"只看代码":"运行检查"} ${s.exec.toFixed(0)}%`);
+  if(s.judge!=null)parts.push(`AI 打分 ${s.judge.toFixed(0)}`);
   if(s.stars!=null)parts.push(`人工 ${s.stars.toFixed(1)}（${s.starN}）`);
-  if(!s.v2)parts.push("旧版评测");
+  if(!s.v2)parts.push("旧版检查");
   parts.push(shortTime(r.started_utc));
   return parts.filter(Boolean).join(" · ");
 }
 function scoreCls(p){return p==null?"":p>=80?"good":p>=50?"mid":"bad"}
-function kpiBox(labelText,value,unit,sub){
-  return `<div class="kpi"><div class="kpi-head"><span class="kpi-label">${esc(labelText)}</span></div>
-    <div class="kpi-value num">${value}${unit?`<small>${unit}</small>`:""}</div><div class="kpi-sub">${esc(sub||"")}</div></div>`;
+/* 检查项的大白话名称(原名放在悬停提示里) */
+const CHECK_PLAIN={load:"能正常打开，没有卡死",nonblank:"打开后有内容（不是白屏）",animated:"不操作时画面也在动",no_error:"运行时没有报错",
+  responsive:"手机屏幕上显示正常",self_contained:"不依赖外部网络资源",complete:"代码写完整了",probe:"检查过程顺利完成",doctype:"是完整的网页代码"};
+function plainCheck(c){
+  if(CHECK_PLAIN[c.id])return CHECK_PLAIN[c.id];
+  if(/^step/.test(c.id))return "操作：“"+String(c.label).replace(/^交互：/,"")+"”有反应";
+  if(/^f\d/.test(c.id))return "代码里有相关实现（关键词 "+String(c.label).replace(/^源码特征 \//,"").replace(/\/$/,"")+"）";
+  return c.label;
 }
+/* 没通过时直接说哪里不行 */
+const CHECK_FAIL={load:"打不开或卡死",nonblank:"打开后是白屏",animated:"不操作时画面不动",no_error:"运行时报错",
+  responsive:"手机屏幕上显示不正常",self_contained:"依赖外部网络资源（已被拦截）",complete:"代码没写完整",probe:"检查过程中断",doctype:"不是完整的网页代码"};
+function failText(c){
+  if(CHECK_FAIL[c.id])return CHECK_FAIL[c.id];
+  if(/^step/.test(c.id))return "操作“"+String(c.label).replace(/^交互：/,"")+"”没反应";
+  if(/^f\d/.test(c.id))return "代码里没找到相关实现（关键词 "+String(c.label).replace(/^源码特征 \//,"").replace(/\/$/,"")+"）";
+  return c.label+" 没通过";
+}
+function repText(d){
+  if(!d)return"";
+  return d.kind==="loop"||d.period?`同一段内容每 ${d.period} 个字符循环一次，重复了 ${fmtInt(d.repeats)} 次`:"内容高度雷同（像是在机械地复制或计数）";
+}
+/* 作品的主要问题: 按优先级只取一个, 用于归因统计和卡片标题 */
+const VERDICTS=[
+  ["pass","全部检查通过","good","模型写得不错"],
+  ["partial","部分功能没反应","warn","模型写的功能不完整"],
+  ["error","运行报错","bad","作品本身的 bug"],
+  ["blank","白屏或打不开","bad","作品本身的问题"],
+  ["unfinished","代码没写完","bad","太长没写完"],
+  ["repeat","陷入重复输出","bad","模型自身的问题"],
+  ["fail","生成失败","bad","请求出错或没写出代码"],
+  ["env","报错可能是检测引起","warn","需要人工确认"],
+  ["static","没有实际运行","neutral","评测环境问题"],
+];
+const VERDICT_META=Object.fromEntries(VERDICTS.map(([k,n,tone,why])=>[k,{name:n,tone,why}]));
+function genVerdict(it){
+  if(it.error)return{key:"fail",text:(it.degenerate?"模型陷入重复输出，没写出有效代码":"生成失败："+it.error)};
+  if(it.degenerate)return{key:"repeat",text:`模型陷入重复输出：${repText(it.degenerate)}，已提前停止`};
+  const e=it.eval||{},by=Object.fromEntries((e.checks||[]).map(c=>[c.id,c]));
+  if(it.unfinished||(by.complete&&!by.complete.pass))return{key:"unfinished",text:it.unfinished?"接着写了多轮仍没写完（写到长度上限）":"代码没写完整（缺少结尾或脚本没闭合）"};
+  if(!it.eval)return{key:"static",text:"还没有检查"};
+  if(e.method==="static")return{key:"static",text:"没有在浏览器里实际运行，只检查了代码里的关键词"};
+  if(by.load&&!by.load.pass)return{key:"blank",text:"页面打不开或卡死"};
+  if(by.nonblank&&!by.nonblank.pass)return{key:"blank",text:"打开后是白屏"};
+  if(by.no_error&&!by.no_error.pass){
+    const ctl=e.control;
+    if(ctl&&ctl.reproduced===false)return{key:"env",text:"运行报错，但在干净环境里没有复现，可能是检测引起的"};
+    return{key:"error",text:"运行时报错"+(ctl&&ctl.reproduced?"（干净环境里同样报错，是作品本身的问题）":"")};
+  }
+  const fails=(e.checks||[]).filter(c=>!c.pass);
+  if(fails.length)return{key:"partial",text:fails.slice(0,2).map(failText).join("；")+(fails.length>2?`，还有 ${fails.length-2} 项`:"")};
+  return{key:"pass",text:"全部检查通过"};
+}
+/* 框架对模型输出做过什么: 用于回答"作品是不是被框架弄坏了" */
+function changeKind(it){
+  if(!Array.isArray(it.changes))return"legacy";
+  const c=it.changes.join("\n");
+  if(/改为不思考/.test(c))return"rescued";
+  if(/续写|重写/.test(c))return"stitched";
+  if(/原样保存/.test(c))return"raw";
+  return"trimmed";
+}
+const CHANGE_KINDS=[["raw","原样保存，一个字没改"],["trimmed","只去掉了代码前后的说明文字或代码块标记"],["stitched","把多轮接着写的内容拼接起来"],["rescued","思考失败，改为不思考重新生成"],["legacy","旧任务，没有保存原始输出"]];
+function tone2color(t){return t==="good"?C.goodMark:t==="bad"?C.badMark:t==="warn"?C.warnMark:C.axis}
+
 function renderGen(){
   if(!GEN_LOADED)return;
   const el=$("genResult");
-  const a=GEN_RUNS[$("genMainSel").value],b=GEN_RUNS[$("genCmpSel").value];
-  if(!a){el.innerHTML=emptyState("暂无生成结果","新建一次生成任务后，作品与检测结果会显示在这里",
-    {action:`<button class="btn btn-primary" data-toggle="genLauncher">${icon("plus")}新建任务</button>`});return}
+  const a=GEN_RUNS[$("genMainSel").value],b0=GEN_RUNS[$("genCmpSel").value];
+  const b=b0&&a&&b0.run_id!==a.run_id?b0:null;
+  if(!a){el.innerHTML=emptyState("还没有生成任务","点右上角「新建生成任务」，作品和检查结果会显示在这里",
+    {action:`<button class="btn btn-primary" data-toggle="genLauncher">${icon("plus")}新建生成任务</button>`});buildJump("genJump",null);return}
   const s=genStats(a),ev=a.eval||{};
-  const modeText=s.mode==="static"?"源码检查":s.mode==="mixed"?"浏览器检测，部分题目降级":"无头浏览器运行检测";
-  const execSub=s.mode==="static"?"关键词匹配，这些题没有在浏览器里跑过":
-    s.mode==="mixed"?`只平均 ${s.browserN} 道浏览器检测，${s.staticN} 道源码降级未计入`:"加载、报错、白屏、动画与交互";
-  const judgeSub=!ev.judge_model&&s.judge==null?"未配置评审模型":
-    `有分 ${s.judgeN} 题${s.judgeErr?`，${s.judgeErr} 题失败未计入`:""}${ev.judge_model?" · "+ev.judge_model:""}`;
-  let html="";
-  if(a.status&&a.status!=="done")
-    html+=`<div class="alert is-warning">${icon("alert")}<span>${esc(STATUS_NAME[a.status]||a.status)}${a.error?"："+esc(a.error):""}。列表里只有已经入库的题，计划 ${s.planned} 题。</span></div>`;
-  html+=s.v2?`<div class="meta-list"><span class="badge">评测方式 <b>${modeText}</b></span>
-      ${ev.browser&&s.mode!=="static"?`<span class="badge">浏览器 <b>${esc(ev.browser)}</b></span>`:""}
-      <span class="badge">视觉评审 <b>${ev.judge_model?esc(ev.judge_model):"未配置"}</b></span>
-      ${a.thinking_dropped?`<span class="badge is-warning">思考参数被端点拒绝</span>`:""}
-      ${a.tag?`<span class="badge">标签 <b>${esc(a.tag)}</b></span>`:""}<span class="badge">开始 <b>${esc(timeText(a.started_utc))}</b></span></div>`
-    :`<div class="alert is-warning">${icon("alert")}<span>该运行使用旧版评测（源码关键词匹配），分数不可信。点击右上方“重新评测”即可按新口径检测，人工评分会保留。</span></div>`;
-  if(s.v2&&s.mode==="static")
-    html+=`<div class="alert is-warning">${icon("alert")}<span>这些题没有在无头浏览器里跑起来，下面的命中率是源码关键词。打开单题详情可以看到原因（常见是 Chrome 启动失败）。</span></div>`;
+  const items=a.items||[];
+  const verdicts=items.map(it=>({it,v:genVerdict(it)}));
+  const count=k=>verdicts.filter(x=>x.v.key===k).length;
+  /* ---- 提示 ---- */
+  let alerts="";
+  if(a.status&&a.status!=="done")alerts+=alertBox("warn",`这个任务${esc(STATUS_NAME[a.status]||a.status)}${a.error?"："+esc(a.error):""}。下面只有已经完成的题，原计划 ${s.planned} 题。`);
+  if(!s.v2)alerts+=alertBox("warn","这个任务用的是旧版检查（只在代码里找关键词），分数不可信。点右上方「重新检查」按新方式在浏览器里实际运行，人工评分会保留。");
+  else if(s.mode==="static"||s.mode==="mixed"){
+    const why=ev.browser_error||(items.map(x=>x.eval&&x.eval.notes&&x.eval.notes[0]).find(Boolean))||"后台浏览器没有启动";
+    alerts+=alertBox("bad",`<b>${s.mode==="static"?"这些作品没有在浏览器里实际运行":`有 ${s.staticN} 件作品没有在浏览器里实际运行`}</b>，只检查了代码里有没有相关关键词，${s.mode==="static"?"下面的通过率":"这部分作品的通过率"}不能代表作品真的能用。<br>
+      原因：${esc(why)}<br>修复后（例如以普通权限重新启动服务）点「重新检查」即可，人工评分会保留。`,
+      `<button class="btn btn-secondary btn-sm" onclick="genReeval()">${icon("scan-check")}重新检查</button>`);
+  }
   if(s.v2&&s.mode==="browser"&&verLt(ev.eval_version,"1.1.0"))
-    html+=`<div class="alert is-warning">${icon("alert")}<span>该运行的运行检测使用 ${esc(ev.eval_version||"1.0")} 版口径：交互检查会把自带动画、CSS 悬停样式和每帧重写的计时文字误判为“交互生效”，输入“.”会丢字符，移动端溢出检查不生效。建议点击“重新评测”，人工评分会保留。</span></div>`;
-  html+=`<div class="kpi-grid">
-    ${kpiBox("已完成作品",`${s.ok.length}<small> / ${s.planned}</small>`,"",a.status&&a.status!=="done"?"含未跑完的计划题数":"生成失败的题目不计入通过率")}
-    ${kpiBox(s.mode==="static"?"源码检查命中率":"运行检测通过率",s.exec==null?"—":fmt(s.exec,1),s.exec==null?"":"%",execSub)}
-    ${kpiBox("视觉评审均分",s.judge==null?"—":fmt(s.judge,1),s.judge==null?"":"/ 100",judgeSub)}
-    ${kpiBox("人工评分均值",s.stars==null?"—":fmt(s.stars,1),s.stars==null?"":"/ 5",s.starN?`已评 ${s.starN} 题`:"在作品卡片上评分")}
-  </div><div class="work-grid">`;
-  (a.items||[]).forEach(it=>{
-    const tags=esc((it.tags||[]).map(tagName).join(" · "));
-    if(it.error){
-      html+=`<div class="work"><div class="work-head"><span class="work-name">${esc(it.name)}</span><span class="badge is-danger">生成失败</span></div>
-        <div class="work-meta">${tags}</div><div class="work-fails">${esc(it.error)}</div></div>`;
-      return;
-    }
-    const e=it.eval,checks=e?e.checks:[],fails=checks.filter(c=>!c.pass),j=e&&e.judge;
-    const judgeBadge=j&&j.score!=null?`<span class="score ${scoreCls(j.score)}">评审 ${fmt(j.score,0)}${j.stale?" 旧":""}</span>`:(j&&j.error?`<span class="badge is-danger">评审失败</span>`:"");
-    const staticBadge=e&&e.method==="static"&&s.mode!=="static"?`<span class="badge is-warning">源码检查</span>`:"";
-    html+=`<div class="work">
-      <div class="work-head"><span class="work-name">${esc(it.name)}</span><span class="row" style="gap:6px">${staticBadge}${judgeBadge}</span></div>
-      <div class="work-meta">${tags} · ${it.lines} 行${it.continuations?` · 续写 ${it.continuations} 轮`:""}</div>
-      ${e?`<div class="row" style="gap:10px"><span class="checkbar">${checks.map(c=>`<i class="${c.pass?"":"fail"}" title="${esc((c.pass?"通过：":"未通过：")+c.label+(c.detail?"\n"+c.detail:""))}"></i>`).join("")}</span>
-          <span class="score ${scoreCls(it.exec_score)}">运行检测 ${it.pass}/${it.total}</span></div>
-        ${fails.length?`<div class="work-fails">${fails.slice(0,3).map(c=>`<div>${icon("x-circle","icon-sm")} ${esc(c.label)}</div>`).join("")}${fails.length>3?`<div class="faint">另有 ${fails.length-3} 项未通过</div>`:""}</div>`:""}`
-        :`<div class="work-fails faint">未评测</div>`}
-      <div class="work-actions">
-        <button class="btn btn-secondary btn-sm" data-gen="preview" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}">${icon("eye")}预览</button>
-        ${e?`<button class="btn btn-ghost btn-sm" data-gen="detail" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}">${icon("image")}检测详情</button>`:""}
-        ${b?`<button class="btn btn-ghost btn-sm" data-gen="compare" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}">${icon("columns")}并排对比</button>`:""}
-        <span class="stars" role="group" aria-label="人工评分">${[1,2,3,4,5].map(i=>`<button type="button" class="star ${i<=(it.stars||0)?"on":""}" data-rate="${i}" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}" aria-label="${i} 分" aria-pressed="${i===it.stars}">${icon("star")}</button>`).join("")}</span>
-      </div></div>`;
-  });
-  el.innerHTML=html+`</div>`;
+    alerts+=alertBox("warn",`这个任务的运行检查用的是 ${esc(ev.eval_version||"1.0")} 版规则：会把自带动画、鼠标悬停效果误判为“操作有反应”，输入“.”会丢字符，手机适配检查不生效。建议「重新检查」，人工评分会保留。`);
+  if(a.thinking_dropped)alerts+=alertBox("warn","模型服务不接受“开启思考”的参数，这个任务实际上可能没有思考。");
+  /* ---- 指标 ---- */
+  const execLabel=s.mode==="static"?"只看代码的命中率":"实际运行检查通过率";
+  const kpis=`<div class="kpi-grid">
+    ${kpi("完成的作品",`${s.ok.length}<small> / ${s.planned}</small>`,"",{sub:items.length-s.ok.length?`${items.length-s.ok.length} 题没生成出来`:"全部生成出来了"})}
+    ${kpi(s.mode==="static"?execLabel:term("run",execLabel),s.exec==null?"—":fmt(s.exec,1),s.exec==null?"":"%",{sub:s.mode==="static"?"没有实际运行，仅供参考":s.mode==="mixed"?`只统计实际运行的 ${s.browserN} 件`:"打开、报错、白屏、动画和操作反应"})}
+    ${kpi(term("judge"),s.judge==null?"—":fmt(s.judge,1),s.judge==null?"":"/ 100",{sub:!ev.judge_model&&s.judge==null?"没有配置打分模型":`${s.judgeN} 件有分${s.judgeErr?`，${s.judgeErr} 件打分失败`:""}${ev.judge_model?" · "+esc(ev.judge_model):""}`})}
+    ${kpi("人工评分",s.stars==null?"—":fmt(s.stars,1),s.stars==null?"":"/ 5",{sub:s.starN?`已评 ${s.starN} 件`:"在下面的作品卡片上点星星"})}
+  </div>`;
+  /* ---- 结论: 模型问题 vs 环境/框架问题 ---- */
+  const modelIssues=["repeat","unfinished","error","blank","partial"].map(k=>[k,count(k)]).filter(x=>x[1]);
+  const envIssues=["static","env"].map(k=>[k,count(k)]).filter(x=>x[1]);
+  const ck={};items.forEach(it=>{const k=changeKind(it);ck[k]=(ck[k]||0)+1});
+  const concl=[];
+  concl.push({tone:count("pass")===items.length?"good":"info",html:`${items.length} 件作品里，<b>${count("pass")}</b> 件全部检查通过。`});
+  if(modelIssues.length)concl.push({tone:"warn",html:"<b>模型自身的问题</b>："+modelIssues.map(([k,n])=>`${VERDICT_META[k].name} ${n} 件`).join("、")+"。"});
+  if(count("fail"))concl.push({tone:"bad",html:`<b>${count("fail")}</b> 件没有生成出来（请求出错或没写出有效代码）。`});
+  if(envIssues.length)concl.push({tone:"bad",html:"<b>评测环境的问题</b>（不能算在模型头上）："+envIssues.map(([k,n])=>`${VERDICT_META[k].name} ${n} 件`).join("、")+"。"});
+  if(ck.legacy===items.length)concl.push({tone:"info",html:"这个任务生成于 2.3 之前，没有保存模型的原始输出，无法逐字核对框架有没有改动。之后的新任务会自动保存。"});
+  else concl.push({tone:"good",html:`框架有没有改动模型写的代码：<b>${ck.raw||0}</b> 件原样保存，<b>${ck.trimmed||0}</b> 件只去掉了代码前后的说明文字或代码块标记${ck.stitched?`，<b>${ck.stitched}</b> 件拼接了接着写的内容`:""}${ck.rescued?`，<b>${ck.rescued}</b> 件思考失败后改为不思考重新生成`:""}。除此之外保存的作品和模型输出逐字一致，每件作品的「生成过程」里可以看原始输出。`});
+  if(s.mode==="browser"||s.mode==="mixed"){
+    const ctlN=items.filter(it=>it.eval&&it.eval.control&&it.eval.control.reproduced).length;
+    if(ctlN)concl.push({tone:"info",html:`报错的作品里有 <b>${ctlN}</b> 件在不加任何检测代码的干净环境里${term("control","重新运行")}也同样报错，确认是作品自身的 bug。`});
+  }
+  /* ---- 作品卡片 ---- */
+  const cardHTML=({it,v})=>genCard(a,b,it,v);
+  const filters=[["all","全部",items.length],["issues","有问题的",items.length-count("pass")],...VERDICTS.map(([k,n])=>[k,n,count(k)]).filter(x=>x[2]&&x[0]!=="pass"),["pass","全部通过",count("pass")]];
+  if(!filters.some(f=>f[0]===GEN_FILTER&&f[2]))GEN_FILTER="all";
+  const shown=verdicts.filter(x=>GEN_FILTER==="all"||(GEN_FILTER==="issues"?x.v.key!=="pass":x.v.key===GEN_FILTER));
+  el.innerHTML=`<div class="stack">${alerts}${summaryCard("结论",concl,`${esc(a.model||"")} · ${a.thinking?"思考模式":"不思考"} · ${esc(samplingTextGen(a))} · ${esc(evalMethodText(ev))} · 开始于 ${esc(timeText(a.started_utc))}`)}${kpis}</div>`+
+    sec("gen-why","问题出在哪","每件作品只按最主要的一个问题归类；红色是作品/模型的问题，灰色是评测环境的问题",
+      `<div class="grid-2">${ccard("genWhy","作品按主要问题分类",{desc:"单位：件",h:Math.max(220,VERDICTS.filter(([k])=>count(k)).length*34+40)})}
+        ${ccard("genChange","框架对模型输出做了什么",{desc:"除这些处理外，保存的作品和模型写的逐字一致",h:Math.max(220,CHANGE_KINDS.filter(([k])=>ck[k]).length*34+40)})}</div>`,"问题归因")+
+    sec("gen-tier","各难度的表现",`${s.mode==="static"?"只看代码的命中率（没有实际运行）":"实际运行检查的平均通过率"}${b?"，和 B 对比":""}`,
+      `<div class="grid-2">${ccard("genTier",s.mode==="static"?"平均命中率":"平均通过率",{desc:"越高越好"})}${ccard("genTask","每道题的通过率",{desc:"按难度分组，越高越好",h:Math.max(300,items.length*(b?22:16)+60)})}</div>`,"难度")+
+    sec("gen-works","作品",`点「预览」直接玩，「检查详情」看截图和每项检查，「生成过程」看模型的原始输出`,
+      `<div class="work-toolbar"><div class="filter-chips">${filters.map(([k,n,c])=>`<button type="button" class="filter-chip" data-gen-filter="${k}" aria-pressed="${k===GEN_FILTER}">${esc(n)} <b>${c}</b></button>`).join("")}</div></div>
+      <div class="work-grid">${shown.map(cardHTML).join("")||emptyState("没有符合条件的作品","",{inline:true})}</div>`,"作品");
+  disposeDetached();
+  drawGenCharts(a,b,verdicts,ck);
+  buildJump("genJump",el);
+}
+function samplingTextGen(r){
+  const sm=r.sampling;
+  if(!sm)return "随机性：旧版 T0.3";
+  const first=r.thinking?sm.think:sm.plain;
+  return (sm.mode==="official"?"官方推荐采样":sm.mode==="legacy"?"旧版低温 T0.3":"自定义采样")+(first&&first.temperature!=null?`（temperature ${first.temperature}）`:"");
+}
+function genCard(a,b,it,v){
+  const tags=esc((it.tags||[]).map(tagName).join(" · "));
+  const meta=VERDICT_META[v.key]||{tone:"neutral"};
+  const tone=meta.tone==="neutral"?"":` is-${meta.tone}`;
+  const ic={good:"check-circle",bad:"x-circle",warn:"alert",neutral:"ban"}[meta.tone]||"info";
+  const e=it.eval,checks=e?e.checks||[]:[],fails=checks.filter(c=>!c.pass),j=e&&e.judge;
+  const judgeBadge=j&&j.score!=null?`<span class="badge" title="AI 看图打分${j.stale?"（基于旧截图）":""}">${icon("sparkle")}<b class="score ${scoreCls(j.score)}">${fmt(j.score,0)}</b>${j.stale?" 旧":""}</span>`:(j&&j.error?`<span class="badge is-bad">打分失败</span>`:"");
+  const metaLine=[tags,it.lines?`${fmtInt(it.lines)} 行`:"",it.continuations?`接着写 ${it.continuations} 轮`:"",it.out_tokens?`输出 ${fmtInt(it.out_tokens)} token`:""].filter(Boolean).join(" · ");
+  const body=it.error?"":(e?`<div class="row" style="gap:10px"><span class="checkbar">${checks.map(c=>`<i class="${c.pass?"":"fail"}" title="${esc((c.pass?"通过："+plainCheck(c):"没通过："+failText(c))+(c.detail?"\n"+c.detail:""))}"></i>`).join("")}</span>
+      <span class="score ${scoreCls(it.exec_score)}">${e.method==="static"?"代码关键词":"运行检查"} ${it.pass}/${it.total}</span></div>
+      ${fails.length&&v.key!=="partial"?`<div class="work-fails">${fails.slice(0,3).map(c=>`<div>${icon("x-circle","icon-sm")} ${esc(failText(c))}</div>`).join("")}${fails.length>3?`<div class="faint">还有 ${fails.length-3} 项没通过</div>`:""}</div>`:""}`:"");
+  const hasTrace=!!it.trace;
+  return `<div class="work"><div class="work-head"><div style="min-width:0"><div class="work-name">${esc(it.name)}</div><div class="work-meta">${metaLine}</div></div>${judgeBadge}</div>
+    <div class="work-verdict${tone}">${icon(ic)}<span>${esc(v.text)}</span></div>${body}
+    <div class="work-actions">
+      ${it.file&&!it.error?`<button class="btn btn-secondary btn-sm" data-gen="preview" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}">${icon("play")}预览</button>`:""}
+      ${e?`<button class="btn btn-ghost btn-sm" data-gen="detail" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}">${icon("image")}检查详情</button>`:""}
+      ${hasTrace||it.rounds?`<button class="btn btn-ghost btn-sm" data-gen="trace" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}">${icon("layers")}生成过程</button>`:""}
+      ${b&&!it.error?`<button class="btn btn-ghost btn-sm" data-gen="compare" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}">${icon("columns")}并排对比</button>`:""}
+      ${it.error?"":`<span class="stars" role="group" aria-label="人工评分">${[1,2,3,4,5].map(i=>`<button type="button" class="star ${i<=(it.stars||0)?"on":""}" data-rate="${i}" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}" aria-label="${i} 分" aria-pressed="${i===it.stars}">${icon("star")}</button>`).join("")}</span>`}
+    </div></div>`;
+}
+function drawGenCharts(a,b,verdicts,ck){
+  /* 问题分类 */
+  const vk=VERDICTS.filter(([k])=>verdicts.some(x=>x.v.key===k));
+  if(vk.length){
+    setChart("genWhy",baseOption({grid:{left:4,right:40,top:8,bottom:4,containLabel:true},
+      xAxis:axisValue({fmt:v=>Math.round(v)===v?String(v):""}),yAxis:axisCat(vk.map(x=>x[1]),{inverse:true,labelColor:C.text2}),
+      tooltip:Object.assign(baseOption().tooltip,{trigger:"item",formatter:p=>{const [k,n,,why]=vk[p.dataIndex];
+        const names=verdicts.filter(x=>x.v.key===k).map(x=>x.it.name);
+        return tt(n,[["",why,p.value+" 件"]],names.slice(0,8).join("、")+(names.length>8?" …":""))}}),
+      series:[{type:"bar",barMaxWidth:20,data:vk.map(([k,,tone])=>({value:verdicts.filter(x=>x.v.key===k).length,itemStyle:{color:tone2color(tone),borderRadius:[0,4,4,0]}})),
+        label:{show:true,position:"right",color:C.text2,fontSize:12,formatter:p=>p.value+" 件"}}]}));
+  }else chartEmpty("genWhy");
+  const kinds=CHANGE_KINDS.filter(([k])=>ck[k]);
+  setChart("genChange",baseOption({grid:{left:4,right:40,top:8,bottom:4,containLabel:true},
+    xAxis:axisValue({fmt:v=>Math.round(v)===v?String(v):""}),yAxis:axisCat(kinds.map(x=>x[1]),{inverse:true,labelColor:C.text2,labelWidth:230}),
+    tooltip:Object.assign(baseOption().tooltip,{trigger:"item",formatter:p=>tt(kinds[p.dataIndex][1],[["","作品",p.value+" 件"]])}),
+    series:[{type:"bar",barMaxWidth:20,data:kinds.map(([k],i)=>({value:ck[k],itemStyle:{color:k==="legacy"?C.axis:C.series[i%C.series.length],borderRadius:[0,4,4,0]}})),
+      label:{show:true,position:"right",color:C.text2,fontSize:12,formatter:p=>p.value+" 件"}}]}));
+  /* 各难度 / 每道题 */
+  const runs=[{tag:"A",color:C.a,r:a},b?{tag:"B",color:C.b,r:b}:null].filter(Boolean);
+  const tierAvg=(r,t)=>avgOf((r.items||[]).filter(x=>!x.error&&(x.tags||[]).includes(t)).map(x=>x.exec_score));
+  const tiers=TIER_ORDER.filter(t=>runs.some(x=>(x.r.items||[]).some(it=>!it.error&&(it.tags||[]).includes(t))));
+  barChart("genTier",{cats:tiers.map(tagName),unit:"%",labels:true,series:runs.map(x=>({name:x.tag,color:x.color,data:tiers.map(t=>tierAvg(x.r,t))}))});
+  const order=TASK_CATALOG.map(t=>t.id);
+  const ids=[...new Set(runs.flatMap(x=>(x.r.items||[]).map(it=>it.id)))].sort((p,q)=>order.indexOf(p)-order.indexOf(q));
+  const nameOf=id=>{const t=TASK_CATALOG.find(x=>x.id===id);return t?`${tagName(t.tier)} · ${t.name}`:id};
+  barChart("genTask",{cats:ids.map(nameOf),horizontal:true,unit:"%",digits:0,catLabelWidth:170,
+    series:runs.map(x=>({name:x.tag,color:x.color,data:ids.map(id=>{const it=(x.r.items||[]).find(z=>z.id===id);return it&&!it.error?it.exec_score:null})})),
+    tip:{sub:(i,ps)=>runs.map(x=>{const it=(x.r.items||[]).find(z=>z.id===ids[i]);return it?`${x.tag}：${(VERDICT_META[genVerdict(it).key]||{}).name||""}`:""}).filter(Boolean).join(" · ")}});
 }
 $("genResult").addEventListener("click",e=>{
+  const f=e.target.closest("[data-gen-filter]");
+  if(f){GEN_FILTER=f.dataset.genFilter;renderGen();const w=$("gen-works");if(w)w.scrollIntoView({block:"start"});return}
   const rate=e.target.closest("[data-rate]");
   if(rate){rateStars(rate.dataset.run,rate.dataset.item,+rate.dataset.rate);return}
   const act=e.target.closest("[data-gen]");if(!act)return;
   const r=GEN_RUNS[act.dataset.run],it=r&&(r.items||[]).find(x=>x.id===act.dataset.item);if(!it)return;
   if(act.dataset.gen==="preview")previewWork(it);
-  else if(act.dataset.gen==="detail")genDetail(it);
+  else if(act.dataset.gen==="detail")genDetail(r,it,"checks");
+  else if(act.dataset.gen==="trace")genDetail(r,it,"trace");
   else if(act.dataset.gen==="compare")previewCompare(it);
 });
 let rateSeq=0;
@@ -2033,55 +2108,257 @@ function rateStars(runId,itemId,n){
   const seq=++rateSeq,prev=it.stars;
   it._rateSeq=seq;
   it.stars=it.stars===n?null:n;
-  renderGen();
+  document.querySelectorAll(`[data-rate][data-run="${CSS.escape(runId)}"][data-item="${CSS.escape(itemId)}"]`).forEach(s=>{
+    const i=+s.dataset.rate;s.classList.toggle("on",i<=(it.stars||0));s.setAttribute("aria-pressed",String(i===it.stars))});
   postJSON("/api/gen-rate",{run_id:runId,item_id:itemId,stars:it.stars}).then(d=>{
-    if(it._rateSeq!==seq)return;  /* 后面又点过, 以最后一次为准 */
+    if(it._rateSeq!==seq)return;  /* 之后又点过, 以最后一次为准 */
     if(!d.ok){it.stars=prev;renderGen();toast("评分保存失败："+d.error,"error")}
   });
 }
-const GEN_SANDBOX="allow-scripts allow-pointer-lock allow-forms allow-modals"; /* 无 same-origin/top-navigation/popups: 作品代码无法访问本页与接口; localStorage 由服务端 /works 垫片提供(否则游戏脚本启动即崩) */
-const SANDBOX_BADGE=`<span class="badge" title="作品运行在无同源权限的沙箱 iframe 中，无法访问本页面与后端接口；localStorage 以内存垫片提供（刷新即清）">沙箱隔离</span>`;
+const GEN_SANDBOX="allow-scripts allow-pointer-lock allow-forms allow-modals"; /* 无 same-origin/top-navigation/popups: 作品代码碰不到本页和接口; localStorage 由服务端 /works 垫片提供(否则游戏脚本一启动就崩) */
+const SANDBOX_BADGE=`<span class="badge" title="作品在隔离的沙箱里运行，碰不到本页面和后端接口；本地存储用内存代替（刷新就清空）">${icon("ban")}隔离运行</span>`;
 function focusPreviewFrame(){
   const f=document.querySelector("#modalBody iframe.frame");
   if(f){try{f.focus();f.contentWindow&&f.contentWindow.focus()}catch(e){}}
 }
 function previewWork(it){
   Modal.open(it.name,`<iframe class="frame" sandbox="${GEN_SANDBOX}" src="/${esc(it.file)}" title="${esc(it.name)}"></iframe>`,{badges:SANDBOX_BADGE,flush:true});
-  focusPreviewFrame();  /* 键盘类游戏无需先点一下 iframe */
+  focusPreviewFrame();  /* 键盘类游戏不用先点一下 */
 }
 function previewCompare(it){
   const a=GEN_RUNS[$("genMainSel").value],b=GEN_RUNS[$("genCmpSel").value];
   const ib=b&&(b.items||[]).find(x=>x.id===it.id);
   const side=(r,x,tag)=>`<div><div class="split-head"><span class="run-tag ${tag.toLowerCase()}">${tag}</span>${esc(genLabel(r))}</div>
     ${x&&!x.error?`<iframe class="frame" style="flex:1" sandbox="${GEN_SANDBOX}" src="/${esc(x.file)}" title="${tag}"></iframe>`
-      :emptyState(x?"该题生成失败":"该运行没有此题的作品",x?x.error:"",{inline:true})}</div>`;
+      :emptyState(x?"这题没生成出来":"这个任务没有这道题",x?x.error:"",{inline:true})}</div>`;
   Modal.open(it.name+" · 并排对比",`<div class="split">${side(a,it,"A")}${side(b,ib,"B")}</div>`,{badges:SANDBOX_BADGE,flush:true});
   focusPreviewFrame();
 }
-function genDetail(it){
-  const e=it.eval;if(!e)return;
-  const dir=it.file.replace(/[^/]+$/,"")+e.shots_dir+"/";
-  const j=e.judge;
-  const checkRows=e.checks.map(c=>`<tr><td style="width:64px"><span class="badge ${c.pass?"is-success":"is-danger"}">${c.pass?"通过":"未通过"}</span></td>
-    <td class="text-left">${esc(c.label)}${c.detail?`<span class="sub">${esc(c.detail)}</span>`:""}</td></tr>`).join("");
-  let judgeHtml;
-  if(!j)judgeHtml=`<p class="faint">未配置评审模型。在“新建任务”中填写评审模型后点击“重新评测”。</p>`;
-  else if(j.error)judgeHtml=`<div class="alert is-warning">${icon("alert")}<span>${esc(j.error)}</span></div>`;
-  else judgeHtml=`<div class="row" style="align-items:baseline"><span class="score-big num ${"score "+scoreCls(j.score)}">${fmt(j.score,1)}</span><span class="faint">/ 100 · ${esc(j.model||"")}</span></div>
-    ${j.stale?`<div class="alert is-info">${icon("info")}<span>${j.kept_because?esc("本次评审没有替换原分数："+j.kept_because):"重新评测时未配置评审模型，这是之前基于旧截图的评审结果。"}</span></div>`:""}
-    ${j.summary?`<p class="muted" style="margin:6px 0 10px">${esc(j.summary)}</p>`:""}
-    <div class="table-wrap" style="max-height:none"><table class="table"><tbody>${j.items.map(x=>`<tr>
-      <td style="width:56px">${x.score==null?`<span class="badge">未评分</span>`:`<span class="score ${scoreCls(x.score*10)}">${x.score} / 10</span>`}</td>
-      <td class="text-left">${esc(x.label)}<span class="sub">${esc(x.reason)}</span></td></tr>`).join("")}</tbody></table></div>`;
-  Modal.open(it.name+" · 检测详情",`<div class="detail-layout">
-    <div><div class="shot-grid">${(e.shots||[]).map(s=>`<figure class="shot"><img src="/${esc(dir+s.file)}" alt="${esc(s.caption)}" loading="lazy"><figcaption>${esc(s.caption)}</figcaption></figure>`).join("")||emptyState("无截图","源码检查模式不产生截图",{inline:true})}</div></div>
-    <div>
-      <section class="detail-section"><h4>运行检测 ${it.pass} / ${it.total}<span class="faint" style="font-weight:400"> · ${e.method==="browser"?"无头浏览器":"源码检查"}</span></h4>
-        <div class="table-wrap" style="max-height:none"><table class="table"><tbody>${checkRows}</tbody></table></div>
-        ${(e.notes||[]).length?`<p class="faint small" style="margin-top:6px">${e.notes.map(esc).join("<br>")}</p>`:""}</section>
-      <section class="detail-section"><h4>视觉评审</h4>${judgeHtml}</section>
-    </div></div>`,{badges:`<span class="badge">运行检测 ${it.pass}/${it.total}</span>`});
+/* 检查详情 / AI 打分 / 生成过程 三个标签 */
+function genDetail(r,it,tab){
+  const e=it.eval;
+  const tabs=[e&&["checks","运行检查"],e&&["judge","AI 看图打分"],(it.trace||it.rounds)&&["trace","生成过程"]].filter(Boolean);
+  if(!tabs.length)return;
+  if(!tabs.some(t=>t[0]===tab))tab=tabs[0][0];
+  const v=genVerdict(it);
+  Modal.open(it.name,`<div class="tabs" role="tablist">${tabs.map(([k,n])=>`<button class="tab" role="tab" data-tab="${k}" aria-selected="${k===tab}">${n}</button>`).join("")}</div>
+    ${tabs.map(([k])=>`<div data-panel="${k}" ${k===tab?"":"hidden"}>${k==="checks"?checksPanel(it):k==="judge"?judgePanel(it):`<div class="faint">加载中…</div>`}</div>`).join("")}`,
+    {badges:`<span class="badge is-${(VERDICT_META[v.key]||{}).tone==="good"?"good":(VERDICT_META[v.key]||{}).tone==="bad"?"bad":"warn"}">${esc((VERDICT_META[v.key]||{}).name||"")}</span>`+(e?`<span class="badge">${e.method==="static"?"代码关键词":"运行检查"} ${it.pass}/${it.total}</span>`:"")});
+  let traceLoaded=false;
+  const show=k=>{
+    document.querySelectorAll("#modalBody [data-tab]").forEach(b=>b.setAttribute("aria-selected",String(b.dataset.tab===k)));
+    document.querySelectorAll("#modalBody [data-panel]").forEach(p=>p.hidden=p.dataset.panel!==k);
+    if(k==="trace"&&!traceLoaded){traceLoaded=true;loadTracePanel(it)}
+  };
+  $("modalBody").onclick=ev=>{const b=ev.target.closest("[data-tab]");if(b)show(b.dataset.tab);
+    const rb=ev.target.closest("[data-round]");if(rb)showRound(+rb.dataset.round)};
+  if(tab==="trace")show("trace");
 }
+function checksPanel(it){
+  const e=it.eval;
+  const dir=it.file.replace(/[^/]+$/,"")+e.shots_dir+"/";
+  const rows=(e.checks||[]).map(c=>`<tr><td style="width:72px"><span class="badge ${c.pass?"is-good":"is-bad"}">${c.pass?"通过":"没通过"}</span></td>
+    <td class="text-left"><span title="${esc(c.label)}">${esc(c.pass?plainCheck(c):failText(c))}</span>${c.detail?`<span class="sub">${esc(c.detail)}</span>`:""}</td></tr>`).join("");
+  const ctl=e.control;
+  const ctlHtml=ctl&&ctl.errors?alertBox(ctl.reproduced?"info":"warn",`<b>${term("control")}</b>：${ctl.reproduced?"在不加任何检测代码的干净页面里按同样步骤运行，同样报错，说明是作品本身的问题：":"在干净页面里运行没有报错，这些错误可能是检测环境引起的，请人工确认。"}${ctl.reproduced?`<ul class="hint-list">${ctl.errors.map(x=>`<li class="mono small">${esc(x)}</li>`).join("")}</ul>`:""}`):"";
+  return `<div class="detail-layout">
+    <div><div class="shot-grid">${(e.shots||[]).map(s=>`<figure class="shot"><img src="/${esc(dir+s.file)}" alt="${esc(s.caption)}" loading="lazy"><figcaption>${esc(s.caption)}</figcaption></figure>`).join("")||emptyState("没有截图","只看代码的检查不会截图",{inline:true})}</div></div>
+    <div><section class="detail-section"><h4>检查项 ${it.pass} / ${it.total}<span class="faint" style="font-weight:400"> · ${e.method==="browser"?"在后台浏览器里实际运行":"只看了代码"}</span></h4>
+      ${ctlHtml}<div class="table-wrap" style="max-height:none"><table class="table"><tbody>${rows}</tbody></table></div>
+      ${(e.notes||[]).length?`<p class="faint small" style="margin-top:8px">${e.notes.map(esc).join("<br>")}</p>`:""}</section></div></div>`;
+}
+function judgePanel(it){
+  const j=it.eval&&it.eval.judge;
+  if(!j)return `<p class="faint">没有配置 AI 看图打分。在「新建生成任务」里填写打分模型，再点「重新检查」。</p>`;
+  if(j.error)return alertBox("warn",esc(j.error));
+  return `<div class="row" style="align-items:baseline"><span class="score-big score ${scoreCls(j.score)}">${fmt(j.score,1)}</span><span class="faint">/ 100 · ${esc(j.model||"")}</span></div>
+    ${j.stale?alertBox("info",j.kept_because?esc("这次打分没有替换原来的分数："+j.kept_because):"重新检查时没有配置打分模型，这是之前基于旧截图的分数。"):""}
+    ${j.summary?`<p class="muted" style="margin:8px 0 12px">${esc(j.summary)}</p>`:""}
+    <div class="table-wrap" style="max-height:none"><table class="table"><tbody>${(j.items||[]).map(x=>`<tr>
+      <td style="width:70px">${x.score==null?`<span class="badge">没打分</span>`:`<span class="score ${scoreCls(x.score*10)}">${x.score} / 10</span>`}</td>
+      <td class="text-left">${esc(x.label)}<span class="sub">${esc(x.reason)}</span></td></tr>`).join("")}</tbody></table></div>`;
+}
+const FINISH_TEXT={stop:"正常写完",length:"写到长度上限",repetition:"陷入重复，已停止","":"—"};
+const MODE_TEXT={first:"第一次生成",prefix:"接着写（从中断处继续）",instruct:"接着写（按提示继续）",restart:"不思考，重新生成"};
+let TRACE=null;
+async function loadTracePanel(it){
+  const panel=document.querySelector('#modalBody [data-panel="trace"]');if(!panel)return;
+  TRACE=null;
+  if(!it.trace){
+    panel.innerHTML=alertBox("info","这件作品生成于 2.3 之前，没有保存模型的原始输出，只能看到下面的简要记录。")+roundsTable(it.rounds||[]);
+    return;
+  }
+  try{TRACE=await getJSON("/"+it.trace)}catch(e){panel.innerHTML=alertBox("bad","原始输出加载失败："+esc(e.message));return}
+  const t=TRACE,rounds=t.rounds||[];
+  const deg=t.degenerate,degR=t.degenerate_reasoning;
+  panel.innerHTML=`<div class="stack">
+    ${deg?alertBox("bad",`<b>模型${term("repeat")}</b>：第 ${deg.round} 轮写到后面开始${repText(deg)}。框架检测到后立即停止、没有再接着写。这是模型自身的问题（常见于温度太低或模型较小）。<br>重复的片段：<span class="mono small">${esc(String(deg.sample||"").slice(0,120))}</span>`):""}
+    ${degR?alertBox("warn",`<b>思考过程陷入重复</b>：第 ${degR.round} 轮的思考${repText(degR)}，已停止思考。`):""}
+    ${t.rescued?alertBox("warn",esc(t.rescued)):""}
+    ${t.unfinished?alertBox("warn","接着写了多轮仍然没有写完，保存的是最后拼接出的内容。"):""}
+    <div class="summary"><div class="summary-head">${icon("wrench")}<span class="summary-title">框架对模型输出做了什么</span></div>
+      <ul class="change-list">${(t.changes||[]).map(c=>`<li>${icon("check")}<span>${esc(c)}</span></li>`).join("")}</ul>
+      <div class="summary-foot">除上面列出的处理外，保存的作品与模型输出逐字一致。模型共输出 ${fmtInt(t.raw_chars)} 个字符，保存的网页 ${fmtInt(t.html_chars)} 个字符 · ${esc(t.thinking?"思考模式":"不思考")} · ${esc(samplingText(t.thinking?(t.sampling||{}).think:(t.sampling||{}).plain)||"采样未记录")}</div></div>
+    ${ccard("traceChart","每一轮写了多少",{desc:"思考过程和正文分开统计（单位：字符）",h:Math.max(180,rounds.length*46+60)})}
+    ${roundsTable(rounds)}
+    <div><div class="row" style="margin-bottom:8px"><span class="eyebrow">模型原始输出</span>
+      ${rounds.map((r,i)=>r.content!=null?`<button class="btn btn-ghost btn-sm" data-round="${i}">第 ${r.n} 轮</button>`:"").join("")}
+      <a class="btn btn-ghost btn-sm" href="/${esc(it.trace)}" download style="margin-left:auto">${icon("download")}下载完整记录（JSON）</a></div>
+      <div id="rawBox"></div></div></div>`;
+  const cats=rounds.map(r=>`第 ${r.n} 轮`);
+  setChart("traceChart",baseOption({color:[C.series[2],C.a],legend:legendOf(["思考过程","正文"],"rect"),
+    grid:{left:4,right:60,top:36,bottom:4,containLabel:true},xAxis:axisValue({}),yAxis:axisCat(cats,{inverse:true}),
+    tooltip:Object.assign(baseOption().tooltip,{axisPointer:{type:"shadow",shadowStyle:{color:"rgba(128,128,128,.08)"}},formatter:ps=>{const r=rounds[ps[0].dataIndex];
+      return tt(`第 ${r.n} 轮 · ${MODE_TEXT[r.mode]||r.mode}`,ps.map(p=>[p.color,p.seriesName,fmtInt(p.value)+" 字符"]),`结束：${FINISH_TEXT[r.finish]||r.finish||"—"} · 输出 ${fmtInt(r.completion_tokens)} token${r.tokens_estimated?"（估算）":""}`)}}),
+    series:[sBar("思考过程",C.series[2],rounds.map(r=>r.reasoning_chars||0),{horizontal:true,stack:"x",flat:true}),
+      sBar("正文",C.a,rounds.map(r=>r.content_chars||0),{horizontal:true,stack:"x"})]}));
+  const firstWithContent=rounds.findIndex(r=>r.content!=null);
+  if(firstWithContent>=0)showRound(firstWithContent);
+}
+function roundsTable(rounds){
+  if(!rounds.length)return "";
+  return table(["轮次","方式","思考","结束原因","输出 token","正文字符","思考字符","用时"],rounds.map(r=>[
+    `第 ${r.n} 轮`,esc(MODE_TEXT[r.mode]||r.mode||"—"),r.thinking?"是":"否",
+    r.error?`<span class="bad">出错：${esc(r.error)}</span>`:`<span class="${r.finish==="repetition"?"bad":r.finish==="length"?"warn":""}">${esc(FINISH_TEXT[r.finish]||r.finish||"—")}</span>`,
+    r.completion_tokens!=null?fmtInt(r.completion_tokens)+(r.tokens_estimated?"（估算）":""):"—",fmtInt(r.content_chars),fmtInt(r.reasoning_chars),r.seconds!=null?fmt(r.seconds,1)+" 秒":"—"]));
+}
+function showRound(i){
+  const box=$("rawBox");if(!box||!TRACE)return;
+  const r=(TRACE.rounds||[])[i];if(!r)return;
+  document.querySelectorAll("#modalBody [data-round]").forEach(b=>b.classList.toggle("btn-secondary",+b.dataset.round===i));
+  const text=r.content||"",HEAD=6000,TAIL=4000;
+  const rep=r.repetition&&r.repetition.where==="content"?r.repetition:null;
+  let html;
+  if(text.length<=HEAD+TAIL)html=markRepeat(text,0,rep);
+  else html=markRepeat(text.slice(0,HEAD),0,rep)+`\n\n<span class="faint">……（中间省略 ${fmtInt(text.length-HEAD-TAIL)} 个字符，完整内容请下载 JSON）……</span>\n\n`+markRepeat(text.slice(-TAIL),text.length-TAIL,rep);
+  const reason=r.reasoning_head?`<details class="advanced" style="margin-top:8px"><summary>${icon("chevron-down")}这一轮的思考过程（${fmtInt(r.reasoning_chars)} 字符，显示开头${r.reasoning_tail?"和结尾":""}）</summary>
+    <div class="raw-box" style="margin-top:8px">${esc(r.reasoning_head)}${r.reasoning_tail?`\n\n<span class="faint">……</span>\n\n${esc(r.reasoning_tail)}`:""}</div></details>`:"";
+  box.innerHTML=`<div class="raw-box">${html||'<span class="faint">（这一轮没有正文）</span>'}</div>${reason}`;
+}
+/* 把重复区(从 rep.start 起)标红, offset 是这段文本在整轮内容中的起点 */
+function markRepeat(seg,offset,rep){
+  if(!rep||rep.start==null||rep.start>=offset+seg.length)return esc(seg);
+  const k=Math.max(0,rep.start-offset);
+  return esc(seg.slice(0,k))+`<mark title="从这里开始重复">${esc(seg.slice(k))}</mark>`;
+}
+
+/* ============================================================
+   删除
+   ============================================================ */
+async function deleteRun(kind){
+  const sel={perf:"runA",iq:"iqMainSel",gen:"genMainSel"}[kind],id=$(sel).value;
+  const meta={perf:RUNS,iq:IQ_RUNS,gen:GEN_RUNS}[kind][id];
+  if(!meta){toast("没有可以删除的记录","warning");return}
+  const name={perf:label,iq:iqLabel,gen:genLabel}[kind](meta);
+  const ok=await confirmDialog({title:"删除这条记录",confirmText:"删除",danger:true,
+    message:`删除后无法恢复${kind==="gen"?"，作品文件和检查截图也会一起删除":""}。\n\n${name}`});
+  if(!ok)return;
+  const d=await postJSON("/api/run-delete",{run_id:id});
+  if(!d.ok){toast("删除失败："+d.error,"error");return}
+  toast("已删除","success",2500);
+  if(kind==="perf"){delete FULL[id];refresh()}
+  else if(kind==="iq"){IQ_CMP.delete(id);loadIqResults()}
+  else loadGenResults();
+}
+
+/* ============================================================
+   模型管理: 地址 / Key / 模型 命名保存在服务端, 三个测试页一键填入
+   ============================================================ */
+let EPS=[];
+const EP_FIELDS={perf:["fBase","fKey","fModel"],iq:["iqBase","iqKey","iqModel"],gen:["genBase","genKey","genModel"]};
+const EP_SEL={perf:"fEpSel",iq:"iqEpSel",gen:"genEpSel"};
+function loadEndpoints(){
+  return getJSON("/api/endpoints").then(l=>{EPS=Array.isArray(l)?l:[];renderEpSelects()}).catch(()=>{});
+}
+function renderEpSelects(){
+  Object.values(EP_SEL).forEach(id=>{
+    const sel=$(id);if(!sel)return;
+    const cur=sel.value;
+    sel.innerHTML='<option value="">选择后自动填入 地址 / Key / 模型</option>'+EPS.map(e=>`<option value="${esc(e.id)}">${esc(e.name)}</option>`).join("");
+    if([...sel.options].some(o=>o.value===cur))sel.value=cur;
+  });
+}
+function epFill(page,ep){
+  const [b,k,m]=EP_FIELDS[page]||[];
+  if(!b)return;
+  if(ep.url){$(b).value=ep.url;$(b).dispatchEvent(new Event("input"))}
+  $(k).value=ep.api_key||"";
+  if(ep.model){$(m).value=ep.model;$(m).dispatchEvent(new Event("input"))}
+}
+function onEpSelect(page){
+  const sel=$(EP_SEL[page]),ep=EPS.find(x=>x.id===sel.value);
+  sel.value="";
+  if(!ep)return;
+  epFill(page,ep);
+  postJSON("/api/endpoint-use",{id:ep.id}).catch(()=>{});
+  toast(`已填入「${ep.name}」`,"success");
+}
+async function epSave(){
+  const editing=EP_EDIT?EPS.find(x=>x.id===EP_EDIT):null;
+  const body={id:EP_EDIT||null,name:$("epName").value.trim(),url:$("epUrl").value.trim(),api_key:$("epKey").value,model:$("epModel").value.trim()};
+  if(!body.url||!body.model){msg("epOut","warning","服务地址和模型名称必须填写");return}
+  const d=await postJSON("/api/endpoints",body);
+  if(!d.ok){msg("epOut","error","保存失败："+d.error);return}
+  EPS=d.endpoints||EPS;EP_EDIT=null;renderEpSelects();
+  toast(editing?"已更新":"已添加「"+d.endpoint.name+"」","success");
+  manageEndpoints();
+}
+function epEdit(id){EP_EDIT=id;manageEndpoints()}
+function maskKey(k){k=String(k||"");return k?k.slice(0,4)+"…"+k.slice(-4):"—"}
+function epHost(url){const m=String(url||"").match(/^https?:\/\/([^/?#]+)/i);return m?m[1]:String(url||"")}
+let EP_EDIT=null;  /* 正在编辑的配置 id; null = 新增 */
+function manageEndpoints(){
+  let editing=EP_EDIT?EPS.find(x=>x.id===EP_EDIT):null;
+  if(EP_EDIT&&!editing)EP_EDIT=null;
+  const val=v=>esc(editing?(v||""):"");
+  const cards=EPS.map(e=>{
+    const on=editing&&editing.id===e.id;
+    return `<article class="ep-card${on?" is-on":""}">
+      <div class="ep-card-main"><div class="ep-name">${esc(e.name)}</div>
+        <div class="ep-sub" title="${esc(e.url)}"><span class="ep-model">${esc(e.model||"—")}</span><span class="ep-dot">·</span>
+          <span class="ep-host">${esc(epHost(e.url))}</span><span class="ep-dot">·</span><span class="ep-keymask">${esc(maskKey(e.api_key))}</span></div></div>
+      <div class="ep-card-actions">
+        <button type="button" class="btn btn-secondary btn-sm" data-ep-use="${esc(e.id)}" title="填入速度、能力、代码生成三个新建面板">填入</button>
+        <button type="button" class="btn btn-ghost btn-icon btn-sm" data-ep-edit="${esc(e.id)}" title="编辑" aria-label="编辑">${icon("sliders")}</button>
+        <button type="button" class="btn btn-ghost btn-icon btn-sm ep-del" data-ep-del="${esc(e.id)}" title="删除" aria-label="删除">${icon("trash")}</button>
+      </div></article>`;
+  }).join("");
+  const form=`<form class="ep-form" autocomplete="off" onsubmit="epSave();return false">
+      <div class="eyebrow">${editing?"正在编辑":"新增"}</div>
+      <div class="ep-fields">
+        <div class="field span-2"><label for="epName">名称</label><input class="input" id="epName" placeholder="留空则用「模型 · 地址」" value="${editing?esc(editing.name):""}"></div>
+        <div class="field span-2"><label for="epUrl">服务地址</label><input class="input" id="epUrl" placeholder="http://127.0.0.1:8000" value="${val(editing&&editing.url)}"></div>
+        <div class="field"><label for="epModel">模型名称</label><input class="input" id="epModel" placeholder="模型名称" value="${val(editing&&editing.model)}"></div>
+        <div class="field"><label for="epKey">API Key</label>
+          <div class="ep-keywrap"><input class="input" id="epKey" type="password" autocomplete="off" placeholder="没有可不填" value="${val(editing&&editing.api_key)}">
+          <button type="button" class="btn btn-ghost btn-icon btn-sm" data-ep-reveal title="显示 Key" aria-label="显示 Key">${icon("eye")}</button></div></div>
+      </div>
+      <div class="ep-actions"><span class="inline-msg" id="epOut"></span>
+        ${editing?'<button type="button" class="btn btn-ghost btn-sm" data-ep-cancel>取消</button>':""}
+        <button type="submit" class="btn btn-primary btn-sm">${editing?"保存":"添加"}</button></div>
+    </form>`;
+  Modal.open("模型管理",`<div class="ep-shell">
+      <div class="ep-list-head">已保存的模型 <span class="ep-count">${EPS.length} 个</span></div>
+      <div class="ep-list">${cards||'<p class="ep-empty">还没有保存的模型</p>'}</div>
+      ${form}
+      <p class="ep-note">保存在本机数据库里。点「填入」会同时填到速度、能力、代码生成三个新建面板。</p></div>`,{panel:true});
+}
+async function epApply(id){
+  const ep=EPS.find(x=>x.id===id);if(!ep)return;
+  Object.keys(EP_FIELDS).forEach(page=>epFill(page,ep));
+  Modal.close();
+  postJSON("/api/endpoint-use",{id}).catch(()=>{});
+  toast(`已填入「${ep.name}」到三个新建面板`,"success");
+}
+async function epRemove(id){
+  const ep=EPS.find(x=>x.id===id);if(!ep)return;
+  const ok=await confirmDialog({title:"删除保存的模型",message:"确定删除「"+ep.name+"」吗？已经填到面板里的内容不受影响。",confirmText:"删除",danger:true});
+  if(!ok){manageEndpoints();return}
+  await postJSON("/api/endpoint-delete",{id});
+  await loadEndpoints();
+  manageEndpoints();
+}
+Object.keys(EP_SEL).forEach(page=>{const sel=$(EP_SEL[page]);if(sel)sel.addEventListener("change",()=>onEpSelect(page))});
 
 /* ============================================================
    启动
@@ -2092,37 +2369,38 @@ async function checkVersion(){
   try{
     const v=await getJSON("/api/version");
     SERVER=v;
-    setConn(true,`v${v.version} · 已运行 ${durationText(v.uptime_s)}`);
-    $("conn").title=`后端 v${v.version} · PID ${v.pid} · 启动于 ${timeText(v.started_at)}${v.commit?" · 提交 "+v.commit:""}\n数据库 ${v.db}\n评测程序：性能 ${v.bench_version} · 能力 ${v.iq_version} · 代码生成 ${v.gen_version}`;
+    setConn(true,`服务正常 · 已运行 ${durationText(v.uptime_s)}`);
+    $("conn").title=`后端 v${v.version} · 进程 ${v.pid} · 启动于 ${timeText(v.started_at)}${v.commit?" · 提交 "+v.commit:""}\n数据库 ${v.db}\n评测程序：速度 ${v.bench_version} · 能力 ${v.iq_version} · 代码生成 ${v.gen_version}`;
     if(v.version!==UI_VERSION&&!VERSION_WARNED.ver){
       VERSION_WARNED.ver=1;
-      toast(`页面（v${UI_VERSION}）与后端服务（v${v.version}）版本不一致：页面仍在运行旧代码，功能可能异常。`,"warning",0,
-        {label:"立即刷新页面",onClick:()=>location.reload()});
+      toast(`页面（v${UI_VERSION}）和后端服务（v${v.version}）版本不一致：页面可能还是旧的，功能可能不正常。`,"warning",0,
+        {label:"刷新页面",onClick:()=>location.reload()});
     }
     if(v.code_changed&&!VERSION_WARNED.code){
       VERSION_WARNED.code=1;
-      toast("后端代码已更新，但服务仍在运行启动时的旧代码。请重启 python run.py 使修改生效。","warning",0);
+      toast("后端代码已经更新，但服务还在运行旧代码。请重启 python run.py 让修改生效。","warning",0);
     }
   }catch(e){setConn(false,"服务未连接")}
 }
 async function resumeRunning(){
   const jobs=[
-    ["/api/status","launcher",()=>watchPerf("运行中（页面刷新后继续跟踪）")],
-    ["/api/iq-status","iqLauncher",()=>watchIq("运行中（页面刷新后继续跟踪）")],
-    ["/api/gen-status","genLauncher",()=>watchGen("运行中（页面刷新后继续跟踪）")],
+    ["/api/status","perf",()=>watchPerf("进行中（刷新页面后继续跟踪）")],
+    ["/api/iq-status","iq",()=>watchIq("进行中（刷新页面后继续跟踪）")],
+    ["/api/gen-status","gen",()=>watchGen("进行中（刷新页面后继续跟踪）")],
   ];
-  for(const [url,launcher,watch] of jobs){
-    try{const s=await getJSON(url);if(s.running){toggleLauncher(launcher,true);watch()}}catch(e){}
+  for(const [url,,watch] of jobs){
+    try{const s=await getJSON(url);if(s.running)watch()}catch(e){}
   }
 }
 let rzT;
-window.addEventListener("resize",()=>{clearTimeout(rzT);rzT=setTimeout(redrawVisible,150)});
+window.addEventListener("resize",()=>{clearTimeout(rzT);rzT=setTimeout(()=>{for(const inst of CHARTS.values()){try{inst.resize()}catch(e){}}},120)});
 matchMedia("(prefers-color-scheme: light)").addEventListener("change",e=>{
   try{if(localStorage.getItem("llm-bench-pro-theme"))return}catch(err){}
   applyTheme(e.matches?"light":"dark",false);
 });
 document.querySelectorAll("select.select").forEach(CSelect.enhance);
 CSelect.combo($("fModel"));
+readTheme();
 applyTheme(document.documentElement.dataset.theme||"dark",false);
 showView((location.hash||"#dash").slice(1));
 checkVersion().then(()=>{if(VIEW==="iq")renderIq()});

@@ -4,7 +4,7 @@
 两个层次:
 1. test_syntax  — node --check 语法门: 1900+ 行经典脚本的拼写错误在 CI 阶段就拦下;
 2. test_logic   — 拼接 harness(DOM 桩) + app.js 全文 + checks(断言) 成一个脚本交 Node 执行,
-                  覆盖纯逻辑层: esc/fmt 家族/niceMax/median/时间函数/withAlpha/ecArea 渐变守卫。
+                  覆盖纯逻辑层: esc/fmt 家族/niceMax/median/时间函数/withAlpha/areaFill 淡色守卫/名词解释/归因规则。
    ECharts 渲染与交互仍以浏览器验证为准(README 有说明), 这里守住的是逻辑与回归锚点。
 """
 import os

@@ -73,43 +73,69 @@ T("withAlpha: 6位hex → 8位hex; 非hex 原样返回", () => {
   assert.equal(withAlpha("rgb(1,2,3)", .5), "rgb(1,2,3)");   /* passthrough */
   assert.equal(withAlpha("#ABC", .5), "#ABC");
 });
-T("withAlpha(undefined) 原样返回 undefined — 调用方必须传有效色 (mkConc 事故锚点)", () => {
-  /* 2026-09 addColorStop('undefined') 根因: ecConc 漏传颜色参数。
-     本用例固定该语义: 上游一旦再漏传, ecArea 守卫用例会立即红。 */
+T("withAlpha(undefined) 原样返回 undefined — 调用方必须传有效色", () => {
   assert.equal(withAlpha(undefined, .26), undefined);
 });
-T("ecArea: 主题全色板都能产出合法渐变 colorStops", () => {
-  const palette = ["#6950E8", "#0E9AB0", "#D97F06", "#D6408E", "#2F7FE0", "#5E9E12"];
+T("areaFill: 主题全色板都产出 10% 透明度的淡色; 非法颜色回落到主色(漏传颜色事故锚点)", () => {
+  const palette = ["#6950E8", "#0E9AB0", "#D97F06", "#D6408E", "#2F7FE0", "#5E9E12", "#8a70ef", "#1a9eb2"];
   for (const color of palette) {
-    const g = ecArea(color).color;
-    assert.equal(g.type, "linear");
-    assert.equal(g.colorStops.length, 2);
-    for (const s of g.colorStops) {
-      assert.ok(typeof s.color === "string" && /^#[0-9a-fA-F]{8}$/.test(s.color),
-        "非法渐变色: " + String(s.color) + " (来自 " + color + ")");
-    }
-    assert.match(g.colorStops[0].color, /^#.{6}42$/);
-    assert.match(g.colorStops[1].color, /^#.{6}05$/);
+    const f = areaFill(color).color;
+    assert.ok(/^#[0-9a-fA-F]{8}$/.test(f), "非法淡色: " + f);
+    assert.match(f, /1a$/i);                       /* 0.10 → 0x1a */
   }
-});
-T("ecArea 在 C 为空对象时被守卫拦截(而非产出 undefined 色标)", () => {
   const saved = C;
-  C = {};                                        /* 模拟 readTheme 前的初始状态 */
+  C = {};
   try {
-    const g = ecArea(C.a).color;                 /* C.a === undefined */
-    for (const s of g.colorStops) {
-      assert.ok(typeof s.color === "string", "colorStops 出现非字符串: " + String(s.color));
-    }
+    assert.match(areaFill(C.a).color, /^#6950E81a$/i);   /* C.a === undefined 时不产出 undefined */
+    assert.match(areaFill("rgb(1,2,3)").color, /^#6950E81a$/i);
   } finally {
     C = saved;
   }
 });
 
 /* ---------- tooltip / 图标 ---------- */
-T("tt: 标题与行内容全转义", () => {
-  const h = tt("<x> · 并发 4", [["#fff", "<b>名</b>", "1<2"], ["", "ok", "3/4"]]);
-  assert.ok(!h.includes("<b>名</b>") && !h.includes("1<2"));
-  assert.ok(h.includes("&lt;b&gt;名&lt;/b&gt;") && h.includes("1&lt;2"));
+T("tt: 标题/行/脚注全转义, 数值在名称前", () => {
+  const h = tt("<x> · 并发 4", [["#fff", "<b>名</b>", "1<2"], ["", "ok", "3/4"]], "<i>注</i>");
+  assert.ok(!h.includes("<b>名</b>") && !h.includes("1<2") && !h.includes("<i>注</i>"));
+  assert.ok(h.includes("&lt;b&gt;名&lt;/b&gt;") && h.includes("1&lt;2") && h.includes("&lt;i&gt;注&lt;/i&gt;"));
+  assert.ok(h.indexOf("1&lt;2") < h.indexOf("&lt;b&gt;名"));   /* 值在前, 名在后 */
+});
+T("term: 名词带悬停解释且转义; 未知名词原样转义", () => {
+  const h = term("ttft");
+  assert.ok(h.includes('class="term"') && h.includes("首字等待") && h.includes("TTFT"));
+  assert.equal(term("no-such", "<a>"), "&lt;a&gt;");
+  for (const k of Object.keys(TERMS)) {
+    assert.ok(TERMS[k].name && TERMS[k].tech && TERMS[k].desc, "名词缺字段: " + k);
+  }
+});
+T("deltaPill: 越低越好的指标变小算更好; 小于 1% 算持平", () => {
+  assert.ok(deltaPill(10, 8, -1).includes("delta up"));
+  assert.ok(deltaPill(10, 12, -1).includes("delta down"));
+  assert.ok(deltaPill(100, 100.5, 1).includes("持平"));
+  assert.ok(deltaPill(null, 1, 1).includes("—"));
+  assert.ok(deltaPill(80, 82, 1, {mode: "pp"}).includes("+2.0 个百分点"));
+});
+T("genVerdict: 按优先级只取一个主要问题", () => {
+  assert.equal(genVerdict({error: "x"}).key, "fail");
+  assert.equal(genVerdict({degenerate: {kind: "loop", period: 1, repeats: 9000}, eval: {checks: []}}).key, "repeat");
+  assert.equal(genVerdict({eval: {method: "static", checks: [{id: "doctype", pass: true}]}}).key, "static");
+  assert.equal(genVerdict({eval: {method: "browser", checks: [{id: "nonblank", pass: false}]}}).key, "blank");
+  assert.equal(genVerdict({eval: {method: "browser", checks: [{id: "no_error", pass: false}], control: {reproduced: false}}}).key, "env");
+  assert.equal(genVerdict({eval: {method: "browser", checks: [{id: "no_error", pass: false}], control: {reproduced: true}}}).key, "error");
+  assert.equal(genVerdict({eval: {method: "browser", checks: [{id: "step1", label: "交互：跳", pass: false}]}}).key, "partial");
+  assert.equal(genVerdict({eval: {method: "browser", checks: [{id: "load", pass: true}]}}).key, "pass");
+});
+T("changeKind: 区分原样保存 / 只去掉说明 / 拼接续写 / 旧任务", () => {
+  assert.equal(changeKind({}), "legacy");
+  assert.equal(changeKind({changes: ["原样保存了模型输出，没有做任何修改"]}), "raw");
+  assert.equal(changeKind({changes: ["去掉了代码后面的 Markdown 代码块标记"]}), "trimmed");
+  assert.equal(changeKind({changes: ["接上第 2 轮续写（直接拼接）"]}), "stitched");
+});
+T("markRepeat: 重复区从 start 起标记, 其余转义", () => {
+  assert.equal(markRepeat("ab<c", 0, null), "ab&lt;c");
+  assert.equal(markRepeat("abcdef", 0, {start: 3}), 'abc<mark title="从这里开始重复">def</mark>');
+  assert.equal(markRepeat("xyz", 100, {start: 50}), '<mark title="从这里开始重复">xyz</mark>');
+  assert.equal(markRepeat("xyz", 0, {start: 50}), "xyz");
 });
 T("icon: 引用符号 id 且带基类", () => {
   assert.equal(icon("play"), '<svg class="icon "><use href="#i-play"/></svg>');
@@ -118,7 +144,7 @@ T("icon: 引用符号 id 且带基类", () => {
 
 /* ---------- 启动路径未被破坏 ---------- */
 T("app.js 在桩环境下完整加载(执行到了文件尾)", () => {
-  assert.ok(typeof render === "function" && typeof drawPrefill === "function" && typeof ecCtx === "function");
+  assert.ok(typeof render === "function" && typeof renderCmp === "function" && typeof renderGen === "function" && typeof chartInst === "function");
 });
 
 /* ---------- 生成物预览沙箱策略 (游戏"点开始无反应"事故锚点) ---------- */
