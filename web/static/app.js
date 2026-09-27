@@ -1,6 +1,6 @@
 "use strict";
 /* LLM Bench Pro 前端逻辑 (零依赖经典脚本; 图表用本地内置的 ECharts) */
-const UI_VERSION="3.0.0";  /* 与 llm_bench_pro/version.py 保持一致 */
+const UI_VERSION="3.1.0";  /* 与 llm_bench_pro/version.py 保持一致 */
 /* ============================================================
    基础工具
    ============================================================ */
@@ -41,6 +41,8 @@ async function postJSON(url,body){
 }
 function lsGet(key){try{return JSON.parse(localStorage.getItem(key)||"{}")}catch(e){return{}}}
 function lsSet(key,val){try{localStorage.setItem(key,JSON.stringify(val))}catch(e){}}
+/* 图表卡里的标签页(条形 / 能力形状、折线 / 散点)记住上次选的 */
+const CTAB=Object.assign({subj:"bars",tok:"line"},lsGet("llm-bench-pro-ctab"));
 function bindFormMemory(key,ids){
   const saved=lsGet(key);
   ids.forEach(id=>{const el=$(id);if(el&&saved[id]!=null&&saved[id]!=="")el.value=saved[id]});
@@ -787,12 +789,63 @@ function dtState(id){
   let s=DT.state.get(id);
   if(!s){
     const saved=lsGet(DT_LS)[id]||{};
-    s={sort:saved.sort||null,hidden:new Set(saved.hidden||[]),q:"",page:0,open:new Set(),closed:new Set()};
+    s={sort:saved.sort||null,hidden:new Set(saved.hidden||[]),size:saved.size||0,q:"",page:0,open:new Set(),closed:new Set()};
     DT.state.set(id,s);
   }
   return s;
 }
-function dtSave(id){const all=lsGet(DT_LS),s=dtState(id);all[id]={sort:s.sort,hidden:[...s.hidden]};lsSet(DT_LS,all)}
+function dtSave(id){const all=lsGet(DT_LS),s=dtState(id);all[id]={sort:s.sort,hidden:[...s.hidden],size:s.size||undefined};lsSet(DT_LS,all)}
+/* 每页行数: 表格给了 pageSizes 时可以在表格底部选, 否则用 pageSize */
+function dtPageSize(spec,st){return(spec.pageSizes&&spec.pageSizes.includes(st.size)?st.size:0)||spec.pageSize||DT_PAGE}
+/* 翻页器: 页码(首页、末页、当前页前后各一页, 中间用 … 省略) + 跳到第几页 + 可选的每页条数。
+   kind 是 data 属性前缀: data-{kind}-page / -jump / -jumpbtn / -size; compact = 只有 ‹ [当前页] / 总页数 › */
+function pageList(p,n){
+  if(n<=7)return [...Array(n).keys()];
+  const s=new Set([0,n-1,p-1,p,p+1]);
+  if(p<=3)[1,2,3,4].forEach(x=>s.add(x));
+  if(p>=n-4)[n-5,n-4,n-3,n-2].forEach(x=>s.add(x));
+  const a=[...s].filter(x=>x>=0&&x<n).sort((x,y)=>x-y),out=[];
+  a.forEach((x,i)=>{if(i){const g=x-a[i-1];if(g===2)out.push(x-1);else if(g>2)out.push(null)}out.push(x)});
+  return out;
+}
+function pagerHTML(kind,{page,pages,total,unit="",size,sizes,compact=false,keys=false}){
+  const at=`data-${kind}-page`;
+  const arrow=(to,dir,label,off)=>`<button type="button" class="pager-btn" ${at}="${to}" data-dir="${dir}" aria-label="${label}" title="${label}${keys?`（键盘 ${dir==="prev"?"←":"→"}）`:""}"${off?" disabled":""}>${icon(dir==="prev"?"chevron-left":"chevron-right","icon-sm")}</button>`;
+  const prev=arrow(page-1,"prev","上一页",page<=0),next=arrow(page+1,"next","下一页",page>=pages-1);
+  const input=extra=>`<input class="pager-input" type="number" inputmode="numeric" min="1" max="${pages}" data-${kind}-jump aria-label="跳到第几页（共 ${pages} 页）"${extra}>`;
+  if(compact)return pages>1?`<div class="pager is-compact">${prev}<label class="pager-cur">${input(` value="${page+1}"`)}<span>/ ${fmtInt(pages)} 页</span></label>${next}</div>`:"";
+  const nums=pageList(page,pages).map(x=>x==null?`<span class="pager-gap" aria-hidden="true">…</span>`:
+    `<button type="button" class="pager-btn pager-num${x===page?" is-current":""}" ${at}="${x}"${x===page?' aria-current="page"':""}>${x+1}</button>`).join("");
+  const info=[total!=null?`<span>共 ${fmtInt(total)} ${unit}</span>`:"",
+    sizes?`<label class="pager-size">每页<select class="select" data-${kind}-size aria-label="每页显示多少${unit||"行"}">${sizes.map(n=>`<option value="${n}"${n===size?" selected":""}>${n}</option>`).join("")}</select>${unit}</label>`:""].join("");
+  const ctrl=pages>1?`<nav class="pager-nav" aria-label="翻页">${prev}<span class="pager-nums">${nums}</span><span class="pager-of">${page+1} / ${fmtInt(pages)}</span>${next}</nav>
+    <span class="pager-jump">跳到第${input(` placeholder="${page+1}"`)}页<button type="button" class="btn btn-secondary btn-sm" data-${kind}-jumpbtn>跳转</button></span>`:"";
+  return info||ctrl?`<div class="pager">${info?`<div class="pager-info">${info}</div>`:""}${ctrl?`<div class="pager-ctrl">${ctrl}</div>`:""}</div>`:"";
+}
+/* 跳页输入框 → 0 起的页号(超出范围夹到首页/末页); 没填或不是数字返回 null */
+function pagerTarget(input){
+  if(!input)return null;
+  const v=parseInt(String(input.value).trim(),10),max=parseInt(input.max,10)||1;
+  return isFinite(v)?Math.min(Math.max(1,v),max)-1:null;
+}
+/* 翻页会重画翻页器: 记下焦点在哪个位置, 重画后放回同一个翻页器的对应位置(键盘连续翻页不丢焦点) */
+function pagerFocusKey(){
+  const a=document.activeElement,p=a&&a.closest&&a.closest(".pager");if(!p)return null;
+  return{compact:p.classList.contains("is-compact"),what:a.dataset.dir||(a.matches(".pager-input,[data-qb-jumpbtn],[data-dt-jumpbtn]")?"jump":"num")};
+}
+function pagerRefocus(root,k){
+  if(!k||!root)return;
+  const p=root.querySelector(k.compact?".pager.is-compact":".pager:not(.is-compact)");if(!p)return;
+  const el=p.querySelector({prev:"[data-dir=prev]:not([disabled])",next:"[data-dir=next]:not([disabled])",jump:".pager-input",num:".pager-num.is-current"}[k.what])||
+    p.querySelector(".pager-num.is-current")||p.querySelector(".pager-input");
+  if(el)el.focus({preventScroll:true});
+}
+/* 翻页后内容顶部不在视野里(比如在底部翻页器翻页)时, 滚回内容顶部 */
+function scrollTopIntoView(el){
+  if(!el)return;
+  const pad=parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop)||0,r=el.getBoundingClientRect();
+  if(r.top<pad-4||r.top>innerHeight*.6)el.scrollIntoView({block:"start"});
+}
 /* 数字: 千分位 + 固定小数位; 空值 "—" */
 function numText(v,d=1){return v==null||!isFinite(v)?"—":Number(v).toLocaleString("zh-CN",{minimumFractionDigits:d,maximumFractionDigits:d})}
 function dtDigits(col){return col.digits??(col.type==="int"?0:col.type==="sec"?2:1)}
@@ -919,7 +972,7 @@ function dtInner(spec){
   const st=dtState(spec.id);
   const cols=dtVisibleCols(spec);
   const all=dtRows(spec);
-  const size=spec.pageSize||DT_PAGE;
+  const size=dtPageSize(spec,st);
   const pages=Math.max(1,Math.ceil(all.length/size));
   st.page=Math.min(Math.max(0,st.page),pages-1);
   const view=all.length>size?all.slice(st.page*size,(st.page+1)*size):all;
@@ -966,8 +1019,7 @@ function dtInner(spec){
       <button type="button" class="btn btn-ghost btn-sm" data-dt-copy title="复制整张表（可以直接粘进 Excel）">${icon("copy","icon-sm")}复制</button>
       <button type="button" class="btn btn-ghost btn-sm" data-dt-csv title="导出为 CSV 文件">${icon("download","icon-sm")}CSV</button>
     </div>`;
-  const pager=pages>1?`<div class="dt-pager"><button type="button" class="btn btn-ghost btn-sm" data-dt-page="${st.page-1}" ${st.page?"":"disabled"}>上一页</button>
-      <span>第 ${st.page+1} / ${pages} 页</span><button type="button" class="btn btn-ghost btn-sm" data-dt-page="${st.page+1}" ${st.page<pages-1?"":"disabled"}>下一页</button></div>`:"";
+  const pager=pages>1||(spec.pageSizes&&all.length>Math.min(...spec.pageSizes))?pagerHTML("dt",{page:st.page,pages,size,sizes:spec.pageSizes}):"";
   const count=all.length!==n?`显示 ${fmtInt(all.length)} / ${fmtInt(n)} 行`:`${fmtInt(n)} 行`;
   return `<div class="dt-bar">${spec.title?`<div class="dt-title">${spec.title}${spec.sub?`<span class="dt-sub">${spec.sub}</span>`:""}</div>`:""}${tools}</div>
     <div class="dt-scroll"${spec.maxH?` style="max-height:${spec.maxH}px"`:""}><table class="dt-table${spec.cls?" "+spec.cls:""}"><thead>${groupRow}<tr>${cols.map(th).join("")}</tr></thead>
@@ -1016,7 +1068,9 @@ document.addEventListener("click",e=>{
   const th=e.target.closest("th.can-sort");
   if(th){dtSort(id,th.dataset.k);return}
   const pg=e.target.closest("[data-dt-page]");
-  if(pg){dtState(id).page=+pg.dataset.dtPage;dtRefresh(id);box.querySelector(".dt-scroll")?.scrollTo?.(0,0);return}
+  if(pg){dtGo(id,+pg.dataset.dtPage,box);return}
+  const jb=e.target.closest("[data-dt-jumpbtn]");
+  if(jb){const t=pagerTarget(jb.parentElement.querySelector("[data-dt-jump]"));if(t!=null)dtGo(id,t,box);return}
   if(e.target.closest("[data-dt-copy]")){copyText(toTSV(dtMatrix(spec)),"表格");return}
   if(e.target.closest("[data-dt-csv]")){downloadText(safeName(stripTags(spec.exportName||spec.title||id))+".csv",toCSV(dtMatrix(spec),stripTags(spec.title||"")));return}
   const g=e.target.closest(".dt-gbtn");
@@ -1037,7 +1091,25 @@ document.addEventListener("input",e=>{
   const id=q.closest("[data-dt]").dataset.dt;
   clearTimeout(dtQT);dtQT=setTimeout(()=>{const st=dtState(id);st.q=q.value;st.page=0;dtRefresh(id,true)},160);
 });
+/* 表格翻页: 滚回表格顶部(内部滚动区和整页), 焦点放回翻页器 */
+function dtGo(id,p,box){
+  const k=pagerFocusKey();
+  dtState(id).page=p;dtRefresh(id);
+  box.querySelector(".dt-scroll")?.scrollTo?.(0,0);
+  scrollTopIntoView(box);
+  pagerRefocus(box,k);
+}
+document.addEventListener("keydown",e=>{
+  if(e.key!=="Enter"||!e.target.closest)return;
+  const inp=e.target.closest("[data-dt-jump]");if(!inp)return;
+  e.preventDefault();
+  const box=inp.closest("[data-dt]"),t=pagerTarget(inp);if(box&&t!=null)dtGo(box.dataset.dt,t,box);
+});
 document.addEventListener("change",e=>{
+  const sz=e.target.closest&&e.target.closest("[data-dt-size]");
+  if(sz){const box=sz.closest("[data-dt]"),id=box.dataset.dt,spec=DT.specs.get(id),st=dtState(id);if(!spec)return;
+    const first=st.page*dtPageSize(spec,st);st.size=+sz.value;st.page=Math.floor(first/dtPageSize(spec,st));dtSave(id);dtRefresh(id);
+    box.querySelector("[data-dt-size]")?.focus();return}
   const c=e.target.closest&&e.target.closest("[data-dt-col]");if(!c)return;
   const id=c.closest("[data-dt]").dataset.dt,st=dtState(id);
   c.checked?st.hidden.delete(c.dataset.dtCol):st.hidden.add(c.dataset.dtCol);
@@ -2255,10 +2327,19 @@ function _renderIq(){
   /* ---- 各科得分: 排行表为主, 旁边是条形图 / 能力形状 ---- */
   const {compact,full}=iqSubjSpecs(series);
   const barH=Math.max(260,subs.length*(series.length*16+14)+70);
-  const chartTabs=`<div class="ccard"><div class="ccard-head"><div><h3 class="ccard-title">各科正确率</h3><p class="ccard-desc">越高越好 · 点柱子看这一科的题${series.length===1?" · 横线是"+term("ci"):""}</p></div>
-      ${segHTML("data-ctab","bars",[["bars","条形"],["radar","能力形状"]])}</div>
-    <div class="chart" id="iqBars" style="height:${barH}px" role="img" aria-label="各科正确率"></div>
-    <div class="chart" id="iqRadar" style="height:${Math.min(460,Math.max(340,barH))}px" role="img" aria-label="能力形状" hidden></div></div>`;
+  const subjTab=CTAB.subj==="radar"?"radar":"bars";
+  const chartTabs=`<div class="ccard" data-ctab-card="subj"><div class="ccard-head"><div><h3 class="ccard-title">各科正确率</h3><p class="ccard-desc">越高越好 · 点柱子看这一科的题${series.length===1?" · 横线是"+term("ci"):""}</p></div>
+      ${segHTML("data-ctab",subjTab,[["bars","条形"],["radar","能力形状"]])}</div>
+    <div class="chart" id="iqBars" data-ctab-pane="bars" style="height:${barH}px" role="img" aria-label="各科正确率"${subjTab==="bars"?"":" hidden"}></div>
+    <div class="chart" id="iqRadar" data-ctab-pane="radar" style="height:${Math.min(460,Math.max(340,barH))}px" role="img" aria-label="能力形状"${subjTab==="radar"?"":" hidden"}></div></div>`;
+  /* 正确率和每题 token: 折线(默认) / 散点 */
+  const tokTab=CTAB.tok==="scatter"?"scatter":"line";
+  const tokDesc={line:`科目按${series.length>1?" A 的":""}每题 token 从少到多排：上面是正确率，下面是平均每题输出多少 token（对数刻度）`,
+    scatter:"每个点是一个科目：越靠上答得越好，越靠左越省 token（横轴是对数刻度）"+(series.length>1?"；同一科目的 A、B 用细线连起来":"")};
+  const tokCard=`<div class="ccard" data-ctab-card="tok"><div class="ccard-head"><div><h3 class="ccard-title">正确率和每题 token</h3><p class="ccard-desc" data-ctab-desc>${tokDesc[tokTab]}</p></div>
+      ${segHTML("data-ctab",tokTab,[["line","折线"],["scatter","散点"]])}</div>
+    <div class="chart" id="iqTok" data-ctab-pane="line" data-desc="${esc(tokDesc.line)}" style="height:430px" role="img" aria-label="各科正确率和每题 token（折线）"${tokTab==="line"?"":" hidden"}></div>
+    <div class="chart" id="iqTokScatter" data-ctab-pane="scatter" data-desc="${esc(tokDesc.scatter)}" style="height:380px" role="img" aria-label="正确率 × 平均每题输出 token（散点）"${tokTab==="scatter"?"":" hidden"}></div></div>`;
   const hasMmlu=subs.some(x=>/^mmlu/.test(x.id));
   el.innerHTML=overview(concl,stats,{meta:`题集 ${esc(a.bank_id||"")} · ${esc(budgetText(a))} · 开始于 ${esc(timeText(a.started_utc))}`})+
     (alerts?`<div class="notes">${alerts}</div>`:"")+
@@ -2266,8 +2347,8 @@ function _renderIq(){
       chart:`<div class="side-row">${dataTable(compact)}${chartTabs}</div>`,tables:[full]})+
     (hasMmlu?panel({id:"iq-mmlu",title:"MMLU 各学科",jump:"MMLU 学科",desc:"MMLU 四个分组展开到具体学科（每个学科题数不多，正确率仅供参考）",
       tables:[`<div id="iqMmlu"><div class="qb-loading faint">正在按学科统计…</div></div>`]}):"")+
-    panel({id:"iq-cost",title:"正确率和 token 花费",jump:"token 花费",desc:"每个点是一个科目：越靠上答得越好，越靠左越省 token（横轴是对数刻度）",
-      chart:ccard("iqTok","正确率 × 平均每题输出 token",{desc:series.length>1?"同一科目的 A、B 用细线连起来":"点旁边是科目名",h:380}),
+    panel({id:"iq-cost",title:"正确率和 token 花费",jump:"token 花费",desc:"每个科目答对了多少、平均每道题输出多少 token；点某一科可以直接看这一科的题",
+      chart:tokCard,
       tables:[{id:"iq-cost-t",title:"各科正确率与 token",columns:[{key:"name",label:"科目",type:"text",sticky:true},
         ...series.map((s,i)=>({key:"acc_"+i,label:series.length>1?s.tag:"正确率",group:series.length>1?"正确率（%）":"",unit:series.length>1?"":"%",type:"num"})),
         ...series.map((s,i)=>({key:"tok_"+i,label:series.length>1?s.tag:"每题 token",group:series.length>1?"平均每题输出 token":"",type:"int"}))],rows:iqSubjRows(series)}]})+
@@ -2294,7 +2375,7 @@ function _renderIq(){
 function drawIqCharts(series){
   const a=series[0].r;
   const subs=[...(a.subjects||[])].filter(x=>x.n).sort((x,y)=>(y.acc||0)-(x.acc||0));
-  if(!subs.length){chartEmpty("iqBars");chartEmpty("iqRadar");chartEmpty("iqTok");return}
+  if(!subs.length){["iqBars","iqRadar","iqTok","iqTokScatter"].forEach(id=>chartEmpty(id));return}
   const names=subs.map(x=>shortSub(x.name));
   const valOf=(s,sub,f)=>{const x=(s.r.subjects||[]).find(y=>y.id===sub.id);return x?f(x):null};
   /* 各科正确率: 横向柱; 只看 A 时加误差范围 */
@@ -2325,21 +2406,101 @@ function drawIqCharts(series){
       axisName:{color:C.text2,fontSize:11},splitLine:{lineStyle:{color:C.grid}},splitArea:{show:false},axisLine:{lineStyle:{color:C.grid}}},
     series:[{type:"radar",symbolSize:6,data:series.map(s=>({name:s.tag,value:subs.map(sub=>valOf(s,sub,x=>x.acc)),
       lineStyle:{width:2,color:s.color},itemStyle:{color:s.color,borderColor:C.surface,borderWidth:1},areaStyle:{color:withAlpha(s.color,.10)}}))}]}));
-  /* 正确率 × 每题 token: 散点, 横轴对数刻度; 对比时同一科目用细线连起来 */
-  const pts=series.map(s=>subs.map(sub=>{const x=(s.r.subjects||[]).find(y=>y.id===sub.id);
-    return x&&x.n&&x.out_tokens>0?{value:[x.out_tokens/x.n,x.acc],name:shortSub(sub.name),n:x.n}:null}));
+  drawIqTokLine(series,subs);
+  drawIqTokScatter(series,subs);
+}
+/* 面积: 由浓到淡的纵向渐变(上沿 top 透明度 → 底部 2%); 非法颜色回落到主色 */
+function areaGrad(color,top){
+  const c=/^#?[0-9a-fA-F]{6}$/.test(String(color))?color:"#6950E8";
+  return new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:withAlpha(c,top)},{offset:1,color:withAlpha(c,.02)}]);
+}
+function tokText(v){return v==null||!isFinite(v)?"—":v>=10?fmtInt(v):fmt(v,1)}
+function iqSubVal(s,sub){const x=(s.r.subjects||[]).find(y=>y.id===sub.id);return x&&x.n?{acc:x.acc,tok:x.out_tokens>0?x.out_tokens/x.n:null,n:x.n}:null}
+/* 正确率和每题 token(折线 + 面积): 科目按 A 的每题 token 从少到多排, 上下两张图共用横轴、各有一条纵轴(不做双纵轴);
+   悬停时两张图同一科目一起高亮, 点这一列看这一科的题 */
+function drawIqTokLine(series,subs){
+  const el=$("iqTok");if(!el)return;
+  const bucket=v=>v?Math.round(Math.log10(v)*4):99;  /* 每题 token 差不多的算一档, 同一档里按正确率从高到低 */
+  const order=subs.map(sub=>({sub,v:iqSubVal(series[0],sub)})).filter(o=>o.v)
+    .sort((x,y)=>(bucket(x.v.tok)-bucket(y.v.tok))||((y.v.acc||0)-(x.v.acc||0))).map(o=>o.sub);
+  if(!order.length){chartEmpty("iqTok");return}
+  const multi=series.length>1,names=order.map(sub=>shortSub(sub.name));
+  const vals=series.map(s=>order.map(sub=>iqSubVal(s,sub)));
+  const accs=vals.map(v=>v.map(x=>x?x.acc:null)),toks=vals.map(v=>v.map(x=>x&&x.tok?x.tok:null));
+  const W=el.clientWidth||el.parentElement.clientWidth||900,L=56,R=24,band=(W-L-R)/order.length;
+  const rot=band<56,dense=band<44;  /* 一列太窄: 科目名改为斜排; 再窄就不在点上写数字(悬停看) */
+  const T0=multi?54:34,H0=176,T1=T0+H0+48,H1=118,B=rot?78:46;
+  el.style.height=(T1+H1+B)+"px";
+  const lo=Math.min(...accs.flat().filter(v=>v!=null)),hiTok=Math.max(2,...toks.flat().filter(v=>v!=null));
+  const overall=(series[0].r.overall||{}).acc;
+  const mk=(s,i,data,ax,f)=>({name:s.tag,type:"line",xAxisIndex:ax,yAxisIndex:ax,data,connectNulls:true,
+    symbol:"circle",symbolSize:8,showSymbol:true,z:3+i,lineStyle:{width:2,color:s.color},
+    itemStyle:{color:s.color,borderColor:C.surface,borderWidth:2},areaStyle:{origin:"start",color:areaGrad(s.color,multi?.16:.30)},
+    emphasis:{focus:"series"},labelLayout:{hideOverlap:true},
+    label:multi||dense?undefined:{show:true,position:"top",distance:6,color:C.text2,fontSize:11,backgroundColor:C.surface,padding:[1,3],borderRadius:3,
+      formatter:p=>p.value==null?"":f(p.value)}});
+  const xa=g=>({type:"category",gridIndex:g,data:names,boundaryGap:true,axisTick:{show:false},axisLine:{lineStyle:{color:C.axis}},
+    axisLabel:g===0?{show:false}:Object.assign({color:C.text2,fontSize:band<96?10.5:11,interval:0,lineHeight:14,margin:10},
+      rot?{rotate:35,width:80,overflow:"truncate"}:{width:Math.floor(band)-4,overflow:"truncate",formatter:v=>String(v).replace(" ","\n")})});
+  const accS=series.map((s,i)=>mk(s,i,accs[i],0,v=>fmt(v,1)+"%"));
+  if(!multi&&overall!=null)accS[0].markLine={silent:true,symbol:"none",lineStyle:{color:C.text3,type:"dashed",width:1},
+    label:{position:"insideStartTop",color:C.text3,fontSize:11,backgroundColor:C.surface,padding:[1,4],borderRadius:3,formatter:`总正确率 ${fmt(overall,1)}%`},data:[{yAxis:overall}]};
+  const tokAxis={type:"log",logBase:10,gridIndex:1,min:1,max:Math.pow(10,Math.ceil(Math.log10(hiTok*1.6))),
+    name:"平均每题输出 token（对数刻度）",nameGap:10,nameTextStyle:{color:C.text3,fontSize:11,align:"left"},
+    axisLine:{show:false},axisTick:{show:false},splitLine:{lineStyle:{color:C.grid}},axisLabel:{color:C.text3,fontSize:11,formatter:fmtAxis}};
+  const inst=setChart("iqTok",baseOption({
+    color:series.map(s=>s.color),legend:legendOf(series.map(s=>s.tag)),
+    axisPointer:{link:[{xAxisIndex:"all"}]},
+    grid:[{left:L,right:R,top:T0,height:H0},{left:L,right:R,top:T1,height:H1}],
+    xAxis:[xa(0),xa(1)],
+    yAxis:[Object.assign(axisValue({name:"正确率",max:100,min:Math.max(0,Math.floor((lo-8)/10)*10),fmt:v=>v+"%"}),{gridIndex:0}),tokAxis],
+    tooltip:Object.assign(baseOption().tooltip,{trigger:"axis",axisPointer:{type:"shadow",shadowStyle:{color:withAlpha(/^#[0-9a-f]{6}$/i.test(C.text3)?C.text3:"#888888",.10)}},
+      formatter:ps=>{const i=ps[0].dataIndex,sub=order[i];if(!sub)return"";
+        return tt(sub.name,series.map((s,k)=>{const v=vals[k][i];return[s.color,s.tag,v?`${fmt(v.acc,1)}% · 每题 ${tokText(v.tok)} token`:"—"]}),
+          `${vals[0][i]?vals[0][i].n+" 题 · ":""}点一下看这一科的题`)}}),
+    series:[...accS,...series.map((s,i)=>mk(s,i,toks[i],1,tokText))]}));
+  if(!inst)return;
+  /* 点这一列(两张图任一处)就看这一科的题 */
+  const zr=inst.getZr(),hit=e=>{for(const g of [0,1])if(inst.containPixel({gridIndex:g},[e.offsetX,e.offsetY])){const i=Math.round(inst.convertFromPixel({xAxisIndex:g},e.offsetX));return order[i]||null}return null};
+  zr.off("click");zr.off("mousemove");
+  zr.on("click",e=>{const sub=hit(e);if(sub)qbGo(sub.id,"all")});
+  zr.on("mousemove",e=>zr.setCursorStyle(hit(e)?"pointer":"default"));
+}
+/* 散点名字防重叠: 横向位置相近(对数刻度 0.25 格内)的点算一簇, 簇里的名字统一从最右边那个点的右侧开始写,
+   按正确率从高到低排, 名字之间至少隔一行字高, 挤的往下错开。返回 Map(点 → [dx, dy]) */
+function scatterLabelOffsets(pts,{plotW,plotH,yMin,yMax,lineH=15}){
+  const list=pts.filter(Boolean).map(p=>({p,lx:Math.log10(p.value[0])}));
+  if(!list.length)return new Map();
+  const d0=Math.floor(Math.min(...list.map(x=>x.lx))),d1=Math.max(d0+1,Math.ceil(Math.max(...list.map(x=>x.lx))));
+  const ux=plotW/(d1-d0),uy=plotH/Math.max(1,yMax-yMin),out=new Map();
+  list.forEach(x=>x.y=(yMax-x.p.value[1])*uy);
+  list.sort((a,b)=>a.lx-b.lx);
+  const groups=[];list.forEach(x=>{const g=groups[groups.length-1];if(g&&x.lx-g[g.length-1].lx<.25)g.push(x);else groups.push([x])});
+  groups.forEach(g=>{
+    const right=Math.max(...g.map(x=>x.lx));g.sort((a,b)=>a.y-b.y);
+    let last=-1e9;g.forEach(x=>{const y=Math.max(x.y,last+lineH);out.set(x.p,[(right-x.lx)*ux,y-x.y]);last=y});
+  });
+  return out;
+}
+/* 正确率 × 每题 token(散点): 横轴对数刻度; 对比时同一科目用细线连起来; 名字挤在一起时上下错开而不是藏掉 */
+function drawIqTokScatter(series,subs){
+  const pts=series.map(s=>subs.map(sub=>{const v=iqSubVal(s,sub);return v&&v.tok?{value:[v.tok,v.acc],name:shortSub(sub.name),n:v.n,id:sub.id}:null}));
+  const el=$("iqTokScatter"),top=series.length>1?44:26;
+  const lo=Math.min(...pts.flat().filter(Boolean).map(p=>p.value[1])),yMin=Math.max(0,Math.floor(lo/10)*10-10);
+  const offs=scatterLabelOffsets(pts[0],{plotW:(el&&(el.clientWidth||el.parentElement.clientWidth)||900)-76,plotH:(el&&el.clientHeight||380)-top-58,yMin,yMax:100});
+  pts[0].forEach(p=>{const o=p&&offs.get(p);if(o&&(o[0]>.5||o[1]>.5))p.label={offset:[Math.round(o[0]),Math.round(o[1])]}});
   const links=series.length>1?subs.map((sub,i)=>({type:"line",silent:true,symbol:"none",z:1,lineStyle:{color:C.axis,width:1},tooltip:{show:false},
     data:pts.map(p=>p[i]&&p[i].value).filter(Boolean)})).filter(x=>x.data.length>1):[];
-  setChart("iqTok",baseOption({
+  const inst=setChart("iqTokScatter",baseOption({
     color:series.map(s=>s.color),legend:legendOf(series.map(s=>s.tag),"rect"),
-    grid:{left:4,right:28,top:series.length>1?44:26,bottom:30,containLabel:true},
+    grid:{left:4,right:28,top,bottom:30,containLabel:true},
     xAxis:{type:"log",logBase:10,name:"平均每题输出 token（越往左越省）",nameLocation:"middle",nameGap:28,nameTextStyle:{color:C.text3,fontSize:11},
       axisLine:{show:true,lineStyle:{color:C.axis}},axisTick:{show:false},splitLine:{lineStyle:{color:C.grid}},axisLabel:{color:C.text3,fontSize:11,formatter:fmtAxis}},
-    yAxis:axisValue({name:"正确率 %",max:100,fmt:v=>v+"%",min:v=>Math.max(0,Math.floor(v.min/10)*10-10)}),
-    tooltip:Object.assign(baseOption().tooltip,{trigger:"item",formatter:q=>q.seriesType!=="scatter"?"":tt(q.name,[[q.color,q.seriesName,`${fmt(q.value[1],1)}% · 每题 ${fmtInt(q.value[0])} token`]])}),
+    yAxis:axisValue({name:"正确率 %",max:100,fmt:v=>v+"%",min:yMin}),
+    tooltip:Object.assign(baseOption().tooltip,{trigger:"item",formatter:q=>q.seriesType!=="scatter"?"":tt(q.name,[[q.color,q.seriesName,`${fmt(q.value[1],1)}% · 每题 ${tokText(q.value[0])} token`]],"点一下看这一科的题")}),
     series:[...links,...series.map((s,i)=>({name:s.tag,type:"scatter",symbolSize:11,z:3,itemStyle:{color:s.color,borderColor:C.surface,borderWidth:1.5},
-      data:pts[i].filter(Boolean),label:i===0?{show:true,position:"right",distance:6,color:C.text2,fontSize:11,formatter:q=>q.name}:undefined,
-      labelLayout:{hideOverlap:true}}))]}));
+      data:pts[i].filter(Boolean),label:i===0?{show:true,position:"right",distance:6,color:C.text2,fontSize:11,formatter:q=>q.name}:undefined}))]}));
+  if(inst){inst.off("click");inst.on("click",q=>{if(q.seriesType==="scatter"&&q.data&&q.data.id)qbGo(q.data.id,"all")})}
 }
 /* ---- MMLU 各学科: 分组表(逐题数据加载后统计) ---- */
 function renderMmlu(){
@@ -2380,7 +2541,7 @@ function qbTableSpec(rows){
   const d=QB.data,runs=QB.series.filter(s=>(d.runs[s.r.run_id]||{}).same_bank),multi=runs.length>1;
   const recOf=(s,q)=>((d.runs[s.r.run_id]||{}).recs||{})[qbKey(q)];
   const stOf=rec=>{const [label,tone]=QB_STATE[qbState(rec)];return{tone:tone||"neutral",text:label}};
-  return{id:"iq-items-t",title:"逐题",search:false,pageSize:50,rowKey:q=>qbKey(q),
+  return{id:"iq-items-t",title:"逐题",search:false,pageSize:50,pageSizes:[20,50,100,200],rowKey:q=>qbKey(q),
     columns:[{key:"where",label:"题目",type:"text",sticky:true,get:q=>`${shortSub((d.subjMap[q.sid]||{}).name||q.sid)} · 第 ${q.idx+1} 题`,sortValue:q=>d.subjects.findIndex(s=>s.id===q.sid)*1e5+q.idx},
       {key:"topic",label:"学科",type:"text",get:q=>subTopic(q.sub)||"—"},
       {key:"q",label:"题目内容",type:"html",get:q=>`<span class="dt-ellipsis" title="${esc(q.q||"")}">${esc(q.q||"（找不到题目）")}</span>`,text:(v,q)=>q.q||""},
@@ -2390,7 +2551,7 @@ function qbTableSpec(rows){
         text:(v,q)=>{const r=recOf(s,q);return !r?"":r.err?"请求失败":String(r.pred??"")}})),
       ...runs.map(s=>({key:"s_"+s.tag,label:multi?s.tag:"结果",group:multi?"结果":"",type:"status",get:q=>stOf(recOf(s,q))})),
       {key:"out",label:"输出",unit:"token",type:"int",get:q=>{const r=recOf(runs[0],q);return r&&r.out!=null?r.out:null}}],
-    rows,expand:q=>qbCard(q),note:"点行展开看完整题目和回答"};
+    rows,expand:q=>qbCard(q,{full:true}),note:"点行展开看完整题目和回答"};
 }
 /* ---- 逐题查看: 题目 / 标准答案 / 各次测试的答案; 回答原文点开时才加载 ---- */
 const MMLU_ZH={abstract_algebra:"抽象代数",anatomy:"解剖学",astronomy:"天文学",business_ethics:"商业伦理",clinical_knowledge:"临床知识",
@@ -2409,8 +2570,8 @@ const MMLU_ZH={abstract_algebra:"抽象代数",anatomy:"解剖学",astronomy:"�
   us_foreign_policy:"美国外交政策",virology:"病毒学",world_religions:"世界宗教"};
 const subTopic=s=>s?(MMLU_ZH[s]||String(s).replace(/_/g," ")):"";
 const QB_STATE={ok:["答对","good","check"],wrong:["答错","bad","x"],trunc:["没答完","warn","clock"],err:["请求失败","bad","alert"],none:["没做这题","","minus"]};
-const QB_PAGE=20;
-const QB={key:"",main:"",data:null,loading:null,err:"",series:[],subj:"",filter:"all",vs:"",q:"",page:0};
+const QB_SIZES=[6,12,24,48],QB_PREF=lsGet("llm-bench-pro-qb");
+const QB={key:"",main:"",data:null,loading:null,err:"",series:[],subj:"",filter:"all",vs:"",q:"",page:0,size:QB_SIZES.includes(QB_PREF.size)?QB_PREF.size:6};
 const qbKey=q=>q.sid+"|"+q.idx;
 function qbState(rec){return !rec?"none":rec.ok?"ok":rec.err?"err":rec.trunc?"trunc":"wrong"}
 /* 筛选: bad=没答对(含没答完、请求失败); vs-* 与对照测试逐题比较, 口径同「差异是否可信」(只看双方都正常作答的题) */
@@ -2467,7 +2628,7 @@ function qbRender(){
       ${cmp.length>1?`<label class="qb-vs"><span>和谁对照</span><select class="select" id="qbVs">${cmp.map(s=>`<option value="${esc(s.r.run_id)}" ${s.r.run_id===QB.vs?"selected":""}>${esc(s.tag)} · ${esc(s.r.model||"")}</option>`).join("")}</select></label>`:""}
     </div>
     ${other.length?`<div class="qb-note">${esc(other.map(s=>s.tag).join("、"))} 用的题集和 A 不一样，不能逐题对照</div>`:""}
-    <div class="filter-chips" id="qbChips"></div>
+    <div class="qb-chiprow" id="qbChipRow"><div class="filter-chips" id="qbChips"></div><div class="qb-pager-top" id="qbPagerTop"></div></div>
     <div class="pv-chart"><div class="qb-list" id="qbList"></div><div class="qb-pager" id="qbPager"></div></div>
     <div class="pv-table" id="qbTable"></div>`;
   qbRenderList();
@@ -2492,10 +2653,10 @@ function qbRenderList(){
   const sig=[QB.filter,QB.subj,QB.q,QB.vs].join("|");
   if(QB.tsig!==sig){QB.tsig=sig;dtState("iq-items-t").page=0}
   if($("qbTable"))$("qbTable").innerHTML=dataTable(qbTableSpec(rows));
-  const pages=Math.max(1,Math.ceil(rows.length/QB_PAGE));
+  const pages=Math.max(1,Math.ceil(rows.length/QB.size));
   QB.page=Math.min(Math.max(0,QB.page),pages-1);
-  const view=rows.slice(QB.page*QB_PAGE,(QB.page+1)*QB_PAGE);
-  list.innerHTML=view.length?view.map(qbCard).join(""):
+  const view=rows.slice(QB.page*QB.size,(QB.page+1)*QB.size);
+  list.innerHTML=view.length?view.map(q=>qbCard(q)).join(""):
     emptyState(needle?"没有找到相关的题":"这里没有题",needle?"换个关键词试试":"换一个筛选条件看看",{iconName:needle?"search":"inbox",inline:true});
   /* 实际没被截断的题目去掉「展开全文」 */
   list.querySelectorAll(".qcard-q.is-clamp").forEach(el=>{
@@ -2503,12 +2664,24 @@ function qbRenderList(){
     el.classList.remove("is-clamp");
     const more=el.nextElementSibling;if(more&&more.hasAttribute("data-qb-more"))more.remove();
   });
-  $("qbPager").innerHTML=pages>1?`<button type="button" class="btn btn-secondary btn-sm" data-qb-page="${QB.page-1}" ${QB.page?"":"disabled"}>上一页</button>
-    <span>第 ${QB.page+1} / ${pages} 页 · 共 ${rows.length} 题</span>
-    <button type="button" class="btn btn-secondary btn-sm" data-qb-page="${QB.page+1}" ${QB.page<pages-1?"":"disabled"}>下一页</button>`:
-    (rows.length?`<span>共 ${rows.length} 题</span>`:"");
+  $("qbPagerTop").innerHTML=pagerHTML("qb",{page:QB.page,pages,compact:true,keys:true});
+  $("qbPager").innerHTML=rows.length?pagerHTML("qb",{page:QB.page,pages,total:rows.length,unit:"题",size:QB.size,sizes:rows.length>QB_SIZES[0]?QB_SIZES:null,keys:true}):"";
 }
-function qbCard(q){
+/* 翻页: 在底部翻页时滚回卡片顶部; 键盘翻页焦点留在翻页器上 */
+function qbSetPage(p){
+  const k=pagerFocusKey();
+  QB.page=p;qbRenderList();
+  scrollTopIntoView($("qbChipRow"));
+  pagerRefocus($("qb"),k);
+}
+/* 展开题目全文或回答时, 这张卡占满一整行, 读长文更方便 */
+function qbWide(card){
+  if(!card||!card.closest(".qb-list"))return;
+  const open=!card.querySelector(".qresp").hidden,txt=!!card.querySelector(".qcard-q:not(.is-clamp)+[data-qb-more]");
+  const was=card.classList.contains("is-wide");card.classList.toggle("is-wide",open||txt);
+  if(was!==card.classList.contains("is-wide"))card.scrollIntoView({block:"nearest"});
+}
+function qbCard(q,opt={}){
   const d=QB.data,sub=d.subjMap[q.sid]||{},key=qbKey(q),multi=QB.series.length>1;
   const runs=QB.series.map(s=>{const R=d.runs[s.r.run_id]||{};return{s,same:!!R.same_bank,rec:R.same_bank?(R.recs||{})[key]:null}}).filter(r=>r.same);
   const tagOf=r=>multi?`<span class="run-tag" style="background:${r.s.color}">${esc(r.s.tag)}</span>`:"";
@@ -2516,9 +2689,9 @@ function qbCard(q){
   const predOf=r=>r.rec&&r.rec.pred!=null?String(r.rec.pred):null;
   const verdicts=runs.map(r=>{const [label,tone,ic]=QB_STATE[qbState(r.rec)];
     return `<span class="qv${tone?" is-"+tone:""}">${tagOf(r)}${icon(ic,"icon-sm")}${label}</span>`}).join("");
-  const long=q.q!=null&&(q.q.length>420||q.q.split("\n").length>7);
+  const clamp=!opt.full&&q.q!=null;  /* 卡片网格里题目先显示几行; 渲染后实际没超出的去掉「展开全文」 */
   let body=q.q==null?`<div class="qcard-q faint">（题集文件里找不到这道题）</div>`:
-    `<div class="qcard-q${long?" is-clamp":""}">${esc(q.q)}</div>${long?`<button type="button" class="qb-more" data-qb-more>展开全文</button>`:""}`;
+    `<div class="qcard-q${clamp?" is-clamp":""}">${esc(q.q)}</div>${clamp?`<button type="button" class="qb-more" data-qb-more>展开全文</button>`:""}`;
   const answered=runs.filter(r=>r.rec&&!r.rec.err);
   if(Array.isArray(q.choices)){
     const gold=String(q.answer||"").toUpperCase();
@@ -2551,6 +2724,7 @@ function qbCard(q){
 async function qbToggleAnswer(btn){
   const box=btn.closest(".qcard").querySelector(".qresp");
   const open=box.hidden;box.hidden=!open;btn.setAttribute("aria-expanded",String(open));
+  qbWide(btn.closest(".qcard"));
   if(!open||box.dataset.loaded)return;
   box.innerHTML=`<div class="qresp-note">正在加载…</div>`;
   const key=btn.dataset.qbAns,i=key.lastIndexOf("|");
@@ -2595,20 +2769,44 @@ $("iqResult").addEventListener("click",e=>{
   const ct=e.target.closest("[data-ctab]");
   if(ct){const card=ct.closest(".ccard"),k=ct.dataset.ctab;
     card.querySelectorAll("[data-ctab]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.ctab===k)));
-    const bars=card.querySelector("#iqBars"),radar=card.querySelector("#iqRadar");
-    if(bars&&radar){bars.hidden=k!=="bars";radar.hidden=k!=="radar";requestAnimationFrame(()=>resizeChartsIn(card))}
+    let pane=null;card.querySelectorAll("[data-ctab-pane]").forEach(p=>{p.hidden=p.dataset.ctabPane!==k;if(!p.hidden)pane=p});
+    const d=card.querySelector("[data-ctab-desc]");if(d&&pane&&pane.dataset.desc)d.textContent=pane.dataset.desc;
+    if(card.dataset.ctabCard){CTAB[card.dataset.ctabCard]=k;lsSet("llm-bench-pro-ctab",CTAB)}
+    requestAnimationFrame(()=>resizeChartsIn(card));
     return}
   const chip=e.target.closest("#qbChips [data-qb-filter]");
   if(chip){QB.filter=chip.dataset.qbFilter;QB.page=0;qbRenderList();return}
   const pg=e.target.closest("[data-qb-page]");
-  if(pg){QB.page=+pg.dataset.qbPage;qbRenderList();const t=$("qbChips");if(t)t.scrollIntoView({block:"start"});return}
+  if(pg){qbSetPage(+pg.dataset.qbPage);return}
+  const jb=e.target.closest("[data-qb-jumpbtn]");
+  if(jb){const t=pagerTarget(jb.parentElement.querySelector("[data-qb-jump]"));if(t!=null)qbSetPage(t);return}
   const ans=e.target.closest("[data-qb-ans]");if(ans){qbToggleAnswer(ans);return}
   const more=e.target.closest("[data-qb-more]");
-  if(more){const on=more.previousElementSibling.classList.toggle("is-clamp");more.textContent=on?"展开全文":"收起";}
+  if(more){const on=more.previousElementSibling.classList.toggle("is-clamp");more.textContent=on?"展开全文":"收起";qbWide(more.closest(".qcard"))}
 });
 $("iqResult").addEventListener("change",e=>{
   if(e.target.id==="qbSubj"){QB.subj=e.target.value;QB.page=0;qbRenderList()}
   else if(e.target.id==="qbVs"){QB.vs=e.target.value;QB.page=0;qbRenderList()}
+  else if(e.target.matches("[data-qb-size]")){
+    const first=QB.page*QB.size;QB.size=+e.target.value;QB.page=Math.floor(first/QB.size);lsSet("llm-bench-pro-qb",{size:QB.size});
+    qbRenderList();$("qbPager").querySelector("[data-qb-size]")?.focus()}
+  else if(e.target.matches(".is-compact [data-qb-jump]")){const t=pagerTarget(e.target);if(t!=null&&t!==QB.page)qbSetPage(t);else e.target.value=QB.page+1}
+});
+$("iqResult").addEventListener("keydown",e=>{
+  if(e.key!=="Enter"||!e.target.matches("[data-qb-jump]"))return;
+  e.preventDefault();const t=pagerTarget(e.target);if(t!=null)qbSetPage(t);
+});
+/* 键盘 ← → 翻逐题卡片: 卡片在屏幕上、焦点不在输入框里、没有打开面板或弹窗时才生效 */
+document.addEventListener("keydown",e=>{
+  if((e.key!=="ArrowLeft"&&e.key!=="ArrowRight")||e.altKey||e.ctrlKey||e.metaKey||e.shiftKey||e.defaultPrevented)return;
+  if(e.target.closest&&e.target.closest("input,select,textarea,[contenteditable=true],details[open]"))return;
+  if(!$("modal").hidden||document.querySelector(".drawer:not([hidden])"))return;
+  const sec=$("iq-items"),list=$("qbList");
+  if(!sec||!list||sec.dataset.pv==="table"||!list.offsetParent)return;
+  const r=list.getBoundingClientRect();if(r.bottom<80||r.top>innerHeight-80)return;
+  const b=$("qbPagerTop")&&$("qbPagerTop").querySelector(`[data-dir=${e.key==="ArrowLeft"?"prev":"next"}]`);
+  if(!b||b.disabled)return;
+  e.preventDefault();qbSetPage(+b.dataset.qbPage);
 });
 $("iqResult").addEventListener("input",e=>{
   if(e.target.id!=="qbSearch")return;

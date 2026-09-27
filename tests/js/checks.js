@@ -229,6 +229,53 @@ T("矩阵整形与对比整形", () => {
   assert.deepEqual(cols.map(c => c.label), ["A", "B", "变化"]);
   assert.equal(cols[0].group, "速度（token/秒）");
 });
+T("翻页: 页码列表(首尾 + 当前页前后, 只隔一页时直接显示那一页, 隔得多才用 …)", () => {
+  assert.deepEqual(pageList(0, 1), [0]);
+  assert.deepEqual(pageList(2, 5), [0, 1, 2, 3, 4]);
+  assert.deepEqual(pageList(0, 154), [0, 1, 2, 3, 4, null, 153]);
+  assert.deepEqual(pageList(3, 154), [0, 1, 2, 3, 4, null, 153]);
+  assert.deepEqual(pageList(4, 154), [0, null, 3, 4, 5, null, 153]);
+  assert.deepEqual(pageList(49, 154), [0, null, 48, 49, 50, null, 153]);
+  assert.deepEqual(pageList(153, 154), [0, null, 149, 150, 151, 152, 153]);
+  assert.deepEqual(pageList(4, 8), [0, null, 3, 4, 5, 6, 7]);
+  for (let n = 1; n <= 40; n++) for (let p = 0; p < n; p++) {
+    const l = pageList(p, n), nums = l.filter(x => x != null);
+    assert.ok(nums.includes(0) && nums.includes(n - 1) && nums.includes(p), `n=${n} p=${p}`);
+    assert.ok(nums.every((x, i) => !i || x > nums[i - 1]), "递增");
+    assert.ok(l.every((x, i) => x != null || (l[i + 1] - l[i - 1] > 2)), "… 至少省略两页");
+    assert.ok(n <= 7 ? l.length === n : l.length <= 7, "页数多时最多 7 格");
+  }
+});
+T("翻页: 跳页输入框解析(夹到首末页, 非数字不跳)", () => {
+  const box = (value, max) => ({value, max: String(max)});
+  assert.equal(pagerTarget(box("50", 154)), 49);
+  assert.equal(pagerTarget(box(" 7 ", 154)), 6);
+  assert.equal(pagerTarget(box("999", 154)), 153);
+  assert.equal(pagerTarget(box("0", 154)), 0);
+  assert.equal(pagerTarget(box("-3", 154)), 0);
+  assert.equal(pagerTarget(box("", 154)), null);
+  assert.equal(pagerTarget(box("abc", 154)), null);
+  assert.equal(pagerTarget(null), null);
+});
+T("翻页器 HTML: 只有一页时不出翻页按钮; 当前页标 aria-current; 首页的 ‹ 不可点", () => {
+  assert.equal(pagerHTML("qb", {page: 0, pages: 1, compact: true}), "");
+  assert.ok(!pagerHTML("qb", {page: 0, pages: 1, total: 3, unit: "题"}).includes("data-qb-page"));
+  const h = pagerHTML("dt", {page: 0, pages: 19, size: 50, sizes: [20, 50]});
+  assert.ok(/data-dt-page="-1" data-dir="prev"[^>]*disabled/.test(h));
+  assert.ok(h.includes('aria-current="page">1<'));
+  assert.ok(h.includes('<option value="50" selected>'));
+  assert.ok(h.includes("data-dt-jump") && h.includes("data-dt-jumpbtn"));
+});
+T("散点名字防重叠: 挨着的点名字错开一行、统一从这一簇最右边的点右侧开始", () => {
+  const p = (tok, acc) => ({value: [tok, acc]});
+  const a = p(2.0, 73.8), b = p(2.2, 73.8), c = p(2.0, 72.9), far = p(1200, 76.2);
+  const o = scatterLabelOffsets([a, b, null, c, far], {plotW: 1200, plotH: 300, yMin: 50, yMax: 100});
+  const y = q => (100 - q.value[1]) * 6 + o.get(q)[1];   /* 6 px / 每 1% */
+  const ys = [a, b, c].map(y).sort((m, n) => m - n);
+  assert.ok(ys[1] - ys[0] >= 15 && ys[2] - ys[1] >= 15, ys.join(","));
+  assert.ok(o.get(a)[0] > 0 && Math.abs(o.get(b)[0]) < 1e-9, "簇里左边的点名字往右挪到最右那个点之后");
+  assert.deepEqual(o.get(far), [0, 0]);   /* 单独的点不动 */
+});
 T("maskKey: API Key 掩码显示", () => {
   assert.equal(maskKey("sk-1234567890abcdef"), "sk-1…cdef");
   assert.equal(maskKey(""), "—");

@@ -548,9 +548,38 @@ details.advanced.is-step{margin-top:0;border-top:0;padding-top:0}
 .qb-vs{display:flex;align-items:center;gap:var(--sp-2);flex:0 1 300px;font-size:var(--fs-13);color:var(--text-3);white-space:nowrap}
 .qb-note{font-size:var(--fs-12);color:var(--text-3)}
 .qb-sep{width:1px;height:20px;background:var(--border-strong);align-self:center;margin:0 6px}
-.qb-list{display:flex;flex-direction:column;gap:var(--sp-3)}
-.qb-pager{display:flex;align-items:center;justify-content:center;gap:var(--sp-3);font-size:var(--fs-13);color:var(--text-3)}
-.qb-pager:empty{display:none}
+/* 卡片网格: 每张至少 400px 宽, 最多三列; 展开全文或回答的卡片占满一行 */
+.qb-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,max(400px,calc((100% - 2 * var(--sp-3)) / 3))),1fr));gap:var(--sp-3)}
+.qb-list>:not(.qcard){grid-column:1/-1}
+.qb-list .qcard.is-wide{grid-column:1/-1}
+.qb-list .qcard-foot{margin-top:auto}
+.qb-chiprow{display:flex;align-items:center;gap:var(--sp-2) var(--sp-3);flex-wrap:wrap}
+.qb-chiprow .filter-chips{flex:1 1 auto;min-width:0}
+.qb-pager-top{margin-left:auto}
+.qb-pager-top:empty,.qb-pager:empty{display:none}
+.sec[data-pv="table"] .qb-pager-top{display:none}
+/* 翻页器: 共几条 · 每页 N 条 | ‹ 1 … 4 5 6 … 20 › · 跳到第 [ ] 页 */
+.pager{display:flex;align-items:center;justify-content:space-between;gap:8px 20px;flex-wrap:wrap;font-size:var(--fs-13);color:var(--text-3)}
+.pager-info,.pager-ctrl,.pager-nav,.pager-nums,.pager-jump,.pager-size,.pager-cur{display:flex;align-items:center}
+.pager-info{gap:16px}
+.pager-ctrl{gap:8px 16px;margin-left:auto;flex-wrap:wrap}
+.pager-nav,.pager-nums{gap:2px}
+.pager-jump,.pager-size,.pager-cur{gap:6px;white-space:nowrap}
+.pager-btn{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:30px;padding:0 8px;border:1px solid transparent;border-radius:var(--r-sm);
+  background:transparent;color:var(--text-2);font:inherit;font-size:var(--fs-13);font-variant-numeric:tabular-nums;cursor:pointer}
+.pager-btn:hover:not([disabled]):not(.is-current){background:var(--sel);color:var(--text-1)}
+.pager-btn.is-current{background:var(--accent);color:var(--accent-ink);font-weight:600;cursor:default}
+.pager-btn[disabled]{opacity:.35;cursor:default}
+.pager-gap{min-width:22px;text-align:center}
+.pager-of{display:none;padding:0 8px;color:var(--text-2);font-variant-numeric:tabular-nums}
+.pager-input{width:56px;height:30px;padding:0 6px;border:1px solid var(--control-border);border-radius:var(--r-sm);background:var(--surface-1);color:var(--text-1);
+  font:inherit;font-size:var(--fs-13);text-align:center;font-variant-numeric:tabular-nums;-moz-appearance:textfield;appearance:textfield}
+.pager-input::-webkit-outer-spin-button,.pager-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.pager-input:hover{border-color:var(--border-strong)}
+.pager-size .select{width:auto;height:30px;padding:0 28px 0 10px;font-size:var(--fs-13);background-position:right 8px center}
+.pager.is-compact{gap:4px;flex-wrap:nowrap}
+.pager.is-compact .pager-input{width:48px}
+.dt-foot .pager{flex:1 1 auto;justify-content:flex-end;font-size:var(--fs-12)}
 .qb-link{color:var(--text-1);text-decoration:underline dotted;text-underline-offset:3px}
 .qb-link:hover{text-decoration-style:solid}
 .qcard{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--r-md);box-shadow:var(--shadow-card);
@@ -566,7 +595,7 @@ details.advanced.is-step{margin-top:0;border-top:0;padding-top:0}
 .qv.is-bad{background:var(--bad-soft);color:var(--bad)}
 .qv.is-warn{background:var(--warn-soft);color:var(--warn)}
 .qcard-q{font-size:var(--fs-14);line-height:1.75;color:var(--text-1);white-space:pre-wrap;word-break:break-word}
-.qcard-q.is-clamp{display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;overflow:hidden}
+.qcard-q.is-clamp{display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}
 .qb-more{align-self:flex-start;margin-top:calc(-1 * var(--sp-2));padding:0;border:0;background:none;color:var(--text-2);font-size:var(--fs-13);cursor:pointer;text-decoration:underline;text-underline-offset:3px}
 .qchoices{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
 .qchoices li{display:flex;align-items:flex-start;flex-wrap:wrap;gap:6px var(--sp-2);padding:6px 10px;border:1px solid var(--border);border-radius:var(--r-sm);
@@ -773,7 +802,6 @@ details.advanced.is-step{margin-top:0;border-top:0;padding-top:0}
 [data-density="compact"] .dt-table th{padding:6px 10px}
 [data-density="compact"] .dt-groups th{padding-top:4px}
 .dt-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;min-height:34px;padding:4px 6px 4px 14px;border-top:1px solid var(--border);font-size:var(--fs-12);color:var(--text-3)}
-.dt-pager{display:flex;align-items:center;gap:6px}
 .dt-barcell{display:flex;align-items:center;justify-content:flex-end;gap:8px}
 .dt-meter{display:block;flex:none;width:72px;height:6px;border-radius:3px;background:var(--chart-track);overflow:hidden}
 .dt-meter i{display:block;height:100%;border-radius:3px}
@@ -904,4 +932,10 @@ details.advanced.is-step{margin-top:0;border-top:0;padding-top:0}
   .work-grid,.work-pair{grid-template-columns:minmax(0,1fr)}
   .strip-text{white-space:normal}
   .strip-text .faint{display:none}
+}
+/* 窄屏翻页器: 页码换成「当前 / 总页数」 */
+@media (max-width:640px){
+  .pager-nums{display:none}
+  .pager-of{display:inline}
+  .pager-ctrl{margin-left:0}
 }
