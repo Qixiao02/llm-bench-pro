@@ -184,6 +184,25 @@ class TestServer(ServerCase):
         self.assertIsNone(store.get_run(b["run_id"]))
         self.assertEqual(self.request("POST", "/api/run-delete", {"run_id": "../x"})[0], 400)
 
+    def test_client_disconnect_is_quiet(self):
+        """浏览器中途断开(刷新 / 关页面)不打印堆栈; 其他异常照常打印。"""
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stderr(out):
+            for exc in (ConnectionAbortedError(10053, "aborted"), ConnectionResetError(10054, "reset"), BrokenPipeError(32, "pipe")):
+                try:
+                    raise exc
+                except OSError:
+                    self.httpd.handle_error(None, ("127.0.0.1", 1))
+        self.assertEqual(out.getvalue(), "")
+        with contextlib.redirect_stderr(out):
+            try:
+                raise ValueError("boom")
+            except ValueError:
+                self.httpd.handle_error(None, ("127.0.0.1", 1))
+        self.assertIn("ValueError: boom", out.getvalue())
+
     def test_works_open_mode(self):
         """新标签页打开(?open=1): 仍是沙箱(不同源, 碰不到接口), 但像普通网页一样可以加载外部字体和脚本。"""
         d = temp_dir()

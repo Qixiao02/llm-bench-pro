@@ -1332,6 +1332,13 @@ class BenchServer(ThreadingHTTPServer):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
 
+    def handle_error(self, request, client_address):
+        """浏览器刷新或关掉页面时会中断还在传的响应(Windows 上是 WinError 10053 / 10054, 其他系统是 Broken pipe),
+        属于正常情况, 不打印堆栈; 其他异常照常打印。"""
+        if isinstance(sys.exc_info()[1], (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description="LLM Bench Pro 服务")
