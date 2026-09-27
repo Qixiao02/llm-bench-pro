@@ -1,6 +1,6 @@
 "use strict";
 /* LLM Bench Pro 前端逻辑 (零依赖经典脚本; 图表用本地内置的 ECharts) */
-const UI_VERSION="3.2.0";  /* 与 llm_bench_pro/version.py 保持一致 */
+const UI_VERSION="3.2.1";  /* 与 llm_bench_pro/version.py 保持一致 */
 /* ============================================================
    基础工具
    ============================================================ */
@@ -791,9 +791,17 @@ function buildJump(navId,root){
   SPY=new IntersectionObserver(es=>{
     es.forEach(x=>seen.set(x.target.id,x.isIntersecting));
     const cur=secs.find(s=>seen.get(s.id));
-    nav.querySelectorAll("a").forEach(a=>{const on=!!cur&&a.dataset.jumpto===cur.id;a.setAttribute("aria-current",String(on));if(on&&a.scrollIntoView&&nav.scrollWidth>nav.clientWidth)a.scrollIntoView({block:"nearest",inline:"nearest"})});
+    nav.querySelectorAll("a").forEach(a=>{const on=!!cur&&a.dataset.jumpto===cur.id;a.setAttribute("aria-current",String(on));if(on)keepInNav(nav,a)});
   },{rootMargin:"-120px 0px -55% 0px"});
   secs.forEach(s=>SPY.observe(s));
+}
+/* 章节目录一行放不下(手机)时, 把当前章节滚到目录中间: 只滚目录本身, 不动页面。
+   不能用 scrollIntoView: 它会连带滚动整页, 手指正在往下滑时会被打断, 页面还会被拉回吸顶页头的位置 */
+function keepInNav(nav,a){
+  if(nav.scrollWidth<=nav.clientWidth)return;
+  const nr=nav.getBoundingClientRect(),ar=a.getBoundingClientRect();
+  if(ar.left>=nr.left+8&&ar.right<=nr.right-8)return;
+  nav.scrollTo({left:nav.scrollLeft+(ar.left+ar.width/2)-(nr.left+nr.width/2),behavior:"smooth"});
 }
 /* 概览带: 左边结论, 右边 3–5 个关键数字 */
 function stat(label,value,unit,{sub="",delta="",tip="",hero=false,wide=false}={}){
@@ -1627,6 +1635,8 @@ function perfConclusions(a,b){
     out.push({tone:t>10?"warn":"info",html:`输入 ${esc(m.pLast.label)}（约 ${fmtInt(m.pLast.in_tokens)} token）时要等 <b>${fmtSec(t)}</b> 秒才开始回答，${term("prefill")} ${fmtInt(m.pLast.prefill_tps_med)} token/秒。`});
   }
   if(m.succ!=null&&m.succ<100)out.push({tone:"bad",html:`有 <b>${m.fails}</b> 个请求失败（成功率 ${fmt(m.succ,1)}%）。`});
+  scnPhases(a).forEach(ph=>{const f=scnFails(ph),name=(ph.task&&ph.task.label)||SCN_LABEL[(ph.id||"").slice(4)]||ph.id;
+    if(f.total&&!f.ok)out.push({tone:"bad",html:`「${esc(name)}」场景的 <b>${f.total}</b> 个请求全部失败${esc(f.why)}${esc(f.hint)}。`})});
   if(b){
     const mb=perfCtx(b);
     const rows=[...PERF_METRICS,...CMP_EXTRA].filter(k=>sameRef(k,m,mb)).map(k=>({k,va:safeVal(k.val,m),vb:safeVal(k.val,mb)})).filter(x=>x.va!=null&&x.vb!=null)
@@ -1859,6 +1869,13 @@ const SCN_LABEL=Object.fromEntries(SCN_TPL.map(([id,name])=>[id,name]));
 const kLabel=v=>(v/1000).toFixed(v%1000?1:0)+"K";
 function retryTag(p){return (p.attempts||1)>1?` <span class="badge is-warn" title="这一档失败后整档重跑过，明细见导出的报告">重跑 ${p.attempts} 次</span>`:""}
 function scnPhases(r){return (r.phases||[]).filter(ph=>(ph.id||"").startsWith("scn_"))}
+/* 场景的失败情况: 总请求数 / 成功数 / 不重复的错误; 图片理解全部 HTTP 400 时多半是模型或服务不支持图片输入 */
+function scnFails(ph){
+  const pts=ph.points||[],total=pts.reduce((s,q)=>s+(q.total||0),0),ok=pts.reduce((s,q)=>s+(q.ok||0),0);
+  const errs=[...new Set(pts.flatMap(q=>q.errors||[]))];
+  const hint=ph.id==="scn_vision"&&ok===0&&errs.some(e=>/\b400\b/.test(e))?"，模型或服务可能不支持图片输入":"";
+  return{total,ok,fail:total-ok,errs,hint,why:errs.length?`（${errs[0]}${errs.length>1?` 等 ${errs.length} 种错误`:""}）`:""};
+}
 function scnLast(ph){const pts=ph.points||[];return pts.length?pts.reduce((m,q)=>((q.conc||0)>(m.conc||0)||(q.ctx_tokens||0)>(m.ctx_tokens||0)?q:m),pts[0]):null}
 function scnSection(a,b,p){
   const phs=scnPhases(a);if(!phs.length)return "";
@@ -1887,7 +1904,10 @@ function scnSection(a,b,p){
     const desc=[jsonRate(ph)!=null?`JSON 合格率 ${fmt(jsonRate(ph),0)}%`:"",t.max_tokens?"每次最多 "+t.max_tokens+" token":"",t.requests_per_worker?"每个并发发 "+t.requests_per_worker+" 次":"",
       t.images?"图片 "+t.images+" 张"+(t.images_per_request?"，每次带 "+t.images_per_request+" 张":""):"",t.pool_size?"任务集 "+t.pool_size+" 条":"",
       Array.isArray(t.rag_ctx)?"资料长度 "+t.rag_ctx.map(x=>(x/1000)+"K").join(" / "):""].filter(Boolean).join(" · ");
-    charts.push(`<div class="scn-block"><div class="sub-h">${esc(nameOf(ph))}${desc?`<span class="sub-h-note">${esc(desc)}</span>`:""}</div>
+    const f=scnFails(ph);
+    const failNote=!f.total||f.ok===f.total?"":f.ok===0?alertBox("bad",`<b>${f.total} 个请求全部失败</b>${esc(f.why)}${esc(f.hint)}，所以下面的图没有数据。`)
+      :alertBox("warn",`${f.fail} / ${f.total} 个请求失败${esc(f.why)}，图里只算成功的请求。`);
+    charts.push(`<div class="scn-block"><div class="sub-h">${esc(nameOf(ph))}${desc?`<span class="sub-h-note">${esc(desc)}</span>`:""}</div>${failNote}
       <div class="grid-2">${ccard(`${p}Scn${idx}Rps`,term("rps"),{desc:(isRag?"横轴是资料长度":"横轴是同时请求数")+" · 越高越好",h:220})}
         ${ccard(`${p}Scn${idx}E2e`,term("e2e")+"（较慢的情况）",{desc:"95% 的请求比这更快拿到完整回答 · 越短越好",h:220})}</div></div>`);
     details.push({id:`${p}-scn-${ph.id}`,title:esc(nameOf(ph)),sub:esc(desc),columns:[{key:"k",label:isRag?"资料长度":"同时请求数",unit:isRag?"token":"",type:"int",sticky:true},
@@ -2408,7 +2428,7 @@ function _renderIq(){
     (alerts?`<div class="notes">${alerts}</div>`:"")+
     panel({id:"iq-subj",title:"各科得分",jump:"各科得分",desc:series.length>1?"按 A 的成绩从高到低排列；「差异是否可信」按同一批题逐题比较（McNemar 检验）":"按成绩从高到低排列；点「看错题」直接跳到下面这一科答错的题",
       chart:`<div class="side-row">${dataTable(compact)}${chartTabs}</div>`,tables:[full]})+
-    (hasMmlu?panel({id:"iq-mmlu",title:"MMLU 各学科",jump:"MMLU 学科",desc:"MMLU 四个分组展开到具体学科（每个学科题数不多，正确率仅供参考）",
+    (hasMmlu?panel({id:"iq-mmlu",title:"MMLU 各学科",jump:"MMLU 学科",desc:"只有 MMLU 在题库里记了每道题属于哪个学科，这里把它的四个分组展开到 53 个具体学科（每个学科题数不多，正确率仅供参考）。ARC、GSM8K、MATH-500、HellaSwag、C-Eval、指令遵循没有更细的分类，它们的正确率就是上面「科目排行」里的那一行",
       tables:[`<div id="iqMmlu"><div class="qb-loading faint">正在按学科统计…</div></div>`]}):"")+
     panel({id:"iq-cost",title:"正确率和 token 花费",jump:"token 花费",desc:"每个科目答对了多少、平均每道题输出多少 token；点某一科可以直接看这一科的题",
       chart:tokCard,

@@ -893,6 +893,8 @@ details.advanced.is-step{margin-top:0;border-top:0;padding-top:0}
   .ov{grid-template-columns:minmax(0,1fr)}
 }
 @media (max-width:768px){
+  /* 手机上表格不限高度: 限高的表格自己会滚, 手指在表格上往下滑时整页不动(左右滑仍然滚表格) */
+  .dt-scroll{max-height:none!important}
   .grid-2,.grid-3{grid-template-columns:minmax(0,1fr)}
   .grid-3>:last-child:nth-child(odd){grid-column:auto}
 }

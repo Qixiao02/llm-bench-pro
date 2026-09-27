@@ -303,6 +303,17 @@ T("离线报告: 接口从报告数据里取(逐题只留请求的测试、回�
   assert.equal(workOpenUrl("works/x/t.html"), "/works/x/t.html?open=1");
   assert.equal(workFrameSrc("works/x/t.html"), 'src="/works/x/t.html"');
 });
+T("场景失败: 统计失败数与错误; 图片理解全部 HTTP 400 时提示可能不支持图片输入", () => {
+  const f = scnFails({id: "scn_vision", points: [{total: 12, ok: 0, errors: ["HTTP Error 400: Bad Request"]},
+    {total: 24, ok: 0, errors: ["HTTP Error 400: Bad Request"]}]});
+  assert.deepEqual([f.total, f.ok, f.fail, f.errs.length], [36, 0, 36, 1]);
+  assert.ok(f.hint.includes("不支持图片输入"));
+  const g = scnFails({id: "scn_chat", points: [{total: 10, ok: 9, errors: ["timeout", "reset"]}]});
+  assert.deepEqual([g.fail, g.hint], [1, ""]);
+  assert.ok(g.why.includes("等 2 种错误"));
+  assert.equal(scnFails({id: "scn_vision", points: [{total: 5, ok: 0, errors: ["timeout"]}]}).hint, "");   /* 不是 400 不乱猜 */
+  assert.equal(scnFails({id: "scn_json", points: []}).total, 0);
+});
 T("maskKey: API Key 掩码显示", () => {
   assert.equal(maskKey("sk-1234567890abcdef"), "sk-1…cdef");
   assert.equal(maskKey(""), "—");
