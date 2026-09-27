@@ -939,3 +939,9 @@ details.advanced.is-step{margin-top:0;border-top:0;padding-top:0}
   .pager-of{display:inline}
   .pager-ctrl{margin-left:0}
 }
+/* 离线报告: 只读, 隐藏需要后端的操作(新建、刷新、删除、重新检查、模型管理); 星级只看不能点 */
+.is-offline [data-online-only]{display:none!important}
+.is-offline .stars{pointer-events:none}
+/* 作品「新标签页打开」 */
+.modal-head #modalBadges .btn:last-child{margin-left:0}
+.split-head .work-open{margin-left:auto}

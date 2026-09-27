@@ -224,9 +224,9 @@ T("矩阵整形与对比整形", () => {
   const rows = compareRows([1], [{v: 100}, {v: 110}], (x, k) => x, [{key: "m", get: r => r.v}]);
   assert.equal(rows[0].m_0, 100);
   assert.equal(rows[0].m_1, 110);
-  assert.equal(Math.round(rows[0].m_d), 10);
+  assert.equal(Math.round(rows[0].m_d), -9);   /* 变化 = A 比 B: 100 比 110 少 9.1% */
   const cols = compareCols([{tag: "A"}, {tag: "B"}], [{key: "m", label: "速度", unit: "token/秒", dir: 1}]);
-  assert.deepEqual(cols.map(c => c.label), ["A", "B", "变化"]);
+  assert.deepEqual(cols.map(c => c.label), ["A", "B", "A 比 B"]);   /* 变化列写明方向 */
   assert.equal(cols[0].group, "速度（token/秒）");
 });
 T("翻页: 页码列表(首尾 + 当前页前后, 只隔一页时直接显示那一页, 隔得多才用 …)", () => {
@@ -275,6 +275,33 @@ T("散点名字防重叠: 挨着的点名字错开一行、统一从这一簇最
   assert.ok(ys[1] - ys[0] >= 15 && ys[2] - ys[1] >= 15, ys.join(","));
   assert.ok(o.get(a)[0] > 0 && Math.abs(o.get(b)[0]) < 1e-9, "簇里左边的点名字往右挪到最右那个点之后");
   assert.deepEqual(o.get(far), [0, 0]);   /* 单独的点不动 */
+});
+T("离线报告: 接口从报告数据里取(逐题只留请求的测试、回答按题取、返回副本、取不到报错)", () => {
+  const B = {api: {version: {version: "9"}, perfList: [{run_id: "r1"}], perfRuns: {r1: {run_id: "r1"}},
+    iqItems: {questions: [1], runs: {a: {recs: {}}, b: {recs: {}}, c: {recs: {}}}}, iqCompare: {"a|b": {ok: true}},
+    iqAnswers: {"s|0": {type: "mcq", prompt: "p", answers: {a: {ok: true}, b: {ok: false}}}}, genList: [{run_id: "g"}]},
+    files: {"works/x/t.gen.json": {rounds: []}, "works/x/t.html": "<p>hi</p>"}};
+  assert.equal(offlineApi(B, "/api/version").version, "9");
+  assert.equal(offlineApi(B, "/api/run?id=r1").run_id, "r1");
+  assert.throws(() => offlineApi(B, "/api/run?id=zz"), /没有这部分数据/);
+  assert.deepEqual(Object.keys(offlineApi(B, "/api/iq-items?id=a&cmp=b").runs), ["a", "b"]);
+  assert.deepEqual(Object.keys(offlineApi(B, "/api/iq-items?id=b&cmp=").runs), ["b"]);   /* 报告里换主测试 */
+  assert.throws(() => offlineApi(B, "/api/iq-items?id=zz"));
+  assert.deepEqual(offlineApi(B, "/api/iq-compare?a=a&b=b"), {ok: true});
+  assert.equal(offlineApi(B, "/api/iq-compare?a=c&b=a"), null);
+  const ans = offlineApi(B, "/api/iq-answer?ids=a&sid=s&idx=0");
+  assert.deepEqual([Object.keys(ans.answers), ans.prompt, ans.idx], [["a"], "p", 0]);
+  assert.equal(offlineApi(B, "/api/iq-answer?ids=a&sid=s&idx=9").ok, false);
+  assert.deepEqual(offlineApi(B, "/works/x/t.gen.json"), {rounds: []});
+  assert.throws(() => offlineApi(B, "/works/x/t.html"));      /* 作品网页不走接口, 用 workUrl / workFrameSrc */
+  assert.deepEqual(offlineApi(B, "/api/banks"), []);
+  assert.equal(offlineApi(B, "/api/gen-status").running, false);
+  const r = offlineApi(B, "/api/results"); r.push(2);
+  assert.equal(offlineApi(B, "/api/results").length, 1);       /* 返回副本: 页面改了不影响下次取 */
+  assert.equal(OFF, null);                                      /* 正常页面不是离线模式 */
+  assert.equal(workUrl("works/x/t.html"), "/works/x/t.html");
+  assert.equal(workOpenUrl("works/x/t.html"), "/works/x/t.html?open=1");
+  assert.equal(workFrameSrc("works/x/t.html"), 'src="/works/x/t.html"');
 });
 T("maskKey: API Key 掩码显示", () => {
   assert.equal(maskKey("sk-1234567890abcdef"), "sk-1…cdef");

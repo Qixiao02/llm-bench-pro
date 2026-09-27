@@ -1,6 +1,6 @@
 "use strict";
 /* LLM Bench Pro 前端逻辑 (零依赖经典脚本; 图表用本地内置的 ECharts) */
-const UI_VERSION="3.1.0";  /* 与 llm_bench_pro/version.py 保持一致 */
+const UI_VERSION="3.2.0";  /* 与 llm_bench_pro/version.py 保持一致 */
 /* ============================================================
    基础工具
    ============================================================ */
@@ -33,14 +33,82 @@ function timeText(iso){const d=toDate(iso);return d?`${d.getFullYear()}-${pad2(d
 function shortTime(iso){const d=toDate(iso);return d?`${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`:""}
 function durationText(s){s=Math.max(0,Math.round(s||0));if(s<3600)return Math.max(1,Math.round(s/60))+" 分钟";if(s<86400)return (s/3600).toFixed(1).replace(/\.0$/,"")+" 小时";return (s/86400).toFixed(1).replace(/\.0$/,"")+" 天"}
 const STATUS_NAME={running:"进行中",done:"已完成",failed:"失败",interrupted:"已中断",cancelled:"已停止"};
-async function getJSON(url){const r=await fetch(url,{cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);return r.json()}
+/* 离线报告(「导出报告」生成的 HTML): window.LLMB_OFFLINE 里带着页面要用的数据, 页面照常渲染, 只是不连后端、不能改数据 */
+const OFF=window.LLMB_OFFLINE||null;
+async function getJSON(url){
+  if(OFF)return offlineApi(OFF,url);
+  const r=await fetch(url,{cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);return r.json();
+}
 async function postJSON(url,body){
+  if(OFF)return{ok:false,error:"这是导出的离线报告，不能修改数据"};
   try{const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     try{return await r.json()}catch(e){return{ok:false,error:"HTTP "+r.status}}}
   catch(e){return{ok:false,error:"无法连接后端服务（"+e.message+"）"}}
 }
-function lsGet(key){try{return JSON.parse(localStorage.getItem(key)||"{}")}catch(e){return{}}}
-function lsSet(key,val){try{localStorage.setItem(key,JSON.stringify(val))}catch(e){}}
+/* 本地偏好: 在线时存浏览器里; 离线报告用导出那一刻的偏好, 改了只在这次打开有效(不写进看报告的人的浏览器) */
+const LS=(()=>{
+  const off=window.LLMB_OFF_STATE;
+  if(off){const m=new Map(Object.entries(off.ls||{}));return{get:k=>m.has(k)?m.get(k):null,set:(k,v)=>{m.set(k,String(v))}}}
+  return{get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,String(v))}catch(e){}}};
+})();
+function lsGet(key){try{return JSON.parse(LS.get(key)||"{}")}catch(e){return{}}}
+function lsSet(key,val){LS.set(key,JSON.stringify(val))}
+/* 离线报告的「接口」: 按页面请求的路径从报告带的数据里取(返回副本, 页面改了也不影响下次取); 取不到就报错 */
+function offlineApi(B,url){
+  const u=new URL(url,"http://offline.local/"),p=decodeURIComponent(u.pathname),q=k=>u.searchParams.get(k)||"",A=(B&&B.api)||{};
+  const copy=x=>x==null?null:JSON.parse(JSON.stringify(x));
+  const none=()=>{throw new Error("离线报告里没有这部分数据")};
+  const list=s=>s.split(",").filter(Boolean);
+  switch(p){
+    case "/api/version":return copy(A.version||{});
+    case "/api/results":return copy(A.perfList||[]);
+    case "/api/run":return A.perfRuns&&A.perfRuns[q("id")]?copy(A.perfRuns[q("id")]):none();
+    case "/api/iq-results":return copy(A.iqList||[]);
+    case "/api/iq-items":{
+      const d=A.iqItems;if(!d||!d.runs||!d.runs[q("id")])return none();
+      const out=copy(d);out.runs={};
+      [q("id"),...list(q("cmp"))].forEach(id=>{if(d.runs[id])out.runs[id]=copy(d.runs[id])});
+      return out;
+    }
+    case "/api/iq-compare":return copy((A.iqCompare||{})[q("a")+"|"+q("b")]);
+    case "/api/iq-answer":{
+      const e=(A.iqAnswers||{})[q("sid")+"|"+q("idx")];
+      if(!e)return{ok:false,error:"离线报告里没有这道题的回答"};
+      const answers={};list(q("ids")).forEach(id=>{if(e.answers&&e.answers[id])answers[id]=e.answers[id]});
+      return copy({ok:true,sid:q("sid"),idx:+q("idx"),type:e.type,prompt:e.prompt,answers});
+    }
+    case "/api/gen-results":return copy(A.genList||[]);
+    case "/api/banks":case "/api/endpoints":return[];
+    case "/api/status":case "/api/iq-status":case "/api/gen-status":return{running:false};
+  }
+  if(p.startsWith("/works/")){const f=((B&&B.files)||{})[p.slice(1)];return f&&typeof f==="object"?copy(f):none()}
+  return none();
+}
+/* 作品文件地址: 在线 = 服务端 /works/…; 离线报告 = 报告里带的内容(截图是 data: 地址, 网页和记录用 blob: 地址) */
+const OFF_BLOBS=new Map();
+function workUrl(path){
+  if(!OFF)return "/"+path;
+  const f=(OFF.files||{})[path];if(f==null)return "";
+  if(typeof f==="string"&&f.startsWith("data:"))return f;
+  if(!OFF_BLOBS.has(path))OFF_BLOBS.set(path,URL.createObjectURL(new Blob([typeof f==="string"?f:JSON.stringify(f,null,1)],
+    {type:/\.html?$/i.test(path)?"text/html;charset=utf-8":"application/json"})));
+  return OFF_BLOBS.get(path);
+}
+/* 预览 iframe 的内容来源: 离线报告用 srcdoc(配合 sandbox 属性是不同源的), 并在 doctype 后加上和服务端一样的资源限制 */
+function workFrameSrc(path){
+  if(!OFF)return `src="/${esc(path)}"`;
+  const f=(OFF.files||{})[path];
+  if(typeof f!=="string")return `srcdoc="${esc("<p style='font:14px sans-serif;padding:24px'>离线报告里没有这个作品</p>")}"`;
+  const meta=`<meta http-equiv="Content-Security-Policy" content="${esc(OFF.worksCsp||"")}">`;
+  return `srcdoc="${esc(f.replace(/^(\s*<!doctype[^>]*>)?/i,m=>m+meta))}"`;
+}
+/* 新标签页打开: 像普通网页一样运行(可以加载外部字体和脚本), 仍然隔离, 碰不到本系统的数据和接口 */
+function workOpenUrl(path){return OFF?workUrl(path):"/"+path+"?open=1"}
+function workOpenLink(it,{text=false}={}){
+  if(!it||!it.file||it.error)return "";
+  const tip="新标签页打开：像普通网页一样运行（可以加载外部字体和脚本），仍然隔离，碰不到本系统的数据";
+  return `<a class="btn ${text?"btn-secondary btn-sm":"btn-ghost btn-icon btn-sm"} work-open" href="${esc(workOpenUrl(it.file))}" target="_blank" rel="noopener noreferrer" title="${tip}"${text?"":` aria-label="新标签页打开"`}>${icon("external")}${text?"新标签页打开":""}</a>`;
+}
 /* 图表卡里的标签页(条形 / 能力形状、折线 / 散点)记住上次选的 */
 const CTAB=Object.assign({subj:"bars",tok:"line"},lsGet("llm-bench-pro-ctab"));
 function bindFormMemory(key,ids){
@@ -160,7 +228,7 @@ function readTheme(){
 function withAlpha(hex,a){const h=String(hex).replace("#","");return h.length===6?"#"+h+Math.round(a*255).toString(16).padStart(2,"0"):hex}
 function applyTheme(t,persist){
   document.documentElement.dataset.theme=t;
-  if(persist)try{localStorage.setItem("llm-bench-pro-theme",t)}catch(e){}
+  if(persist)LS.set("llm-bench-pro-theme",t);
   $("themeBtn").querySelector("use").setAttribute("href",t==="dark"?"#i-sun":"#i-moon");
   $("themeBtn").setAttribute("aria-label",t==="dark"?"切换为亮色":"切换为暗色");
   readTheme();
@@ -173,14 +241,14 @@ function applyRailPin(on,persist){
   document.querySelector(".app").classList.toggle("is-pinned",on);
   const b=$("railPin");b.setAttribute("aria-pressed",String(on));
   b.title=b.ariaLabel=on?"收起侧栏":"固定展开侧栏";
-  if(persist)try{localStorage.setItem("llm-bench-pro-rail",on?"1":"0")}catch(e){}
+  if(persist)LS.set("llm-bench-pro-rail",on?"1":"0");
 }
 $("railPin").onclick=()=>applyRailPin(!document.querySelector(".app").classList.contains("is-pinned"),true);
 /* 密度: 标准 / 紧凑(表格行高、面板内边距), 记在本机 */
 function applyDensity(d,persist){
   document.documentElement.dataset.density=d;
   document.querySelectorAll("[data-density-toggle]").forEach(b=>b.setAttribute("aria-checked",String(d==="compact")));
-  if(persist)try{localStorage.setItem("llm-bench-pro-density",d)}catch(e){}
+  if(persist)LS.set("llm-bench-pro-density",d);
   for(const inst of CHARTS.values()){try{inst.resize()}catch(e){}}
 }
 
@@ -191,6 +259,7 @@ let VIEW="dash";
 const VIEWS={dash:"viewDash",cmp:"viewCmp",iq:"viewIq",gen:"viewGen",styleguide:"viewSg"};
 function showView(v){
   if(!VIEWS[v])v="dash";
+  if(OFF&&v!==OFF.page)v=OFF.page;
   VIEW=v;
   document.querySelectorAll(".nav-item").forEach(b=>{if(b.dataset.view===v)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
   Object.entries(VIEWS).forEach(([k,id])=>$(id).classList.toggle("is-active",k===v));
@@ -216,6 +285,7 @@ function closeDrawers(except){
   DRAWERS.forEach(id=>{if(id!==except&&$(id)&&!$(id).hidden)toggleLauncher(id,false)});
 }
 function toggleLauncher(id,force){
+  if(OFF)return;  /* 离线报告不能新建测试 */
   const el=$(id);if(!el)return;
   const open=force==null?el.hidden:force;
   if(open){try{({launcher:launcherSummary,iqLauncher:iqLauncherSummary,genLauncher:genLauncherSummary}[id]||(()=>{}))()}catch(e){}}
@@ -755,7 +825,8 @@ function summaryCard(title,items,foot=""){
     <ul class="summary-list">${items.map(i=>`<li class="is-${i.tone||"info"}">${icon(ic[i.tone||"info"])}<span>${i.html}</span></li>`).join("")}</ul>
     ${foot?`<div class="summary-foot">${foot}</div>`:""}</div>`;
 }
-/* 变化标记: dir=1 越高越好, -1 越低越好; mode=pp 用百分点 */
+/* 变化标记: deltaPill(基准, 对象) = 对象相对基准; dir=1 越高越好, -1 越低越好; mode=pp 用百分点。
+   页面上一律写成「A 比 B」: deltaPill(B 的值, A 的值, dir, {prefix:"比 B "}) */
 function deltaPill(va,vb,dir,{mode="pct",prefix=""}={}){
   if(va==null||vb==null)return `<span class="delta flat">—</span>`;
   const d=mode==="pp"?vb-va:(va?(vb-va)/Math.abs(va)*100:0);
@@ -765,6 +836,7 @@ function deltaPill(va,vb,dir,{mode="pct",prefix=""}={}){
   const good=d*dir>0;
   return `<span class="delta ${good?"up":"down"}" title="${dir<0?"越低越好":"越高越好"}，${good?"更好":"更差"}">${icon(d>0?"arrow-up":"arrow-down")}${prefix}${d>=0?"+":""}${fmt(d,1)}${unit}</span>`;
 }
+/* pctChange(基准, 对象): 对象相对基准变化了百分之几; 页面上用 pctChange(B, A) 表示「A 比 B」 */
 function pctChange(va,vb){return va==null||vb==null||!va?null:(vb-va)/Math.abs(va)*100}
 /* 表格: head=[列名...], rows=[[单元格 HTML...]...] */
 function table(head,rows,{maxH}={}){
@@ -908,10 +980,11 @@ function dtMatrix(spec){
 function csvCell(v){const s=v==null?"":String(v);return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s}
 function toCSV(m,title){return "﻿"+(title?csvCell(title)+"\r\n":"")+[m.head,...m.rows].map(r=>r.map(csvCell).join(",")).join("\r\n")}
 function toTSV(m){return [m.head,...m.rows].map(r=>r.map(v=>String(v??"").replace(/[\t\r\n]+/g," ")).join("\t")).join("\n")}
-function downloadText(name,text,type="text/csv;charset=utf-8"){
-  const u=URL.createObjectURL(new Blob([text],{type}));
+function downloadText(name,text,type="text/csv;charset=utf-8"){downloadBlob(name,new Blob([text],{type}))}
+function downloadBlob(name,blob){
+  const u=URL.createObjectURL(blob);
   const a=document.createElement("a");a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();
-  setTimeout(()=>URL.revokeObjectURL(u),2000);
+  setTimeout(()=>URL.revokeObjectURL(u),4000);
 }
 function safeName(s){return String(s||"表格").replace(/[\\/:*?"<>|\s]+/g,"_").slice(0,60)}
 /* 热力底色: seq = 同一色相由浅到深; div = 正(更好)绿 / 负(更差)红, 小于 1 视为持平 */
@@ -1134,7 +1207,7 @@ function compareRows(keys,runs,getRow,metrics){
     metrics.forEach(m=>{
       const vals=runs.map(x=>{const r=getRow(x,k);return r?m.get(r):null});
       vals.forEach((v,i)=>out[m.key+"_"+i]=v);
-      if(runs.length>1)out[m.key+"_d"]=pctChange(vals[0],vals[1]);
+      if(runs.length>1)out[m.key+"_d"]=pctChange(vals[1],vals[0]);  /* A 比 B */
     });
     return out;
   });
@@ -1142,7 +1215,7 @@ function compareRows(keys,runs,getRow,metrics){
 function compareCols(runs,metrics){
   return metrics.flatMap(m=>[
     ...runs.map((x,i)=>({key:m.key+"_"+i,label:x.tag,group:m.label+(m.unit?`（${m.unit}）`:""),type:m.type||"num",digits:m.digits,tip:m.tip})),
-    ...(runs.length>1?[{key:m.key+"_d",label:"变化",group:m.label+(m.unit?`（${m.unit}）`:""),type:"delta",dir:m.dir??1}]:[])]);
+    ...(runs.length>1?[{key:m.key+"_d",label:"A 比 B",group:m.label+(m.unit?`（${m.unit}）`:""),type:"delta",dir:m.dir??1}]:[])]);
 }
 /* ---------- 面板: 图表 | 表格 ---------- */
 const VIEWMODE=Object.assign({dash:"chart",cmp:"chart",iq:"chart",gen:"chart"},lsGet("llm-bench-pro-viewmode"));
@@ -1398,17 +1471,6 @@ function genLauncherSummary(){
 });
 
 /* ---------- 导出离线报告 ---------- */
-function exportReport(view){
-  const idA=view==="cmp"?$("cmpA").value:$("runA").value;
-  if(!idA){toast("请先选择要导出的测试","warning");return}
-  const idB=view==="cmp"?$("cmpB").value:$("runB").value;
-  const url="/api/report?id="+encodeURIComponent(idA)+(idB?"&cmp="+encodeURIComponent(idB):"");
-  const a=document.createElement("a");
-  a.href=url;a.rel="noopener";
-  document.body.appendChild(a);a.click();a.remove();
-  toast("已开始下载报告（一个网页文件，可以直接发给别人打开）","success",3500);
-}
-
 async function refresh(focusNew){
   status("加载中…");
   if(!RUNS_LOADED)$("dashEmpty").innerHTML=skeletonPage();
@@ -1568,11 +1630,12 @@ function perfConclusions(a,b){
   if(b){
     const mb=perfCtx(b);
     const rows=[...PERF_METRICS,...CMP_EXTRA].filter(k=>sameRef(k,m,mb)).map(k=>({k,va:safeVal(k.val,m),vb:safeVal(k.val,mb)})).filter(x=>x.va!=null&&x.vb!=null)
-      .map(x=>({...x,d:pctChange(x.va,x.vb)})).filter(x=>x.d!=null);
+      .map(x=>({...x,d:pctChange(x.vb,x.va)})).filter(x=>x.d!=null);  /* A 比 B */
     const better=rows.filter(x=>x.d*x.k.dir>=1).sort((p,q)=>Math.abs(q.d)-Math.abs(p.d));
     const worse=rows.filter(x=>x.d*x.k.dir<=-1).sort((p,q)=>Math.abs(q.d)-Math.abs(p.d));
     const fmtD=x=>`${esc(metricLabel(x.k,m))} ${x.d>=0?"+":""}${fmt(x.d,1)}%`;
-    out.push({tone:worse.length>better.length?"warn":"good",html:`B 相比 A：<b>${better.length}</b> 项更好、<b>${worse.length}</b> 项更差、${rows.length-better.length-worse.length} 项基本持平。`+
+    if(!rows.length)out.push({tone:"info",html:`B 和 A 没有可以直接比较的指标（B 可能没有测完，或者两次测试的档位都不一样）。`});
+    else out.push({tone:worse.length>better.length?"warn":"good",html:`A 比 B：<b>${better.length}</b> 项更好、<b>${worse.length}</b> 项更差、${rows.length-better.length-worse.length} 项基本持平。`+
       (better.length?`更好：${better.slice(0,2).map(fmtD).join("；")}。`:"")+(worse.length?`更差：${worse.slice(0,2).map(fmtD).join("；")}。`:"")});
   }
   return out;
@@ -1591,7 +1654,7 @@ function perfStats(a,b){
     const k=all.find(x=>x.key===key);if(!k)return "";
     const va=safeVal(k.val,ma),vb=mb?safeVal(k.val,mb):null;
     const same=!mb||sameRef(k,ma,mb);
-    const delta=!mb?"":same?deltaPill(va,vb,k.dir,{prefix:"B "}):`<span class="delta flat" title="A 是${esc(refText(k,ma))}，B 是${esc(refText(k,mb))}">档位不同</span>`;
+    const delta=!mb?"":same?deltaPill(vb,va,k.dir,{prefix:"比 B "}):`<span class="delta flat" title="A 是${esc(refText(k,ma))}，B 是${esc(refText(k,mb))}">档位不同</span>`;
     let sub=key==="zh"?(ma.en?`英文 ${fmt(ma.en.decode_tps_med)} token/秒 · 出字间隔 ${fmt(ma.zh&&ma.zh.itl_p50_ms_med)} 毫秒`:esc(safeSub(k,ma))):esc(safeSub(k,ma));
     if(key==="ttftmax"&&ma.pLast)sub=`${term("prefill")} ${fmtInt(ma.pLast.prefill_tps_med)} token/秒`;
     if(mb)sub+=`<br>B：${metricVal(k,vb)} ${esc(k.unit)}${same?"":`（${esc(refText(k,mb))}，不可比）`}`;
@@ -1687,7 +1750,7 @@ function matrixSection(a,b,p){
   let heat;
   if(runs.length>1){
     const rows=compareRows(labels,runs,(x,l)=>x.ph.find(z=>z.label===l),M);
-    heat={id:p+"-matrix-h",title:"B 相对 A 的变化（绿色更好、红色更差，颜色越深差距越大）",columns:[{key:"_key",label:"输入长度",type:"text",sticky:true},
+    heat={id:p+"-matrix-h",title:"A 相对 B 的变化（绿色是 A 更好、红色是 A 更差，颜色越深差距越大）",columns:[{key:"_key",label:"输入长度",type:"text",sticky:true},
       ...M.map(m=>({key:m.key+"_d",label:m.label,unit:"变化",type:"heat",scale:"div",dir:m.dir,fmt:v=>deltaText(v,m.dir),sortValue:r=>r[m.key+"_d"]==null?null:r[m.key+"_d"]*m.dir}))],
       rows,note:"按好坏方向换算后比较"};
   }else{
@@ -1954,11 +2017,11 @@ function allMetricsSection(a,b,p){
     if(va==null&&vb==null)return null;
     const same=!mb||sameRef(k,ma,mb);
     return{name:metricLabel(k,ma),va,vb,unit:k.unit,_dir:k.dir,dirText:k.dir<0?"越低越好":"越高越好",digits:k.digits??1,
-      d:mb&&same?pctChange(va,vb):null,cmp:mb?(same?{tone:"good",text:"可比"}:{tone:"warn",text:"档位不同",tip:`B 是${refText(k,mb)}`}):null,sub:safeSub(k,ma),tip:metricTip(k)};
+      d:mb&&same?pctChange(vb,va):null,cmp:mb?(same?{tone:"good",text:"可比"}:{tone:"warn",text:"档位不同",tip:`B 是${refText(k,mb)}`}):null,sub:safeSub(k,ma),tip:metricTip(k)};
   }).filter(Boolean);
   const num=(key)=>({key,type:"num",digitsOf:r=>r.digits,fmt:(v,r)=>metricVal({digits:r.digits,unit:r.unit},v)});
   const spec={id:p+"-all-t",title:mb?"全部指标 · A / B":"全部指标",columns:[{key:"name",label:"指标",type:"text",sticky:true,wrap:true},
-    Object.assign(num("va"),{label:mb?"A":"数值"}),...(mb?[Object.assign(num("vb"),{label:"B"}),{key:"d",label:"变化",type:"delta"},{key:"cmp",label:"可比性",type:"status"}]:[]),
+    Object.assign(num("va"),{label:mb?"A":"数值"}),...(mb?[Object.assign(num("vb"),{label:"B"}),{key:"d",label:"A 比 B",type:"delta"},{key:"cmp",label:"可比性",type:"status"}]:[]),
     {key:"unit",label:"单位",type:"text"},{key:"dirText",label:"方向",type:"text"},{key:"sub",label:"说明",type:"text",wrap:true}],rows,maxH:340};
   return panel({id:p+"-all",title:"全部指标",jump:"全部指标",desc:"上面图表里的关键数字汇总在一张表里，可以排序、复制到 Excel 或导出",tables:[spec]});
 }
@@ -1979,7 +2042,7 @@ async function render(){
   if(!RUNS[idA]){
     body.hidden=true;buildJump("dashJump",null);
     $("dashEmpty").innerHTML=emptyState("还没有速度测试","测模型生成有多快、同时处理很多请求时稳不稳、输入很长时要等多久。点右上角「新建速度测试」开始，结果会显示在这里",
-      {action:`<button class="btn btn-primary" data-toggle="launcher">${icon("plus")}新建速度测试</button>`});
+      {action:`<button class="btn btn-primary" data-toggle="launcher" data-online-only>${icon("plus")}新建速度测试</button>`});
     return;
   }
   const seq=++renderSeq;
@@ -2007,8 +2070,8 @@ function runLine(r,tag,color){
 function cmpRows(a,b){
   const ma=perfCtx(a),mb=perfCtx(b);
   return [...PERF_METRICS,...CMP_EXTRA].map(k=>{
-    const va=safeVal(k.val,ma),vb=safeVal(k.val,mb),same=sameRef(k,ma,mb),d=same?pctChange(va,vb):null;
-    return{k,label:metricLabel(k,ma),va,vb,d,same,refB:same?"":refText(k,mb),gain:d==null?null:d*k.dir};  /* gain>0 表示 B 更好 */
+    const va=safeVal(k.val,ma),vb=safeVal(k.val,mb),same=sameRef(k,ma,mb),d=same?pctChange(vb,va):null;  /* A 比 B */
+    return{k,label:metricLabel(k,ma),va,vb,d,same,refB:same?"":refText(k,mb),gain:d==null?null:d*k.dir};  /* gain>0 表示 A 更好 */
   }).filter(x=>x.va!=null||x.vb!=null);
 }
 /* 对好坏的影响: 更差 → 更好 → 持平 → 不可比 */
@@ -2019,7 +2082,7 @@ function cmpImpactOrder(rows){
 function cmpTableRows(rows){
   return rows.map(x=>({label:x.label,va:x.va,vb:x.vb,d:x.same?x.d:null,_dir:x.k.dir,unit:x.k.unit,digits:x.k.digits??1,dirText:x.k.dir<0?"越低越好":"越高越好",
     cmp:x.va==null||x.vb==null?{tone:"neutral",text:"缺一边"}:x.same?{tone:"good",text:"可比"}:{tone:"warn",text:"档位不同",tip:"B 是"+x.refB},
-    judge:x.gain==null?null:Math.abs(x.gain)<1?{tone:"neutral",text:"持平"}:x.gain>0?{tone:"good",text:"B 更好"}:{tone:"bad",text:"B 更差"}}));
+    judge:x.gain==null?null:Math.abs(x.gain)<1?{tone:"neutral",text:"持平"}:x.gain>0?{tone:"good",text:"A 更好"}:{tone:"bad",text:"A 更差"}}));
 }
 async function renderCmp(){
   if(!RUNS_LOADED)return;
@@ -2040,27 +2103,27 @@ async function renderCmp(){
   const notSame=rows.filter(x=>!x.same&&x.va!=null&&x.vb!=null);
   const concl=[];
   concl.push({tone:worse.length>better.length?"warn":better.length?"good":"info",
-    html:`${both.length} 项可比的指标里，B 有 <b>${better.length}</b> 项更好、<b>${worse.length}</b> 项更差、${both.length-better.length-worse.length} 项基本持平（差别小于 1%）${notSame.length?`，另有 ${notSame.length} 项档位不同不可比`:""}。`});
-  if(better.length)concl.push({tone:"good",html:"B 更好的地方："+better.slice(0,3).map(x=>`${esc(x.label)} <b>${fmt(Math.abs(x.d),1)}%</b>`).join("；")+"。"});
-  if(worse.length)concl.push({tone:"bad",html:"B 更差的地方："+worse.slice(0,3).map(x=>`${esc(x.label)} <b>${fmt(Math.abs(x.d),1)}%</b>`).join("；")+"。"});
+    html:`${both.length} 项可比的指标里，A 比 B：<b>${better.length}</b> 项更好、<b>${worse.length}</b> 项更差、${both.length-better.length-worse.length} 项基本持平（差别小于 1%）${notSame.length?`，另有 ${notSame.length} 项档位不同不可比`:""}。`});
+  if(better.length)concl.push({tone:"good",html:"A 更好的地方："+better.slice(0,3).map(x=>`${esc(x.label)} <b>${fmt(Math.abs(x.d),1)}%</b>`).join("；")+"。"});
+  if(worse.length)concl.push({tone:"bad",html:"A 更差的地方："+worse.slice(0,3).map(x=>`${esc(x.label)} <b>${fmt(Math.abs(x.d),1)}%</b>`).join("；")+"。"});
   if(notSame.length)concl.push({tone:"info",html:`没有计入（两次测试的档位不同，例如最多同时请求数、最长输入不一样）：${notSame.map(x=>esc(x.label)).join("、")}。`});
   const ov=[a,b].map(r=>(r.overrides||{}).fixed_output);
   if(ov[0]!==ov[1])concl.push({tone:"warn",html:"两次测试的输出长度设置不同（一次固定、一次不固定），速度类指标不能直接比较。"});
   /* 右侧: 变化最大的项目(最好 2 项 + 最差 2 项) */
   const top=[...better.slice(0,2),...worse.slice(0,2)];
-  const stats=top.map(x=>stat(esc(x.label),metricVal(x.k,x.vb),esc(x.k.unit),{delta:deltaPill(x.va,x.vb,x.k.dir,{prefix:"B "}),tip:metricTip(x.k),
-    sub:`A ${metricVal(x.k,x.va)} → B ${metricVal(x.k,x.vb)} · ${x.k.dir<0?"越低越好":"越高越好"}`})).join("")+
+  const stats=top.map(x=>stat(esc(x.label),metricVal(x.k,x.va),esc(x.k.unit),{delta:deltaPill(x.vb,x.va,x.k.dir,{prefix:"比 B "}),tip:metricTip(x.k),
+    sub:`A ${metricVal(x.k,x.va)} · B ${metricVal(x.k,x.vb)} · ${x.k.dir<0?"越低越好":"越高越好"}`})).join("")+
     (top.length<4?stat("可比指标",`${better.length}<small>更好</small> ${worse.length}<small>更差</small>`,"",{sub:`${both.length-better.length-worse.length} 项持平${notSame.length?` · ${notSame.length} 项不可比`:""}`,wide:top.length%2===0}):"");
   const ordered=cmpImpactOrder(rows),trows=cmpTableRows(ordered);
   const num=(key,label)=>({key,label,type:"num",digitsOf:r=>r.digits,fmt:(v,r)=>metricVal({digits:r.digits,unit:r.unit},v)});
   const sizeNote=a.suite!==b.suite?`两次测试规模不同（${esc(SUITE_NAME[a.suite]||a.suite)} / ${esc(SUITE_NAME[b.suite]||b.suite)}），只比较两边都有的项目`:"";
   const compact={id:"c-all-c",title:"对比总表",sub:sizeNote,columns:[{key:"label",label:"指标",type:"text",sticky:true,wrap:true},num("va","A"),num("vb","B"),
-    {key:"d",label:"变化",type:"delta"},{key:"cmp",label:"可比性",type:"status"}],rows:trows,note:"默认按对好坏的影响排序：先更差、再更好"};
+    {key:"d",label:"A 比 B",type:"delta"},{key:"cmp",label:"可比性",type:"status"}],rows:trows,note:"默认按对好坏的影响排序：先更差、再更好"};
   const full={id:"c-all-t",title:"对比总表",sub:sizeNote,columns:[{key:"label",label:"指标",type:"text",sticky:true,wrap:true},num("va","A"),num("vb","B"),
-    {key:"d",label:"变化",type:"delta"},{key:"judge",label:"结论",type:"status"},{key:"cmp",label:"可比性",type:"status"},{key:"unit",label:"单位",type:"text"},{key:"dirText",label:"方向",type:"text"}],rows:trows};
+    {key:"d",label:"A 比 B",type:"delta"},{key:"judge",label:"结论",type:"status"},{key:"cmp",label:"可比性",type:"status"},{key:"unit",label:"单位",type:"text"},{key:"dirText",label:"方向",type:"text"}],rows:trows};
   const h=Math.max(220,both.length*30+60);
   el.innerHTML=overview(concl,stats,{title:"对比结论",meta:runLine(a,"A",C.a)+runLine(b,"B",C.b)})+
-    panel({id:"c-diff",title:"变化一览",jump:"变化一览",desc:"往右是 B 更好，往左是 B 更差；延迟类指标（越短越好）已按“好坏”方向换算。灰色表示差别小于 1%，基本持平",
+    panel({id:"c-diff",title:"变化一览",jump:"变化一览",desc:"A 比 B：往右是 A 更好，往左是 A 更差；延迟类指标（越短越好）已按“好坏”方向换算。灰色表示差别小于 1%，基本持平",
       chart:`<div class="side-row is-rev">${dataTable(compact)}${ccard("cDiff","各项指标的变化（%）",{desc:"按对好坏的影响排序",h})}</div>`,tables:[full]})+
     perfSectionsHTML(a,b,"c");
   disposeDetached();
@@ -2078,7 +2141,7 @@ function drawDiffChart(id,rows){
     yAxis:axisCat(rows.map(x=>x.label),{inverse:true,labelWidth:220,labelColor:C.text2}),
     tooltip:Object.assign(baseOption().tooltip,{trigger:"item",formatter:p=>{const x=rows[p.dataIndex],dg=x.k.digits??1;
       return tt(x.label,[["","A",fmt(x.va,dg)+" "+x.k.unit],["","B",fmt(x.vb,dg)+" "+x.k.unit]],
-        `数值变化 ${x.d>=0?"+":""}${fmt(x.d,1)}% · ${Math.abs(x.gain)<1?"基本持平":x.gain>0?"B 更好":"B 更差"}（${x.k.dir<0?"越低越好":"越高越好"}）`)}}),
+        `A 比 B ${x.d>=0?"+":""}${fmt(x.d,1)}% · ${Math.abs(x.gain)<1?"基本持平":x.gain>0?"A 更好":"A 更差"}（${x.k.dir<0?"越低越好":"越高越好"}）`)}}),
     series:[{type:"bar",barMaxWidth:18,data:rows.map(x=>({value:Math.max(-lim,Math.min(lim,x.gain)),itemStyle:{color:colorOf(x.gain),borderRadius:x.gain>=0?[0,4,4,0]:[4,0,0,4]}})),
       label:{show:true,position:"right",color:C.text2,fontSize:11,formatter:p=>{const g=rows[p.dataIndex].gain;return Math.abs(g)<1?"持平":(g>0?"更好 ":"更差 ")+fmt(Math.abs(g),1)+"%"}},
       labelLayout:p=>{const g=rows[p.dataIndex]&&rows[p.dataIndex].gain;return g<0?{x:p.rect.x-4,align:"right"}:{}},
@@ -2251,7 +2314,7 @@ function iqSubjRows(series){
       const x=(s.r.subjects||[]).find(y=>y.id===sub.id);
       row["acc_"+i]=x?x.acc:null;row["tok_"+i]=x&&x.n?x.out_tokens/x.n:null;
       if(i){
-        row["d_"+i]=x&&sub.acc!=null?x.acc-sub.acc:null;
+        row["d_"+i]=x&&sub.acc!=null?sub.acc-x.acc:null;  /* A 比它 */
         const sig=IQ_SIG.get(a.run_id+"|"+s.r.run_id),t=sig&&sig.ok&&sig.same_bank&&sig.subjects&&sig.subjects[sub.id];
         row["sig_"+i]=!sig?{tone:"neutral",text:"计算中"}:!t||!t.n?{tone:"neutral",text:"—"}:t.significant?{tone:"good",text:"可信",tip:"p = "+fmtP(t.p)}:{tone:"neutral",text:"不明显",tip:"p = "+fmtP(t.p)};
       }
@@ -2263,11 +2326,11 @@ function iqSubjSpecs(series){
   const rows=iqSubjRows(series),multi=series.length>1;
   const accCol=(s,i)=>({key:"acc_"+i,label:multi?s.tag:"正确率",unit:multi?"":"%",group:multi?"正确率（%）":"",type:"bar",color:s.color,max:100});
   const compact={id:"iq-subj-c",title:"科目排行",columns:[{key:"name",label:"科目",type:"text",sticky:true},...series.map(accCol),
-      ...(multi?series.slice(1).map((s,i)=>({key:"sig_"+(i+1),label:`${s.tag} 与 A`,group:"差异是否可信",type:"status",tip:TERMS.sig.desc})):[{key:"ci",label:"误差范围",unit:"%",type:"text",align:"right",tip:TERMS.ci.desc}]),
+      ...(multi?series.slice(1).map((s,i)=>({key:"sig_"+(i+1),label:`A 与 ${s.tag}`,group:"差异是否可信",type:"status",tip:TERMS.sig.desc})):[{key:"ci",label:"误差范围",unit:"%",type:"text",align:"right",tip:TERMS.ci.desc}]),
       {key:"n",label:"题数",type:"int"},{key:"act",label:"",type:"html",noSort:true}],rows,search:false};
   const full={id:"iq-subj-t",title:"科目排行",columns:[{key:"name",label:"科目",type:"text",sticky:true},{key:"n",label:"题数",type:"int"},...series.map(accCol),
-      ...(multi?series.slice(1).map((s,i)=>({key:"d_"+(i+1),label:`${s.tag} 比 A`,group:"差距（百分点）",type:"num",fmt:ppText,sortValue:r=>r["d_"+(i+1)]})):[]),
-      ...(multi?series.slice(1).map((s,i)=>({key:"sig_"+(i+1),label:`${s.tag} 与 A`,group:"差异是否可信",type:"status"})):[{key:"ci",label:"误差范围",unit:"%",type:"text",align:"right"},{key:"correct",label:"答对",type:"int"}]),
+      ...(multi?series.slice(1).map((s,i)=>({key:"d_"+(i+1),label:`A 比 ${s.tag}`,group:"差距（百分点）",type:"num",fmt:ppText,sortValue:r=>r["d_"+(i+1)]})):[]),
+      ...(multi?series.slice(1).map((s,i)=>({key:"sig_"+(i+1),label:`A 与 ${s.tag}`,group:"差异是否可信",type:"status"})):[{key:"ci",label:"误差范围",unit:"%",type:"text",align:"right"},{key:"correct",label:"答对",type:"int"}]),
       ...series.map((s,i)=>({key:"tok_"+i,label:multi?s.tag:"每题 token",group:multi?"平均每题输出 token":"",type:"int",tip:"平均每题输出多少 token，越少越省"})),
       {key:"trunc",label:"没答完",type:"int"},{key:"err",label:"请求失败",type:"int"},{key:"act",label:"",type:"html",noSort:true}],rows};
   return{compact,full};
@@ -2278,7 +2341,7 @@ function _renderIq(){
   const mainId=$("iqMainSel").value,a=IQ_RUNS[mainId];
   renderIqCmpList(mainId);
   if(!a){el.innerHTML=emptyState("还没有能力测试","用公开的标准考题（数学、常识、推理、中文、按要求作答）考模型，看答对多少。点右上角「新建能力测试」开始",
-    {action:`<button class="btn btn-primary" data-toggle="iqLauncher">${icon("plus")}新建能力测试</button>`});buildJump("iqJump",null);return}
+    {action:`<button class="btn btn-primary" data-toggle="iqLauncher" data-online-only>${icon("plus")}新建能力测试</button>`});buildJump("iqJump",null);return}
   const series=iqSeries(a);
   const base=a.overall||{};
   /* ---- 提示 ---- */
@@ -2288,12 +2351,12 @@ function _renderIq(){
   const errN=(a.overall||{}).errors||0;
   if(a.status==="done"&&errN&&SERVER.iq_version&&a.iq_version===SERVER.iq_version)
     alerts+=alertBox("info",`A 有 ${errN} 题请求失败（已记为答错）。重试只会重新回答这些题，其他结果不变。`,
-      `<button class="btn btn-secondary btn-sm" onclick="iqResume('${esc(a.run_id)}')">${icon("play")}重试失败的题</button>`);
+      `<button class="btn btn-secondary btn-sm" data-online-only onclick="iqResume('${esc(a.run_id)}')">${icon("play")}重试失败的题</button>`);
   if(["cancelled","interrupted","failed"].includes(a.status)){
     const canResume=SERVER.iq_version&&a.iq_version===SERVER.iq_version;
     const doneN=(a.subjects||[]).reduce((t,x)=>t+(x.n||0),0);
     alerts+=alertBox("info",`A ${esc(STATUS_NAME[a.status]||a.status)}${a.error?"（"+esc(a.error)+"）":""}：已完成 ${a.subjects?a.subjects.length:0} 个科目共 ${doneN} 题，没做完的科目里已答的题也保存了，请求失败的题接着跑时会重新回答。${canResume?"接着跑会沿用原来的服务地址、采样和题量，使用新建面板里填的 API Key。":"这次测试由其他版本的评测程序生成，不能接着跑。"}`,
-      canResume?`<button class="btn btn-secondary btn-sm" onclick="iqResume('${esc(a.run_id)}')">${icon("play")}接着跑</button>`:"");
+      canResume?`<button class="btn btn-secondary btn-sm" data-online-only onclick="iqResume('${esc(a.run_id)}')">${icon("play")}接着跑</button>`:"");
   }
   const mismatch=series.slice(1).filter(s=>s.r.bank_id!==a.bank_id);
   const pkey=r=>JSON.stringify([r.params&&r.params.subject_ids||null,r.params&&r.params.limit_per_subject||null]);
@@ -2321,7 +2384,7 @@ function _renderIq(){
     const o=s.r.overall||{};
     stats+=`<div class="stat is-wide cmp-line"><div class="cmp-line-head"><span class="run-tag" style="background:${s.color}">${s.tag}</span>
         <span class="cmp-line-name">${esc((s.r.model||"?")+(runFw(s.r)?" · "+runFw(s.r):""))} · ${s.r.thinking?"思考":"不思考"}</span>
-        <span class="cmp-line-acc">${o.acc!=null?fmt(o.acc,1):"—"}<small>%</small></span>${deltaPill(base.acc,o.acc,1,{mode:"pp",prefix:"比 A "})}</div>
+        <span class="cmp-line-acc">${o.acc!=null?fmt(o.acc,1):"—"}<small>%</small></span>${deltaPill(o.acc,base.acc,1,{mode:"pp",prefix:"A 比它 "})}</div>
       <div class="cmp-line-sig" data-sig-card="${esc(s.r.run_id)}">正在计算差异是否可信…</div></div>`;
   });
   /* ---- 各科得分: 排行表为主, 旁边是条形图 / 能力形状 ---- */
@@ -3049,7 +3112,7 @@ function genStrip(a,s,ev,items){
   const why=ev.browser_error||(items.map(x=>x.eval&&x.eval.notes&&x.eval.notes[0]).find(Boolean))||"后台浏览器没有启动";
   return `<div class="strip is-bad" role="status">${icon("x-circle")}<span class="strip-text"><b>${s.mode==="static"?"这些作品没有在浏览器里实际运行":`有 ${s.staticN} 件作品没有在浏览器里实际运行`}</b>，只检查了代码里的关键词，通过率不能代表作品真的能用。
       <span class="faint" title="${esc(why)}">原因：${esc(why)}</span></span>
-    <button class="btn btn-secondary btn-sm" onclick="genReeval()">${icon("scan-check")}重新检查</button>
+    <button class="btn btn-secondary btn-sm" data-online-only onclick="genReeval()">${icon("scan-check")}重新检查</button>
     <button class="btn btn-ghost btn-icon btn-sm" data-strip-close="${esc(a.run_id)}" aria-label="收起提示" title="收起提示">${icon("x")}</button></div>`;
 }
 function renderGen(){
@@ -3058,7 +3121,7 @@ function renderGen(){
   const a=GEN_RUNS[$("genMainSel").value],b0=GEN_RUNS[$("genCmpSel").value];
   const b=b0&&a&&b0.run_id!==a.run_id?b0:null;
   if(!a){el.innerHTML=emptyState("还没有生成任务","让模型写网页小游戏和应用，在后台浏览器里真正运行、点击、按键，检查能不能用。点右上角「新建生成任务」开始",
-    {action:`<button class="btn btn-primary" data-toggle="genLauncher">${icon("plus")}新建生成任务</button>`});buildJump("genJump",null);return}
+    {action:`<button class="btn btn-primary" data-toggle="genLauncher" data-online-only>${icon("plus")}新建生成任务</button>`});buildJump("genJump",null);return}
   const s=genStats(a),ev=a.eval||{};
   const items=a.items||[];
   const verdicts=items.map(it=>({it,v:genVerdict(it)}));
@@ -3158,6 +3221,7 @@ function starsHTML(run,it){
 function workActions(run,b,it,compact){
   const e=it.eval,hasTrace=!!it.trace||!!it.rounds;
   return [it.file&&!it.error?`<button class="btn btn-secondary btn-sm" data-gen="preview" data-run="${esc(run.run_id)}" data-item="${esc(it.id)}">${icon("play")}预览</button>`:"",
+    workOpenLink(it),
     e?`<button class="btn btn-ghost btn-sm" data-gen="detail" data-run="${esc(run.run_id)}" data-item="${esc(it.id)}">${icon("image")}详情</button>`:"",
     hasTrace?`<button class="btn btn-ghost btn-sm" data-gen="trace" data-run="${esc(run.run_id)}" data-item="${esc(it.id)}">${icon("layers")}过程</button>`:"",
     !compact&&b&&!it.error?`<button class="btn btn-ghost btn-sm" data-gen="compare" data-run="${esc(run.run_id)}" data-item="${esc(it.id)}">${icon("columns")}并排</button>`:""].join("");
@@ -3188,7 +3252,7 @@ function genWorksTable(a,b,shown){
         sortValue:x=>x.it.error||!x.it.total?null:x.it.pass/x.it.total,text:(v,x)=>x.it.total?`${x.it.pass}/${x.it.total}`:""},
       ...(b?[{key:"statusB",label:"B 主要问题",type:"status",get:x=>{const y=itB(x.it.id);return y?vStatus(y):{tone:"neutral",text:"没有这题"}}},
         {key:"passB",label:"B 检查通过",type:"text",align:"right",get:x=>{const y=itB(x.it.id);return y&&y.total?`${y.pass}/${y.total}`:"—"},sortValue:x=>{const y=itB(x.it.id);return y&&y.total?y.pass/y.total:null}},
-        {key:"dpass",label:"B 比 A 多过",unit:"项",type:"int",get:x=>{const y=itB(x.it.id);return y&&!y.error&&!x.it.error&&y.total&&x.it.total?y.pass-x.it.pass:null}}]:[]),
+        {key:"dpass",label:"A 比 B 多过",unit:"项",type:"int",get:x=>{const y=itB(x.it.id);return y&&!y.error&&!x.it.error&&y.total&&x.it.total?x.it.pass-y.pass:null}}]:[]),
       {key:"lines",label:"行数",type:"int",get:x=>x.it.lines||null},{key:"rounds",label:"接着写",unit:"轮",type:"int",get:x=>x.it.continuations||0},
       {key:"tok",label:"输出",unit:"token",type:"int",get:x=>x.it.out_tokens||null},
       {key:"judge",label:"AI 分",type:"num",digits:0,get:x=>typeof x.it.judge_score==="number"?x.it.judge_score:null},
@@ -3275,7 +3339,7 @@ $("genResult").addEventListener("click",e=>{
   if(sc){STRIP_CLOSED.add(sc.dataset.stripClose);const st=sc.closest(".strip");if(st)st.remove();return}
   const f=e.target.closest("[data-gen-filter]");
   if(f){GEN_FILTER=f.dataset.genFilter;renderGen();const w=$("gen-works");if(w)w.scrollIntoView({block:"start"});return}
-  const rate=e.target.closest("[data-rate]");
+  const rate=!OFF&&e.target.closest("[data-rate]");  /* 离线报告里星级只读 */
   if(rate){rateStars(rate.dataset.run,rate.dataset.item,+rate.dataset.rate);return}
   const act=e.target.closest("[data-gen]");if(!act)return;
   const r=GEN_RUNS[act.dataset.run],it=r&&(r.items||[]).find(x=>x.id===act.dataset.item);if(!it)return;
@@ -3305,14 +3369,14 @@ function focusPreviewFrame(){
   if(f){try{f.focus();f.contentWindow&&f.contentWindow.focus()}catch(e){}}
 }
 function previewWork(it){
-  Modal.open(it.name,`<iframe class="frame" sandbox="${GEN_SANDBOX}" src="/${esc(it.file)}" title="${esc(it.name)}"></iframe>`,{badges:SANDBOX_BADGE,flush:true});
+  Modal.open(it.name,`<iframe class="frame" sandbox="${GEN_SANDBOX}" ${workFrameSrc(it.file)} title="${esc(it.name)}"></iframe>`,{badges:SANDBOX_BADGE+workOpenLink(it,{text:true}),flush:true});
   focusPreviewFrame();  /* 键盘类游戏不用先点一下 */
 }
 function previewCompare(it){
   const a=GEN_RUNS[$("genMainSel").value],b=GEN_RUNS[$("genCmpSel").value];
   const ib=b&&(b.items||[]).find(x=>x.id===it.id);
-  const side=(r,x,tag)=>`<div><div class="split-head"><span class="run-tag ${tag.toLowerCase()}">${tag}</span>${esc(genLabel(r))}</div>
-    ${x&&!x.error?`<iframe class="frame" style="flex:1" sandbox="${GEN_SANDBOX}" src="/${esc(x.file)}" title="${tag}"></iframe>`
+  const side=(r,x,tag)=>`<div><div class="split-head"><span class="run-tag ${tag.toLowerCase()}">${tag}</span>${esc(genLabel(r))}${workOpenLink(x)}</div>
+    ${x&&!x.error?`<iframe class="frame" style="flex:1" sandbox="${GEN_SANDBOX}" ${workFrameSrc(x.file)} title="${tag}"></iframe>`
       :emptyState(x?"这题没生成出来":"这个任务没有这道题",x?x.error:"",{inline:true})}</div>`;
   Modal.open(it.name+" · 并排对比",`<div class="split">${side(a,it,"A")}${side(b,ib,"B")}</div>`,{badges:SANDBOX_BADGE,flush:true});
   focusPreviewFrame();
@@ -3345,7 +3409,7 @@ function checksPanel(it){
   const ctl=e.control;
   const ctlHtml=ctl&&ctl.errors?alertBox(ctl.reproduced?"info":"warn",`<b>${term("control")}</b>：${ctl.reproduced?"在不加任何检测代码的干净页面里按同样步骤运行，同样报错，说明是作品本身的问题：":"在干净页面里运行没有报错，这些错误可能是检测环境引起的，请人工确认。"}${ctl.reproduced?`<ul class="hint-list">${ctl.errors.map(x=>`<li class="mono small">${esc(x)}</li>`).join("")}</ul>`:""}`):"";
   return `<div class="detail-layout">
-    <div><div class="shot-grid">${(e.shots||[]).map(s=>`<figure class="shot"><img src="/${esc(dir+s.file)}" alt="${esc(s.caption)}" loading="lazy"><figcaption>${esc(s.caption)}</figcaption></figure>`).join("")||emptyState("没有截图","只看代码的检查不会截图",{inline:true})}</div></div>
+    <div><div class="shot-grid">${(e.shots||[]).map(s=>`<figure class="shot"><img src="${esc(workUrl(dir+s.file))}" alt="${esc(s.caption)}" loading="lazy"><figcaption>${esc(s.caption)}</figcaption></figure>`).join("")||emptyState("没有截图","只看代码的检查不会截图",{inline:true})}</div></div>
     <div><section class="detail-section"><h4>检查项 ${it.pass} / ${it.total}<span class="faint" style="font-weight:400"> · ${e.method==="browser"?"在后台浏览器里实际运行":"只看了代码"}</span></h4>
       ${ctlHtml}<div class="table-wrap" style="max-height:none"><table class="table"><tbody>${rows}</tbody></table></div>
       ${(e.notes||[]).length?`<p class="faint small" style="margin-top:8px">${e.notes.map(esc).join("<br>")}</p>`:""}</section></div></div>`;
@@ -3386,7 +3450,7 @@ async function loadTracePanel(it){
     ${roundsTable(rounds)}
     <div><div class="row" style="margin-bottom:8px"><span class="eyebrow">模型原始输出</span>
       ${rounds.map((r,i)=>r.content!=null?`<button class="btn btn-ghost btn-sm" data-round="${i}">第 ${r.n} 轮</button>`:"").join("")}
-      <a class="btn btn-ghost btn-sm" href="/${esc(it.trace)}" download style="margin-left:auto">${icon("download")}下载完整记录（JSON）</a></div>
+      <a class="btn btn-ghost btn-sm" href="${esc(workUrl(it.trace))}" download="${esc(it.trace.split("/").pop())}" style="margin-left:auto">${icon("download")}下载完整记录（JSON）</a></div>
       <div id="rawBox"></div></div></div>`;
   const cats=rounds.map(r=>`第 ${r.n} 轮`);
   setChart("traceChart",baseOption({color:[C.series[2],C.a],legend:legendOf(["思考过程","正文"],"rect"),
@@ -3595,7 +3659,7 @@ function renderStyleguide(){
       <label class="chip"><input type="checkbox" checked>${icon("check")}<span>贪吃蛇</span></label><label class="chip-check"><input type="checkbox">看图回答</label></div></div>
     <div class="sg-group"><h3 class="sg-h">徽标 / 变化 / 测试标签</h3><div class="row">
       <span class="badge">默认</span><span class="badge is-good">${icon("check")}通过</span><span class="badge is-warn">${icon("alert")}没答完</span><span class="badge is-bad">${icon("x")}失败</span><span class="badge is-info">进行中</span>
-      ${deltaPill(100,112,1,{prefix:"B "})}${deltaPill(100,90,1,{prefix:"B "})}${deltaPill(100,100.4,1,{prefix:"B "})}
+      ${deltaPill(100,112,1,{prefix:"比 B "})}${deltaPill(100,90,1,{prefix:"比 B "})}${deltaPill(100,100.4,1,{prefix:"比 B "})}
       <span class="run-tag" style="background:var(--series-1)">A</span><span class="run-tag" style="background:var(--series-2)">B</span><span class="run-tag" style="background:var(--series-3)">C</span></div></div>
     <div class="sg-group"><h3 class="sg-h">提示框</h3>
       ${alertBox("info","这次测试由旧版评测程序生成，分数口径不同。")}${alertBox("warn","有 17 题没答完（写到长度上限被停下）。")}
@@ -3611,6 +3675,63 @@ function renderStyleguide(){
   const sel=$("sgSel");if(sel)CSelect.enhance(sel);
 }
 
+/* ============================================================
+   导出报告(离线 HTML) / 打开离线报告
+   ============================================================ */
+/* 导出: 当前页面(同一套界面)连同数据打包成一个 HTML 文件, 双击就能打开, 和这里看到的一样 */
+const EXPORT_LS=["llm-bench-pro-viewmode","llm-bench-pro-dt","llm-bench-pro-ctab","llm-bench-pro-qb","llm-bench-pro-density","llm-bench-pro-rail"];
+const PAGE_NAME={dash:"速度测试",cmp:"速度对比",iq:"能力测试",gen:"代码生成"};
+function exportSel(page){
+  if(page==="dash")return[$("runA").value,[$("runB").value]];
+  if(page==="cmp")return[$("cmpA").value,[$("cmpB").value]];
+  if(page==="iq")return[$("iqMainSel").value,[...IQ_CMP]];
+  return[$("genMainSel").value,[$("genCmpSel").value]];
+}
+function exportTitle(page,id,cmp){
+  const src=page==="iq"?IQ_RUNS:page==="gen"?GEN_RUNS:RUNS,r=src[id];
+  const models=[id,...cmp].map(x=>(src[x]&&src[x].model)||x);
+  return `${PAGE_NAME[page]} · ${models.join(" vs ")}${r&&r.started_utc?" · "+shortTime(r.started_utc):""}`;
+}
+async function exportHtml(page){
+  const [id,raw]=exportSel(page),cmp=raw.filter(x=>x&&x!==id);
+  if(!id){toast("请先选择要导出的测试","warning");return}
+  const btn=document.querySelector(`[data-export="${page}"]`);
+  const ls={};EXPORT_LS.forEach(k=>{const v=LS.get(k);if(v!=null)ls[k]=v});
+  const ui={panels:[...PANEL_OVR],qb:{subj:QB.subj,filter:QB.filter,q:QB.q,vs:QB.vs},genFilter:GEN_FILTER,genSort:GEN_SORT};
+  const title=exportTitle(page,id,cmp);
+  setBusy(btn,true);
+  try{
+    const r=await fetch("/api/export-html",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({page,id,cmp,title,state:{theme:document.documentElement.dataset.theme,ls},ui})});
+    if(!r.ok){let m="HTTP "+r.status;try{m=(await r.json()).error||m}catch(e){}throw new Error(m)}
+    const blob=await r.blob();
+    downloadBlob(safeName(title.replace(/ · /g,"_"))+".html",blob);
+    toast(`已导出「${title}」（${(blob.size/1048576).toFixed(1)} MB）：一个网页文件，双击就能打开，和这里看到的一样`,"success",5000);
+  }catch(e){toast("导出失败："+e.message,"error")}
+  finally{setBusy(btn,false)}
+}
+/* 打开离线报告: 只显示导出的那一页, 选中导出时的测试和筛选, 隐藏需要后端的操作 */
+function offlineInit(){
+  document.documentElement.classList.add("is-offline");
+  SERVER=Object.assign({},(OFF.api||{}).version||{});
+  $("conn").className="conn is-offline";
+  $("connText").textContent="离线报告";
+  $("conn").title=`从 LLM Bench Pro v${SERVER.version||"?"} 导出的离线报告（${timeText(OFF.exported_at)}）：数据是导出那一刻的样子，不会更新，也不能修改`;
+  const page=VIEWS[OFF.page]&&OFF.page!=="styleguide"?OFF.page:"dash";
+  document.querySelectorAll(".nav-item[data-view]").forEach(b=>{if(b.dataset.view!==page)b.hidden=true});
+  const S=OFF.sel||{},cmp=S.cmp||[],opt=x=>x?`<option value="${esc(x)}" selected></option>`:"";
+  if(page==="dash"){$("runA").innerHTML=opt(S.a);$("runB").innerHTML=`<option value="">不对比</option>`+opt(cmp[0])}
+  if(page==="cmp"){$("cmpA").innerHTML=opt(S.a);$("cmpB").innerHTML=opt(cmp[0])}
+  if(page==="iq"){$("iqMainSel").innerHTML=opt(S.a);cmp.forEach(x=>IQ_CMP.add(x))}
+  if(page==="gen"){$("genMainSel").innerHTML=opt(S.a);$("genCmpSel").innerHTML=`<option value="">不对比</option>`+opt(cmp[0])}
+  const U=OFF.ui||{};
+  (U.panels||[]).forEach(([k,v])=>PANEL_OVR.set(k,v));
+  if(U.qb){Object.assign(QB,{subj:U.qb.subj||"",filter:U.qb.filter||"all",q:U.qb.q||"",vs:U.qb.vs||""});QB.main=S.a||""}
+  if(U.genFilter)GEN_FILTER=U.genFilter;
+  if(U.genSort)GEN_SORT=U.genSort;
+  showView(page);
+  if(page==="dash"||page==="cmp")refresh();
+}
 /* ============================================================
    启动
    ============================================================ */
@@ -3646,21 +3767,24 @@ async function resumeRunning(){
 let rzT;
 window.addEventListener("resize",()=>{clearTimeout(rzT);rzT=setTimeout(()=>{for(const inst of CHARTS.values()){try{inst.resize()}catch(e){}}},120)});
 matchMedia("(prefers-color-scheme: light)").addEventListener("change",e=>{
-  try{if(localStorage.getItem("llm-bench-pro-theme"))return}catch(err){}
+  if(LS.get("llm-bench-pro-theme"))return;
   applyTheme(e.matches?"light":"dark",false);
 });
 document.querySelectorAll("select.select").forEach(CSelect.enhance);
 CSelect.combo($("fModel"));
 readTheme();
 applyTheme(document.documentElement.dataset.theme||"dark",false);
-try{applyRailPin(localStorage.getItem("llm-bench-pro-rail")==="1",false)}catch(e){applyRailPin(false,false)}
+applyRailPin(LS.get("llm-bench-pro-rail")==="1",false);
 document.querySelectorAll("[data-vm-page]").forEach(g=>g.querySelectorAll("[data-vm]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.vm===(VIEWMODE[g.dataset.vmPage]||"chart")))));
-try{applyDensity(localStorage.getItem("llm-bench-pro-density")==="compact"?"compact":"normal",false)}catch(e){applyDensity("normal",false)}
-showView((location.hash||"#dash").slice(1));
-checkVersion().then(()=>{if(VIEW==="iq")renderIq()});
-setInterval(checkVersion,60000);
-refresh();
-loadReplayFiles();
-loadScenarioAssets();
-loadEndpoints();
-resumeRunning();
+applyDensity(LS.get("llm-bench-pro-density")==="compact"?"compact":"normal",false);
+if(OFF)offlineInit();
+else{
+  showView((location.hash||"#dash").slice(1));
+  checkVersion().then(()=>{if(VIEW==="iq")renderIq()});
+  setInterval(checkVersion,60000);
+  refresh();
+  loadReplayFiles();
+  loadScenarioAssets();
+  loadEndpoints();
+  resumeRunning();
+}

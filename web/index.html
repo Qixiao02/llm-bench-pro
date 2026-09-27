@@ -7,7 +7,7 @@
 <link rel="icon" href="data:,">
 <script>
 /* 首帧前确定主题, 避免闪烁: 本地偏好 > 系统偏好 > 暗色 */
-(function(){try{var t=localStorage.getItem("llm-bench-pro-theme");
+(function(){try{var o=window.LLMB_OFF_STATE,t=o?o.theme:localStorage.getItem("llm-bench-pro-theme");
   if(!t)t=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";
   document.documentElement.dataset.theme=t;}catch(e){document.documentElement.dataset.theme="dark";}})();
 </script>
@@ -27,6 +27,7 @@
   <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></symbol>
   <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
   <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
   <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
   <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></symbol>
   <symbol id="i-columns" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></symbol>
@@ -84,7 +85,7 @@
     <button class="nav-item" data-view="iq" title="能力测试"><svg class="icon"><use href="#i-list-checks"/></svg><span class="nav-text">能力测试</span><span class="nav-short">能力</span><span class="nav-dot" data-running="iq" hidden></span></button>
     <button class="nav-item" data-view="gen" title="代码生成"><svg class="icon"><use href="#i-code"/></svg><span class="nav-text">代码生成</span><span class="nav-short">生成</span><span class="nav-dot" data-running="gen" hidden></span></button>
     <div class="nav-label">设置</div>
-    <button class="nav-item" onclick="manageEndpoints()" title="模型管理：保存常用的服务地址、Key 和模型，三个新建面板一键填入"><svg class="icon"><use href="#i-sliders"/></svg><span class="nav-text">模型管理</span><span class="nav-short">模型</span></button>
+    <button class="nav-item" data-online-only onclick="manageEndpoints()" title="模型管理：保存常用的服务地址、Key 和模型，三个新建面板一键填入"><svg class="icon"><use href="#i-sliders"/></svg><span class="nav-text">模型管理</span><span class="nav-short">模型</span></button>
     <button class="nav-item" onclick="showGlossary()" title="名词解释：页面上出现的名词都是什么意思"><svg class="icon"><use href="#i-help"/></svg><span class="nav-text">名词解释</span><span class="nav-short">名词</span></button>
   </nav>
   <div class="rail-foot">
@@ -107,21 +108,21 @@
       </div>
       <div class="bar-tools">
         <span class="seg bar-vm" role="group" aria-label="查看方式" data-vm-page="dash"><button type="button" class="seg-btn" data-vm="chart" aria-pressed="true" title="图表视图"><svg class="icon"><use href="#i-chart"/></svg><span>图表</span></button><button type="button" class="seg-btn" data-vm="table" aria-pressed="false" title="表格视图：每个章节都换成表格"><svg class="icon"><use href="#i-table"/></svg><span>表格</span></button></span>
-        <button class="btn btn-secondary btn-sm bar-export" onclick="exportReport('dash')" title="把 A（和 B）导出成一个网页文件，可以直接发给别人打开"><svg class="icon"><use href="#i-file-down"/></svg><span>导出报告</span></button>
+        <button class="btn btn-secondary btn-sm bar-export" data-export="dash" data-online-only onclick="exportHtml('dash')" title="把现在看到的速度测试（A 和 B）导出成一个网页文件：双击就能打开，和这里看到的一样，可以直接发给别人"><svg class="icon"><use href="#i-file-down"/></svg><span>导出报告</span></button>
         <details class="dropdown more">
           <summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作" title="更多操作"><svg class="icon"><use href="#i-more"/></svg></summary>
           <div class="dropdown-panel menu is-right" role="menu">
-            <button class="menu-item" type="button" onclick="refresh()"><svg class="icon"><use href="#i-refresh"/></svg>刷新结果</button>
+            <button class="menu-item" type="button" data-online-only onclick="refresh()"><svg class="icon"><use href="#i-refresh"/></svg>刷新结果</button>
             <button class="menu-item" type="button" onclick="exportPageTables('dash')"><svg class="icon"><use href="#i-download"/></svg>导出本页全部表格（CSV）</button>
-            <button class="menu-item is-danger" type="button" onclick="deleteRun('perf')"><svg class="icon"><use href="#i-trash"/></svg>删除测试 A</button>
+            <button class="menu-item is-danger" type="button" data-online-only onclick="deleteRun('perf')"><svg class="icon"><use href="#i-trash"/></svg>删除测试 A</button>
             <div class="menu-sep"></div>
             <div class="menu-note" id="status"></div>
             <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
             <button class="menu-item" type="button" data-theme-toggle><svg class="icon"><use href="#i-contrast"/></svg>切换亮色 / 暗色</button>
           </div>
         </details>
-        <button class="running-pill" data-toggle="launcher" data-running-pill="perf" hidden><span class="runlog-dot"></span>测试进行中</button>
-        <button class="btn btn-primary btn-sm bar-new" data-toggle="launcher" aria-controls="launcher" aria-expanded="false"><svg class="icon"><use href="#i-plus"/></svg><span>新建速度测试</span></button>
+        <button class="running-pill" data-online-only data-toggle="launcher" data-running-pill="perf" hidden><span class="runlog-dot"></span>测试进行中</button>
+        <button class="btn btn-primary btn-sm bar-new" data-online-only data-toggle="launcher" aria-controls="launcher" aria-expanded="false"><svg class="icon"><use href="#i-plus"/></svg><span>新建速度测试</span></button>
       </div>
     </header>
     <nav class="secnav" id="dashJump" aria-label="跳转到"></nav>
@@ -143,11 +144,11 @@
       </div>
       <div class="bar-tools">
         <span class="seg bar-vm" role="group" aria-label="查看方式" data-vm-page="cmp"><button type="button" class="seg-btn" data-vm="chart" aria-pressed="true" title="图表视图"><svg class="icon"><use href="#i-chart"/></svg><span>图表</span></button><button type="button" class="seg-btn" data-vm="table" aria-pressed="false" title="表格视图：每个章节都换成表格"><svg class="icon"><use href="#i-table"/></svg><span>表格</span></button></span>
-        <button class="btn btn-secondary btn-sm bar-export" onclick="exportReport('cmp')" title="把 A/B 对比导出成一个网页文件，可以直接发给别人打开"><svg class="icon"><use href="#i-file-down"/></svg><span>导出报告</span></button>
+        <button class="btn btn-secondary btn-sm bar-export" data-export="cmp" data-online-only onclick="exportHtml('cmp')" title="把现在看到的 A / B 对比导出成一个网页文件：双击就能打开，和这里看到的一样，可以直接发给别人"><svg class="icon"><use href="#i-file-down"/></svg><span>导出报告</span></button>
         <details class="dropdown more">
           <summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作" title="更多操作"><svg class="icon"><use href="#i-more"/></svg></summary>
           <div class="dropdown-panel menu is-right" role="menu">
-            <button class="menu-item" type="button" onclick="refresh()"><svg class="icon"><use href="#i-refresh"/></svg>刷新结果</button>
+            <button class="menu-item" type="button" data-online-only onclick="refresh()"><svg class="icon"><use href="#i-refresh"/></svg>刷新结果</button>
             <button class="menu-item" type="button" onclick="exportPageTables('cmp')"><svg class="icon"><use href="#i-download"/></svg>导出本页全部表格（CSV）</button>
             <div class="menu-sep"></div>
             <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
@@ -177,21 +178,22 @@
         </details>
       </div>
       <div class="bar-tools">
+        <button class="btn btn-secondary btn-sm bar-export" data-export="iq" data-online-only onclick="exportHtml('iq')" title="把现在看到的能力测试（含对比、逐题和模型的回答原文）导出成一个网页文件：双击就能打开，和这里看到的一样"><svg class="icon"><use href="#i-file-down"/></svg><span>导出报告</span></button>
         <span class="seg bar-vm" role="group" aria-label="查看方式" data-vm-page="iq"><button type="button" class="seg-btn" data-vm="chart" aria-pressed="true" title="图表视图"><svg class="icon"><use href="#i-chart"/></svg><span>图表</span></button><button type="button" class="seg-btn" data-vm="table" aria-pressed="false" title="表格视图：每个章节都换成表格"><svg class="icon"><use href="#i-table"/></svg><span>表格</span></button></span>
 
         <details class="dropdown more">
           <summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作" title="更多操作"><svg class="icon"><use href="#i-more"/></svg></summary>
           <div class="dropdown-panel menu is-right" role="menu">
-            <button class="menu-item" type="button" onclick="loadIqResults()"><svg class="icon"><use href="#i-refresh"/></svg>刷新结果</button>
+            <button class="menu-item" type="button" data-online-only onclick="loadIqResults()"><svg class="icon"><use href="#i-refresh"/></svg>刷新结果</button>
             <button class="menu-item" type="button" onclick="exportPageTables('iq')"><svg class="icon"><use href="#i-download"/></svg>导出本页全部表格（CSV）</button>
-            <button class="menu-item is-danger" type="button" onclick="deleteRun('iq')"><svg class="icon"><use href="#i-trash"/></svg>删除测试 A</button>
+            <button class="menu-item is-danger" type="button" data-online-only onclick="deleteRun('iq')"><svg class="icon"><use href="#i-trash"/></svg>删除测试 A</button>
             <div class="menu-sep"></div>
             <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
             <button class="menu-item" type="button" data-theme-toggle><svg class="icon"><use href="#i-contrast"/></svg>切换亮色 / 暗色</button>
           </div>
         </details>
-        <button class="running-pill" data-toggle="iqLauncher" data-running-pill="iq" hidden><span class="runlog-dot"></span>测试进行中</button>
-        <button class="btn btn-primary btn-sm bar-new" data-toggle="iqLauncher" aria-controls="iqLauncher" aria-expanded="false"><svg class="icon"><use href="#i-plus"/></svg><span>新建能力测试</span></button>
+        <button class="running-pill" data-online-only data-toggle="iqLauncher" data-running-pill="iq" hidden><span class="runlog-dot"></span>测试进行中</button>
+        <button class="btn btn-primary btn-sm bar-new" data-online-only data-toggle="iqLauncher" aria-controls="iqLauncher" aria-expanded="false"><svg class="icon"><use href="#i-plus"/></svg><span>新建能力测试</span></button>
       </div>
     </header>
     <nav class="secnav" id="iqJump" aria-label="跳转到"></nav>
@@ -210,22 +212,23 @@
         <div class="tb-field"><span class="run-tag b">B</span><select class="select" id="genCmpSel" aria-label="对比的任务" onchange="renderGen()"></select></div>
       </div>
       <div class="bar-tools">
+        <button class="btn btn-secondary btn-sm bar-export" data-export="gen" data-online-only onclick="exportHtml('gen')" title="把现在看到的代码生成结果（含作品网页、检查截图和生成过程）导出成一个网页文件：双击就能打开，作品也能预览"><svg class="icon"><use href="#i-file-down"/></svg><span>导出报告</span></button>
         <span class="seg bar-vm" role="group" aria-label="查看方式" data-vm-page="gen"><button type="button" class="seg-btn" data-vm="chart" aria-pressed="true" title="图表视图"><svg class="icon"><use href="#i-chart"/></svg><span>图表</span></button><button type="button" class="seg-btn" data-vm="table" aria-pressed="false" title="表格视图：每个章节都换成表格"><svg class="icon"><use href="#i-table"/></svg><span>表格</span></button></span>
 
         <details class="dropdown more">
           <summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作" title="更多操作"><svg class="icon"><use href="#i-more"/></svg></summary>
           <div class="dropdown-panel menu is-right" role="menu">
-            <button class="menu-item" type="button" onclick="loadGenResults()"><svg class="icon"><use href="#i-refresh"/></svg>刷新结果</button>
+            <button class="menu-item" type="button" data-online-only onclick="loadGenResults()"><svg class="icon"><use href="#i-refresh"/></svg>刷新结果</button>
             <button class="menu-item" type="button" onclick="exportPageTables('gen')"><svg class="icon"><use href="#i-download"/></svg>导出本页全部表格（CSV）</button>
-            <button class="menu-item" type="button" id="genBtnEval" onclick="genReeval()" title="对 A 的作品重新运行检查（可同时配置 AI 看图打分），保留人工评分"><svg class="icon"><use href="#i-scan-check"/></svg>重新检查作品</button>
-            <button class="menu-item is-danger" type="button" onclick="deleteRun('gen')"><svg class="icon"><use href="#i-trash"/></svg>删除任务 A（连同作品）</button>
+            <button class="menu-item" type="button" id="genBtnEval" data-online-only onclick="genReeval()" title="对 A 的作品重新运行检查（可同时配置 AI 看图打分），保留人工评分"><svg class="icon"><use href="#i-scan-check"/></svg>重新检查作品</button>
+            <button class="menu-item is-danger" type="button" data-online-only onclick="deleteRun('gen')"><svg class="icon"><use href="#i-trash"/></svg>删除任务 A（连同作品）</button>
             <div class="menu-sep"></div>
             <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
             <button class="menu-item" type="button" data-theme-toggle><svg class="icon"><use href="#i-contrast"/></svg>切换亮色 / 暗色</button>
           </div>
         </details>
-        <button class="running-pill" data-toggle="genLauncher" data-running-pill="gen" hidden><span class="runlog-dot"></span>任务进行中</button>
-        <button class="btn btn-primary btn-sm bar-new" data-toggle="genLauncher" aria-controls="genLauncher" aria-expanded="false"><svg class="icon"><use href="#i-plus"/></svg><span>新建生成任务</span></button>
+        <button class="running-pill" data-online-only data-toggle="genLauncher" data-running-pill="gen" hidden><span class="runlog-dot"></span>任务进行中</button>
+        <button class="btn btn-primary btn-sm bar-new" data-online-only data-toggle="genLauncher" aria-controls="genLauncher" aria-expanded="false"><svg class="icon"><use href="#i-plus"/></svg><span>新建生成任务</span></button>
       </div>
     </header>
     <nav class="secnav" id="genJump" aria-label="跳转到"></nav>

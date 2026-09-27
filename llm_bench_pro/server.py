@@ -30,6 +30,7 @@ if _PKG_DIR not in sys.path:
 
 import bankman  # noqa: E402
 import bench  # noqa: E402
+import export_html  # noqa: E402
 import gen  # noqa: E402
 import geneval  # noqa: E402
 import iq  # noqa: E402
@@ -70,6 +71,9 @@ _WORKS_CSP = (
     "img-src data: blob:; font-src data: blob:; media-src data: blob: mediastream:; "
     "connect-src data: blob:; worker-src blob:; child-src blob: data:"
 )
+_WORKS_CSP_OPEN = "sandbox allow-scripts allow-pointer-lock allow-forms allow-modals"
+# 离线报告里的预览没有响应头: 用 <meta> 声明同样的资源限制(meta 不支持 sandbox, 由 iframe 的 sandbox 属性负责)
+WORKS_CSP_META = "; ".join(x for x in _WORKS_CSP.split("; ") if not x.startswith("sandbox"))
 WEB = os.path.join(ROOT, "web")
 UI = os.path.join(WEB, "index.html")
 REPLAY_DIR = os.path.join(DATA, "replay")      # 真实请求回放池(内容寻址 replay-<sha12>.jsonl)
@@ -337,26 +341,59 @@ def iq_answer(ids, sid, idx):
     answers = {}
     for rid in ids:
         recs = store.get_iq_records(rid, sid, idx)
-        if not recs:
-            continue
-        it = recs[-1]
-        a = {"ok": bool(it.get("ok")), "rc": it.get("rc") or 0}
-        for k in ("finish", "out", "err", "pred", "trunc", "rtail"):
-            if it.get(k) not in (None, "", False):
-                a[k] = it[k]
-        tail = str(it.get("tail") or "")
-        if "resp" in it:
-            a["text"], a["full"] = it["resp"] or "", True  # 新版每题留档; 空串 = 没有正式回答
-        elif tail.startswith("（无正文"):
-            a["text"], a["full"] = "", True
-        elif tail:
-            a["text"], a["full"] = tail, len(tail) < 240  # 旧版只存结尾 240 字, 不足 240 字即为全文
-        elif not it.get("err"):
-            a["kept"] = False  # 旧版没有保存这题的回答
-        if q and stype == "instruct" and a.get("full") and a.get("text"):
-            a["rules"] = iq.instruct_detail(a["text"], q)
-        answers[rid] = a
+        if recs:
+            answers[rid] = _answer_of(recs[-1], q, stype)
     return {"ok": True, "sid": sid, "idx": idx, "type": stype, "prompt": prompt, "answers": answers}
+
+
+def _answer_of(it, q, stype):
+    """一条作答记录 → 「看回答」要用的字段(同一题有多条记录时传最后一条)。"""
+    a = {"ok": bool(it.get("ok")), "rc": it.get("rc") or 0}
+    for k in ("finish", "out", "err", "pred", "trunc", "rtail"):
+        if it.get(k) not in (None, "", False):
+            a[k] = it[k]
+    tail = str(it.get("tail") or "")
+    if "resp" in it:
+        a["text"], a["full"] = it["resp"] or "", True  # 新版每题留档; 空串 = 没有正式回答
+    elif tail.startswith("（无正文"):
+        a["text"], a["full"] = "", True
+    elif tail:
+        a["text"], a["full"] = tail, len(tail) < 240  # 旧版只存结尾 240 字, 不足 240 字即为全文
+    elif not it.get("err"):
+        a["kept"] = False  # 旧版没有保存这题的回答
+    if q and stype == "instruct" and a.get("full") and a.get("text"):
+        a["rules"] = iq.instruct_detail(a["text"], q)
+    return a
+
+
+def iq_answers_all(ids):
+    """离线报告用: 一次取出这些运行(与第一个同题集)每道题的回答和发给模型的原文, 键为 "sid|idx";
+    每项与 iq_answer 返回的 type / prompt / answers 一致。"""
+    ids = [x for x in dict.fromkeys(ids or []) if _valid_iq_id(x)]
+    head = store.get_run(ids[0], items=False) if ids else None
+    if not head:
+        return {}
+    subjects = _bank_subjects(head.get("bank_id"))
+    cur = head.get("iq_version") == iq.IQ_VERSION
+    out, qs = {}, {}
+    for rid in ids:
+        doc = store.get_run(rid)
+        if not doc or doc.get("bank_id") != head.get("bank_id"):
+            continue
+        last = {}
+        for it in doc.get("items") or []:
+            last[(it.get("sid"), it.get("idx"))] = it  # 按写入顺序, 同一题以最后一条为准(与 iq_answer 相同)
+        for (sid, idx), it in last.items():
+            key = "%s|%s" % (sid, idx)
+            if key not in out:
+                sub = subjects.get(sid) or {}
+                items = sub.get("items") or []
+                q = items[idx] if isinstance(idx, int) and 0 <= idx < len(items) else None
+                stype = sub.get("type")
+                prompt = iq.PROMPTS[stype](q)[0] if q and cur and stype in iq.PROMPTS else None
+                out[key], qs[key] = {"type": stype, "prompt": prompt, "answers": {}}, q
+            out[key]["answers"][rid] = _answer_of(it, qs[key], out[key]["type"])
+    return out
 
 
 def iq_compare(a_id, b_id):
@@ -366,6 +403,120 @@ def iq_compare(a_id, b_id):
     if not a or not b:
         return {"ok": False, "error": "run 不存在"}
     return dict(iq.compare_runs(a, b), ok=True, a=a_id, b=b_id)
+
+
+EXPORT_PAGES = {"dash": "perf", "cmp": "perf", "iq": "iq", "gen": "gen"}
+_KIND_PREFIX = {"perf": "run_", "iq": "iq_", "gen": "gen_"}
+
+
+def _work_file(rel):
+    """作品相关文件的逻辑路径(works/…) → 磁盘路径; 越界或不存在返回 None。"""
+    rel = str(rel or "")
+    if not rel.startswith("works/"):
+        return None
+    full = safe_join(WORKS, rel[len("works/"):])
+    return full if full and os.path.isfile(full) else None
+
+
+def _pack_work(it, files):
+    """一件作品要带进离线报告的文件: 网页(带存储垫片)、检查截图(data: 地址)、生成过程记录(JSON)。"""
+    rel = it.get("file")
+    full = _work_file(rel)
+    if full:
+        with open(full, "rb") as f:
+            files[rel] = _inject_works_shim(f.read()).decode("utf-8", "replace")
+    e = it.get("eval") or {}
+    if rel and e.get("shots_dir"):
+        base = rel.rsplit("/", 1)[0] + "/" + e["shots_dir"] + "/"
+        for sh in e.get("shots") or []:
+            p = base + str(sh.get("file") or "")
+            full = _work_file(p)
+            if full and p.lower().endswith((".jpg", ".jpeg")):
+                with open(full, "rb") as f:
+                    files[p] = "data:image/jpeg;base64," + base64.b64encode(f.read()).decode("ascii")
+    tr = it.get("trace")
+    full = _work_file(tr)
+    if full and tr.endswith(".gen.json"):
+        try:
+            with open(full, encoding="utf-8") as f:
+                files[tr] = json.load(f)
+        except (OSError, ValueError):
+            pass
+
+
+def offline_bundle(page, a_id, cmp_ids):
+    """离线报告要带的数据, 与页面请求的接口同形(前端 offlineApi 按接口路径取用)。
+    返回 {"api": ..., "files": ..., "sel": ...}; 参数不对或测试不存在抛 ValueError。"""
+    kind = EXPORT_PAGES.get(page)
+    if not kind:
+        raise ValueError("不支持导出这个页面")
+    ids = list(dict.fromkeys([a_id] + [x for x in cmp_ids if x]))
+    if len(ids) > 7:
+        raise ValueError("一次最多导出 7 次测试")
+    for x in ids:
+        if not (_RUN_ID_RE.match(x or "") and x.startswith(_KIND_PREFIX[kind])):
+            raise ValueError("非法 run_id: %s" % x)
+    api, files = {}, {}
+    if kind == "perf":
+        runs = {x: store.get_run(x) for x in ids}
+        miss = [x for x, d in runs.items() if d is None]
+        if miss:
+            raise ValueError("测试不存在: %s" % ", ".join(miss))
+        summary = {r["run_id"]: r for r in store.list_runs("perf", summary=True)}
+        api["perfList"] = [summary[x] for x in ids if x in summary]
+        api["perfRuns"] = runs
+    elif kind == "iq":
+        lst = {r["run_id"]: r for r in store.list_runs("iq", items=False)}
+        miss = [x for x in ids if x not in lst]
+        if miss:
+            raise ValueError("测试不存在: %s" % ", ".join(miss))
+        api["iqList"] = [lst[x] for x in ids]
+        api["iqItems"] = iq_items(a_id, ",".join(ids[1:]))
+        # 各次测试两两之间的「差异是否可信」: 在报告里换主测试也能看
+        api["iqCompare"] = {"%s|%s" % (x, y): iq_compare(x, y) for x in ids for y in ids if x != y}
+        same = [x for x in ids if ((api["iqItems"].get("runs") or {}).get(x) or {}).get("same_bank")] or [a_id]
+        api["iqAnswers"] = iq_answers_all([a_id] + [x for x in same if x != a_id])
+    else:
+        lst = {r["run_id"]: r for r in store.list_runs("gen")}
+        miss = [x for x in ids if x not in lst]
+        if miss:
+            raise ValueError("测试不存在: %s" % ", ".join(miss))
+        api["genList"] = [lst[x] for x in ids]
+        for r in api["genList"]:
+            for it in r.get("items") or []:
+                _pack_work(it, files)
+    return {"api": api, "files": files, "sel": {"a": a_id, "cmp": ids[1:]}, "worksCsp": WORKS_CSP_META}
+
+
+# 离线报告只带显示偏好(主题、视图、表格排序与列、标签页、每页条数、密度、侧栏), 不带表单里填过的地址和 Key
+EXPORT_LS_KEYS = ("llm-bench-pro-theme", "llm-bench-pro-viewmode", "llm-bench-pro-dt", "llm-bench-pro-ctab",
+                  "llm-bench-pro-qb", "llm-bench-pro-density", "llm-bench-pro-rail")
+
+
+def _export_state(raw):
+    raw = raw if isinstance(raw, dict) else {}
+    theme = raw.get("theme") if raw.get("theme") in ("light", "dark") else "dark"
+    ls = raw.get("ls") if isinstance(raw.get("ls"), dict) else {}
+    ls = {k: v for k, v in ls.items() if k in EXPORT_LS_KEYS and isinstance(v, str) and len(v) <= 65536}
+    ls["llm-bench-pro-theme"] = theme
+    return {"theme": theme, "ls": ls}
+
+
+def _export_ui(raw):
+    """导出那一刻的界面状态(单独切换过的面板、逐题筛选、作品筛选与排序), 只收认识的字段。"""
+    raw = raw if isinstance(raw, dict) else {}
+    ui = {}
+    panels = raw.get("panels")
+    if isinstance(panels, list):
+        ui["panels"] = [[str(k)[:80], v] for k, v in (p for p in panels[:200] if isinstance(p, list) and len(p) == 2)
+                        if v in ("chart", "table")]
+    qb = raw.get("qb")
+    if isinstance(qb, dict):
+        ui["qb"] = {k: str(qb.get(k) or "")[:200] for k in ("subj", "filter", "q", "vs")}
+    for k in ("genFilter", "genSort"):
+        if isinstance(raw.get(k), str):
+            ui[k] = raw[k][:40]
+    return ui
 
 
 def _judge_cfg(body):
@@ -582,7 +733,8 @@ class Handler(BaseHTTPRequestHandler):
             if full and ctype and os.path.isfile(full):
                 if ext == ".html":
                     with open(full, "rb") as f:
-                        return self._body(_inject_works_shim(f.read()), ctype, headers={"Content-Security-Policy": _WORKS_CSP})
+                        csp = _WORKS_CSP_OPEN if q("open") == "1" else _WORKS_CSP
+                        return self._body(_inject_works_shim(f.read()), ctype, headers={"Content-Security-Policy": csp})
                 return self._serve_file(full, ctype)
             return self._json({"error": "not found"}, 404)
 
@@ -657,6 +809,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/endpoints": self.api_endpoint_save, "/api/endpoint-use": self.api_endpoint_use,
             "/api/endpoint-delete": self.api_endpoint_delete,
             "/api/replay-upload": self.api_replay_upload,
+            "/api/export-html": self.api_export_html,
             "/api/scenario-upload": self.api_scenario_upload,
         }.get(parts.path)
         if handler is None:
@@ -893,6 +1046,27 @@ class Handler(BaseHTTPRequestHandler):
         fn = "%s_report%s.html" % (run_id, "_ab" if b else "")
         return self._body(html_text.encode("utf-8"), "text/html; charset=utf-8",
                           headers={"Content-Disposition": 'attachment; filename="%s"' % fn})
+
+    def api_export_html(self, body):
+        """离线报告: 当前页面(同一套界面) + 这几次测试的数据 → 一个 HTML 文件(浏览器直接打开, 不需要服务)。"""
+        page = body.get("page")
+        cmp = body.get("cmp") or []
+        if isinstance(cmp, str):
+            cmp = [x for x in cmp.split(",") if x]
+        if not isinstance(cmp, list):
+            return self._json({"ok": False, "error": "cmp 格式错误"}, 400)
+        try:
+            bundle = offline_bundle(page, str(body.get("id") or ""), [str(x) for x in cmp])
+        except ValueError as e:
+            return self._json({"ok": False, "error": str(e)}, 400)
+        info = self.version_info()
+        bundle["api"]["version"] = {k: info[k] for k in ("version", "iq_version", "bench_version", "gen_version")}
+        bundle["api"]["version"]["offline"] = True
+        bundle["ui"] = _export_ui(body.get("ui"))
+        bundle["exported_at"] = datetime.now(timezone.utc).isoformat()
+        title = re.sub(r"[\x00-\x1f]", " ", str(body.get("title") or ""))[:160] or "LLM Bench Pro 离线报告"
+        text = export_html.compose(page, bundle, _export_state(body.get("state")), title)
+        return self._body(text.encode("utf-8"), "text/html; charset=utf-8")
 
     # ---- 性能测试
     def api_start(self, body):

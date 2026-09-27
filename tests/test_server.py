@@ -11,7 +11,7 @@ from _util import ROOT, temp_dir
 import server
 import sinks
 import store
-from test_store import iq_doc, perf_doc
+from test_store import gen_doc, iq_doc, perf_doc
 
 
 class ServerCase(unittest.TestCase):
@@ -183,6 +183,143 @@ class TestServer(ServerCase):
         self.assertEqual((st, d["ok"]), (200, True))
         self.assertIsNone(store.get_run(b["run_id"]))
         self.assertEqual(self.request("POST", "/api/run-delete", {"run_id": "../x"})[0], 400)
+
+    def test_works_open_mode(self):
+        """新标签页打开(?open=1): 仍是沙箱(不同源, 碰不到接口), 但像普通网页一样可以加载外部字体和脚本。"""
+        d = temp_dir()
+        with open(os.path.join(d, "game.html"), "wb") as f:
+            f.write(b"<!doctype html><html><head></head><body><script>1</script></body></html>")
+        orig = server.WORKS
+        server.WORKS = d
+        try:
+            csp_of = lambda h: next(v for k, v in h.items() if k.lower() == "content-security-policy")  # noqa: E731
+            st, h, body = self.request("GET", "/works/game.html?open=1")
+            self.assertEqual(st, 200)
+            self.assertTrue(csp_of(h).startswith("sandbox allow-scripts"))
+            self.assertNotIn("allow-same-origin", csp_of(h))
+            self.assertNotIn("src", csp_of(h))                 # 不限制外部资源
+            self.assertIn(b"llm-bench-pro storage shim", body)
+            st, h, _ = self.request("GET", "/works/game.html")   # 预览仍是评测时的环境: 不联网
+            self.assertIn("connect-src data: blob:", csp_of(h))
+            self.assertNotIn("sandbox", server.WORKS_CSP_META)  # 离线报告的 meta 版本不含 meta 不支持的 sandbox
+            self.assertIn("script-src", server.WORKS_CSP_META)
+        finally:
+            server.WORKS = orig
+
+    def _bank(self):
+        import bankman
+        bdir = temp_dir()
+        bank = {"bank_id": "tb-exp", "subjects": [
+            {"id": "s", "name": "S", "type": "mcq", "items": [
+                {"q": "q0", "choices": list("abcd"), "answer": "B"}, {"q": "q1", "choices": list("abcd"), "answer": "A"},
+                {"q": "q2", "choices": list("abcd"), "answer": "C"}]},
+            {"id": "ins", "name": "I", "type": "instruct", "items": [{"q": "用不超过50个字介绍量子计算。", "checks": []}]}]}
+        with open(os.path.join(bdir, "tb-exp.json"), "w", encoding="utf-8") as f:
+            json.dump(bank, f, ensure_ascii=False)
+        old = bankman.BANKS
+        bankman.BANKS = bdir
+        self.addCleanup(setattr, bankman, "BANKS", old)
+
+    def _iq_pair(self, suffix):
+        import iq
+        a = iq_doc("iq_20260105_000000_a" + suffix)
+        a.update(bank_id="tb-exp", iq_version=iq.IQ_VERSION)
+        a["items"][0]["resp"] = "B"
+        a["items"].append({"sid": "ins", "idx": 0, "ok": False, "in": 1, "out": 30, "finish": "stop", "resp": "量" * 60})
+        a["items"].append({"sid": "s", "idx": 0, "ok": False, "in": 1, "out": 2, "finish": "stop", "resp": "C", "pred": "C"})  # 续跑后同题第二条
+        b = iq_doc("iq_20260105_000000_b" + suffix)
+        b.update(bank_id="tb-exp")
+        for doc in (a, b):
+            sinks.SqliteSink().save(doc)
+        return a, b
+
+    def test_iq_answers_all_matches_single(self):
+        """离线报告一次取全部回答, 与逐题接口 iq_answer 的结果逐项相同(同题多条记录以最后一条为准)。"""
+        self._bank()
+        a, b = self._iq_pair("x")
+        ids = [a["run_id"], b["run_id"]]
+        allv = server.iq_answers_all(ids)
+        self.assertEqual(sorted(allv), ["ins|0", "s|0", "s|1", "s|2"])
+        for key, e in allv.items():
+            sid, idx = key.split("|")
+            one = server.iq_answer(",".join(ids), sid, idx)
+            self.assertEqual({k: one[k] for k in ("type", "prompt", "answers")}, e, key)
+        self.assertEqual(allv["s|0"]["answers"][a["run_id"]]["pred"], "C")
+        self.assertEqual(server.iq_answers_all(["../x"]), {})
+
+    def test_export_html(self):
+        """离线报告: 同一套页面(内联 CSS / ECharts / app.js) + 这几次测试的数据; 四个页面都能导出; 参数不对 400。"""
+        import re
+        self._bank()
+        p1, p2 = perf_doc("run_20260105_000000_p1"), perf_doc("run_20260105_000000_p2")
+        a, b = self._iq_pair("e")
+        g = gen_doc("gen_20260105_000000_g1")
+        wd = temp_dir()
+        os.makedirs(os.path.join(wd, g["run_id"]))
+        with open(os.path.join(wd, g["run_id"], "snake.html"), "wb") as f:
+            f.write(b"<!doctype html><html><head><title>s</title></head><body><script>var x='</script>'.length</script></body></html>")
+        g["items"][0]["file"] = "works/%s/snake.html" % g["run_id"]
+        for doc in (p1, p2, g):
+            sinks.SqliteSink().save(doc)
+        orig = server.WORKS
+        server.WORKS = wd
+
+        def export(**body):
+            st, h, raw = self.request("POST", "/api/export-html", body)
+            return st, h, raw
+
+        def data_of(html):
+            m = re.search(rb'<script type="application/json" id="llmb-offline">(.*?)</script>', html, re.S)
+            return json.loads(m.group(1).decode("utf-8"))
+        try:
+            st, h, html = export(page="dash", id=p1["run_id"], cmp=[p2["run_id"]], title="速度测试 · m",
+                                 state={"theme": "light", "ls": {"llm-bench-pro-dt": "{}", "llm-bench-pro-iq-form": "{\"iqBase\":\"http://10.0.0.1\"}"}},
+                                 ui={"panels": [["dash-conc", "table"], ["x", "bad"]], "qb": {"filter": "bad"}})
+            self.assertEqual((st, h["Content-Type"].split(";")[0]), (200, "text/html"))
+            self.assertIn(("const UI_VERSION=\"%s\"" % server.APP_VERSION).encode(), html)   # 同一套页面代码, 内联
+            self.assertNotIn(b'src="/static', html)
+            self.assertNotIn(b'href="/static', html)
+            self.assertEqual(html.count(b"<script"), html.count(b"</script>"))             # 内联内容没有提前结束脚本
+            self.assertIn("<title>速度测试 · m</title>".encode(), html)
+            d = data_of(html)
+            self.assertEqual((d["page"], d["sel"]), ("dash", {"a": p1["run_id"], "cmp": [p2["run_id"]]}))
+            self.assertEqual(sorted(d["api"]["perfRuns"]), sorted([p1["run_id"], p2["run_id"]]))
+            self.assertEqual([r["run_id"] for r in d["api"]["perfList"]], [p1["run_id"], p2["run_id"]])
+            self.assertTrue(d["api"]["version"]["offline"])
+            self.assertNotIn("db", d["api"]["version"])                                   # 不带本机路径
+            self.assertEqual(d["ui"]["panels"], [["dash-conc", "table"]])
+            st_json = re.search(rb"window\.LLMB_OFF_STATE=(\{.*?\})</script>", html).group(1)
+            state = json.loads(st_json.decode("utf-8"))
+            self.assertEqual(state["theme"], "light")
+            self.assertNotIn("llm-bench-pro-iq-form", state["ls"])                         # 表单里填过的地址不带
+            self.assertIn("llm-bench-pro-dt", state["ls"])
+
+            st, _, html = export(page="iq", id=a["run_id"], cmp=[b["run_id"]])
+            d = data_of(html)
+            self.assertEqual([r["run_id"] for r in d["api"]["iqList"]], [a["run_id"], b["run_id"]])
+            self.assertEqual(len(d["api"]["iqItems"]["questions"]), 4)
+            self.assertEqual(sorted(d["api"]["iqAnswers"]), ["ins|0", "s|0", "s|1", "s|2"])
+            self.assertEqual(sorted(d["api"]["iqCompare"]), sorted(["%s|%s" % (a["run_id"], b["run_id"]), "%s|%s" % (b["run_id"], a["run_id"])]))
+            self.assertIn("量" * 60, json.dumps(d, ensure_ascii=False))                    # 回答原文也在报告里
+            self.assertEqual(html.count(b"<script"), html.count(b"</script>"))
+
+            st, _, html = export(page="gen", id=g["run_id"])
+            d = data_of(html)
+            work = d["files"]["works/%s/snake.html" % g["run_id"]]
+            self.assertIn("llm-bench-pro storage shim", work)                             # 与在线预览同样带存储垫片
+            self.assertIn("'</script>'.length", work)                                     # 作品原文完整
+            self.assertEqual(html.count(b"<script"), html.count(b"</script>"))
+            self.assertIn("script-src", d["worksCsp"])
+
+            for body in ({"page": "x", "id": p1["run_id"]}, {"page": "dash", "id": "../x"}, {"page": "dash", "id": a["run_id"]},
+                         {"page": "iq", "id": "iq_20990101_000000_none"}, {"page": "gen", "id": g["run_id"], "cmp": "x"},
+                         {"page": "dash", "id": p1["run_id"], "cmp": {"a": 1}}):
+                with self.subTest(body=body):
+                    st, _, err = export(**body)
+                    self.assertEqual(st, 400)
+                    self.assertFalse(err["ok"])
+        finally:
+            server.WORKS = orig
 
     def test_iq_items_and_answer(self):
         import bankman
