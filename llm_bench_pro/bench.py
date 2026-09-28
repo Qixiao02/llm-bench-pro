@@ -15,6 +15,7 @@ llm-bench-pro — LLM 推理专业基准测试引擎
 import argparse
 import base64
 import copy
+import functools
 import io
 import json
 import os
@@ -39,7 +40,10 @@ except ImportError:
 # 1.3: 业务场景改为可插拔任务模板(对话问答/代码/结构化抽取/RAG/图片理解/自定义任务集); 1.2 的回放机制不变
 # 1.4: 图片理解默认用内置示例图片(每张图配只问图里内容的提示词), 发送前检查图片(太小/损坏的不发);
 #      自定义任务集与回放逐行检查格式; HTTP 错误记下服务端返回的原因
-BENCH_VERSION = "1.4.0"
+# 1.5: 长输入按被测模型的实际 token 数拼。1.4 及以前按「每句 77.5 token」估算, 新一代分词器(如 Qwen3)上每句只有
+#      35 token 左右, 各档实际长度只有标称的 45%; 现在每次测试开始时实测一次再拼(长度阶梯 / 长输入并发 / 超长输入 /
+#      预热 / 看资料回答), 结果里记下校准值和每档的目标长度
+BENCH_VERSION = "1.5.0"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
 
 _PROGRESS_CB = None
@@ -81,6 +85,16 @@ def plog(msg):
 ZH_UNIT = "人工智能与大语言模型技术综述。深度学习架构、注意力机制、模型量化与推理优化、 speculative decoding 投机采样、KV cache 缓存与显存管理。 "
 EN_PROMPT = ("Write a production-quality Python quicksort implementation with type hints, "
              "detailed docstrings, and 3 pytest unit tests covering edge cases.")
+PREFILL_HEAD = "以下是一段技术文本（批次 %d-%d），请仔细阅读后用一句话总结主题：\n"
+UNIT_GUESS = 77.5        # ZH_UNIT 每句 token 数的旧估算(老一代分词器约一字一 token); 只在校准不成时用
+CAL_REPS = (8, 40)       # 校准用的两个句数
+_LEN_LABEL = re.compile(r"^(\d+(?:\.\d+)?)K$")
+
+
+def label_tokens(label):
+    """长度档位标签 -> 目标 token 数: "32K" -> 32000; 不是这种写法的返回 None。"""
+    m = _LEN_LABEL.match(str(label or ""))
+    return int(round(float(m.group(1)) * 1000)) if m else None
 
 
 # ---------------------------------------------------------------- HTTP 基础
@@ -277,25 +291,86 @@ class MetricsRecorder:
         return self.samples
 
 
+# ---------------------------------------------------------------- 长输入的长度校准
+
+def _guess(reason, samples=None):
+    out = {"method": "guess", "unit_tokens": UNIT_GUESS, "overhead_tokens": 0, "error": reason}
+    if samples:
+        out["samples"] = samples
+    return out
+
+
+def _fit(samples):
+    """两点 (句数或段数, 实际输入 token) -> (每单位 token, 其余部分 token)。"""
+    (n1, t1), (n2, t2) = samples
+    unit = (t2 - t1) / float(n2 - n1)
+    return unit, t1 - unit * n1
+
+
+def calibrate_prompt(url, headers, model):
+    """实测 ZH_UNIT 在被测模型上的 token 数: 发两个只生成 1 个 token 的请求(ZH_UNIT 分别重复 8 次和 40 次),
+    按服务返回的实际输入 token 数算出每句多少 token, 以及说明文字 + 对话模板多少 token。
+    服务没返回用量、或结果明显不合理时, 退回旧估算(每句 77.5)并在结果里注明原因。"""
+    nonce = int(time.time() * 1000) % 1000000
+    samples = []
+    try:
+        for reps in CAL_REPS:
+            s = stream_call(url, {"model": model, "max_tokens": 1, "temperature": 0,
+                                  "messages": [{"role": "user", "content": PREFILL_HEAD % (nonce, reps) + ZH_UNIT * reps}]},
+                            headers, timeout=120)
+            samples.append([reps, derive(s)["in_tokens"]])
+    except Cancelled:
+        raise
+    except Exception as e:
+        return _guess("校准请求失败：%s" % str(e)[:200], samples)
+    unit, overhead = _fit(samples)
+    if not (2 <= unit <= 400) or not (-50 <= overhead <= 4000):
+        return _guess("服务返回的输入 token 数不随长度变化（可能没有返回真实用量）", samples)
+    return {"method": "usage", "unit_tokens": round(unit, 3), "overhead_tokens": max(0, int(round(overhead))),
+            "samples": samples}
+
+
+def reps_for(tokens, cal):
+    """目标 token 数 -> ZH_UNIT 重复几句。"""
+    return max(1, int(round((tokens - cal["overhead_tokens"]) / cal["unit_tokens"])))
+
+
+def resolve_ladder(ladder, cal):
+    """长度档位 -> [(标签, 句数, 目标 token)]。档位写成 "32K" 这类标签时按校准结果算句数;
+    旧的自定义套件文件里的 [标签, 句数] 同样按标签重算(原句数是按旧估算写的); 认不出长度的标签保留原句数。"""
+    out = []
+    for item in ladder:
+        label, reps = (item, None) if isinstance(item, str) else (item[0], item[1] if len(item) > 1 else None)
+        target = label_tokens(label)
+        out.append((label, reps_for(target, cal), target) if target else (label, max(1, int(reps or 1)), None))
+    return out
+
+
+def _cal_text(cal):
+    if cal["method"] == "usage":
+        return "每句 %.1f token，说明文字和对话模板 %d token（实测）" % (cal["unit_tokens"], cal["overhead_tokens"])
+    return "没能校准，按旧估算每句 %.1f token（%s）" % (cal["unit_tokens"], cal.get("error") or "")
+
+
 # ---------------------------------------------------------------- 测试阶段
 
 def phase_prefill(url, headers, model, ladder, out_tok, rep):
-    """上下文阶梯: 每档重复 rep 次取中位数; 唯一批次号避免前缀缓存命中虚高。"""
+    """上下文阶梯: 每档重复 rep 次取中位数; 唯一批次号避免前缀缓存命中虚高。
+    ladder: resolve_ladder 的结果 [(标签, 句数, 目标 token)]。"""
     points = []
     session_nonce = int(time.time() * 1000) % 1000000
-    for label, reps in ladder:
+    for label, reps, target in ladder:
         check_cancel()
         runs = []
         for seq in range(rep):
-            prompt = ("以下是一段技术文本（批次 %d-%d），请仔细阅读后用一句话总结主题：\n"
-                      % (session_nonce, seq)) + (ZH_UNIT * reps)
+            prompt = PREFILL_HEAD % (session_nonce, seq) + (ZH_UNIT * reps)
             s = stream_call(url, {"model": model, "messages": [{"role": "user", "content": prompt}],
                                   "max_tokens": out_tok, "temperature": 0}, headers)
             runs.append(derive(s))
         ttfts = [r["ttft_s"] for r in runs if r["ttft_s"]]
         tps = [r["prefill_tps"] for r in runs if r["prefill_tps"]]
         points.append({
-            "label": label, "in_tokens": runs[0]["in_tokens"],
+            "label": label, "target_tokens": target, "in_tokens": runs[0]["in_tokens"],
             "ttft_med_s": round(statistics.median(ttfts), 3) if ttfts else None,
             "prefill_tps_med": round(statistics.median(tps), 1) if tps else None,
             "runs": runs,
@@ -431,11 +506,12 @@ def phase_prefill_conc(url, headers, model, ladder, conc, out_tok, max_attempts=
         return {"point": point, "ok": len(good), "fail": bad, "total": conc,
                 "errors": [r["error"] for r in results if "error" in r][:3]}
 
-    for label, reps in ladder:
+    for label, reps, target in ladder:
         check_cancel()
         rec = _retry_cell(lambda r=reps: run_label(r), "矩阵 %s" % label, max_attempts, retry_pause_s)
         if rec["point"]:
             rec["point"]["label"] = label
+            rec["point"]["target_tokens"] = target
             points.append(rec["point"])
             plog("  %-5s in=%-6d ttft_avg=%7.1fms  prefill_agg=%8.0f t/s  decode_agg=%7.1f t/s  ok=%d/%d" %
                  (label, points[-1]["in_tokens"], points[-1]["ttft_avg_ms"], points[-1]["prefill_tps_agg"],
@@ -461,13 +537,14 @@ def phase_prefill_conc(url, headers, model, ladder, conc, out_tok, max_attempts=
     return {"id": "prefill_conc", "name": "提示词阶梯×并发", "conc": conc, "points": points, "summary": summary}
 
 
-def phase_longctx(url, headers, model, ctx_tokens, out_tok):
-    """长上下文驻留: 大上下文注入后解码。"""
-    reps = max(1, ctx_tokens // 78)  # ZH_UNIT ~78 token/句
+def phase_longctx(url, headers, model, ctx_tokens, out_tok, cal=None):
+    """长上下文驻留: 大上下文注入后解码。句数按校准结果算(cal 为空时用旧估算)。"""
+    reps = reps_for(ctx_tokens, cal or _guess(""))
     prompt = "以下是技术文档，请基于内容回答：\n" + (ZH_UNIT * reps) + "\n\n用三句话概括核心内容。"
     s = stream_call(url, {"model": model, "messages": [{"role": "user", "content": prompt}],
                           "max_tokens": out_tok, "temperature": 0}, headers)
     d = derive(s)
+    d.update(label="%dK" % (ctx_tokens // 1024), target_tokens=ctx_tokens)
     plog("  ctx=%-7d in=%d  ttft=%6.2fs  prefill=%7.0f t/s  decode=%6.1f t/s" %
          (ctx_tokens, d["in_tokens"], d["ttft_s"] or 0, d["prefill_tps"] or 0, d["decode_tps"] or 0))
     return {"id": "longctx", "name": "长上下文驻留", "points": [d]}
@@ -721,8 +798,12 @@ def _scn_code_body(model, rng, max_tokens, salt):
                          {"role": "user", "content": "[%s] 编程语言: %s。任务: %s" % (salt, lang, task)}]}
 
 
-def _scn_rag_body(model, rng, max_tokens, salt, ctx_tokens):
-    n = max(3, round(ctx_tokens / RAG_TOKENS_PER_PASSAGE))
+def _scn_rag_body(model, rng, max_tokens, salt, ctx_tokens, cal=None, n=None):
+    """资料段数按目标长度算: cal 是 calibrate_rag 的结果(每段资料多少 token、其余部分多少 token), 为空时用旧估算;
+    n 直接指定段数(校准时用)。"""
+    if n is None:
+        per, rest = (cal["unit_tokens"], cal["overhead_tokens"]) if cal else (RAG_TOKENS_PER_PASSAGE, 0)
+        n = max(3, int(round((ctx_tokens - rest) / per)))
     start = rng.randrange(len(RAG_PASSAGES))
     parts = ["[段落 %d] %s" % (i + 1, RAG_PASSAGES[(start + i) % len(RAG_PASSAGES)]) for i in range(n)]
     user = "[%s]\n以下是检索到的资料：\n\n%s\n\n问题: %s" % (salt, "\n\n".join(parts), rng.choice(RAG_QUESTIONS))
@@ -730,6 +811,31 @@ def _scn_rag_body(model, rng, max_tokens, salt, ctx_tokens):
             "messages": [{"role": "system",
                           "content": "仅基于用户提供的资料回答，需标注依据的段落号；资料未涉及的内容明确说明不知道，不得编造。"},
                          {"role": "user", "content": user}]}
+
+
+def calibrate_rag(url, headers, model):
+    """实测「看资料回答」每段资料的 token 数: 同一个问题分别带 10 段和 30 段资料, 各发一个只生成 1 个 token 的请求。
+    不成时退回旧估算(每段 110)。"""
+    k = len(RAG_PASSAGES)
+    samples = []
+    try:
+        for n in (k, 3 * k):
+            body = _scn_rag_body(model, random.Random(0), 1, "cal", 0, n=n)  # 同一个随机种子: 只有段数不同
+            s = stream_call(url, body, headers, timeout=120, apply_req_extra=False)  # 和场景请求一样不带 ignore_eos
+            samples.append([n, derive(s)["in_tokens"]])
+    except Cancelled:
+        raise
+    except Exception as e:
+        out = _guess("校准请求失败：%s" % str(e)[:200], samples)
+        out["unit_tokens"] = RAG_TOKENS_PER_PASSAGE
+        return out
+    unit, overhead = _fit(samples)
+    if not (5 <= unit <= 2000) or not (-50 <= overhead <= 4000):
+        out = _guess("服务返回的输入 token 数不随资料长度变化（可能没有返回真实用量）", samples)
+        out["unit_tokens"] = RAG_TOKENS_PER_PASSAGE
+        return out
+    return {"method": "usage", "unit_tokens": round(unit, 3), "overhead_tokens": max(0, int(round(overhead))),
+            "samples": samples}
 
 
 def _scn_vision_body(model, rng, max_tokens, salt, images, n_img, prompts=None):
@@ -793,6 +899,12 @@ def phase_scenario(url, headers, model, tpl_id, cfg):
         pool = ReplayPool(cfg.get("custom_file") or "")
         plog("  任务集 %d 条" % len(pool))
     ctx_list = [int(x) for x in (cfg.get("rag_ctx") or [4000])] if tpl_id == "rag" else [None]
+    rag_cal = None
+    if tpl_id == "rag":
+        rag_cal = calibrate_rag(url, headers, model)
+        plog("  资料长度校准: " + (("每段 %.1f token，问题和说明 %d token（实测）" % (rag_cal["unit_tokens"], rag_cal["overhead_tokens"]))
+                                   if rag_cal["method"] == "usage" else "没能校准，按旧估算每段 %d token（%s）"
+                                   % (rag_cal["unit_tokens"], rag_cal.get("error") or "")))
 
     def build(rng, salt, ctx):
         if tpl_id == "chat":
@@ -802,7 +914,7 @@ def phase_scenario(url, headers, model, tpl_id, cfg):
         if tpl_id == "json":
             return _scn_json_body(model, rng, mt, bool(cfg.get("disable_thinking")))
         if tpl_id == "rag":
-            return _scn_rag_body(model, rng, mt, salt, ctx)
+            return _scn_rag_body(model, rng, mt, salt, ctx, rag_cal)
         return _scn_vision_body(model, rng, mt, salt, images, n_img, prompts)
 
     points = []
@@ -848,6 +960,7 @@ def phase_scenario(url, headers, model, tpl_id, cfg):
             "max_tokens": mt, "requests_per_worker": rpw}
     if tpl_id == "rag":
         task["rag_ctx"] = ctx_list
+        task["rag_calibration"] = rag_cal
     if tpl_id == "vision":
         task["images"] = len(images)
         task["images_per_request"] = n_img
@@ -1184,17 +1297,19 @@ def phase_replay_open(url, headers, model, cfg, rp):
 
 # ---------------------------------------------------------------- 主流程
 
+# 长度档位只写目标长度("8K" = 8000 token), 拼几句在测试开始校准后再算(resolve_ladder);
+# 自定义套件文件里旧的 [标签, 句数] 写法也兼容, 按标签重算
 SUITES = {
-    "quick":     {"prefill": [("2K", 26), ("8K", 103)], "prefill_rep": 1,
-                  "prefill_conc": {"ladder": [("1K", 13), ("4K", 52), ("8K", 103)], "conc": 4}, "decode_tok": 256, "decode_rep": 1,
+    "quick":     {"prefill": ["2K", "8K"], "prefill_rep": 1,
+                  "prefill_conc": {"ladder": ["1K", "4K", "8K"], "conc": 4}, "decode_tok": 256, "decode_rep": 1,
                   "conc": [1, 4, 8], "conc_rounds": 1, "longctx": []},
-    "standard":  {"prefill": [("1K", 13), ("2K", 26), ("4K", 52), ("8K", 103), ("16K", 206)], "prefill_rep": 2,
-                  "prefill_conc": {"ladder": [("1K", 13), ("2K", 26), ("3K", 39), ("4K", 52), ("5K", 65), ("6K", 78), ("7K", 91), ("8K", 103)], "conc": 4},
+    "standard":  {"prefill": ["1K", "2K", "4K", "8K", "16K"], "prefill_rep": 2,
+                  "prefill_conc": {"ladder": ["1K", "2K", "3K", "4K", "5K", "6K", "7K", "8K"], "conc": 4},
                   "decode_tok": 384, "decode_rep": 2, "conc": [1, 2, 4, 8, 16], "conc_rounds": 2, "longctx": []},
-    "full":      {"prefill": [("1K", 13), ("2K", 26), ("4K", 52), ("8K", 103), ("16K", 206), ("32K", 413), ("64K", 826), ("128K", 1652)],
+    "full":      {"prefill": ["1K", "2K", "4K", "8K", "16K", "32K", "64K", "128K"],
                   "prefill_rep": 2, "decode_tok": 512, "decode_rep": 3, "conc": [1, 2, 4, 8, 16, 32, 48, 64],
                   "conc_rounds": 2, "longctx": [32768, 65536],
-                  "prefill_conc": {"ladder": [("1K", 13), ("2K", 26), ("4K", 52), ("6K", 78), ("8K", 103), ("10K", 129), ("12K", 155), ("16K", 206)], "conc": 4}}
+                  "prefill_conc": {"ladder": ["1K", "2K", "4K", "6K", "8K", "10K", "12K", "16K"], "conc": 4}}
 }
 
 
@@ -1218,8 +1333,8 @@ def normalize_base(base):
 
 
 def lens_to_ladder(lens_k):
-    """K 列表 -> [(label, 句数)]; ZH_UNIT 实测约 77.5 token/句。"""
-    return [("%dK" % k, max(1, round(k * 1000 / 77.5))) for k in lens_k]
+    """K 列表 -> 长度档位标签, 如 [1, 8] -> ["1K", "8K"]; 拼几句在测试开始校准后再算。"""
+    return ["%dK" % k for k in lens_k]
 
 
 def detect_framework(base_url, headers):
@@ -1245,25 +1360,25 @@ def detect_framework(base_url, headers):
     return {"name": name or ("vLLM" if ver else ""), "version": ver}
 
 
+def _warm_one(url, headers, model, prompt):
+    try:
+        stream_call(url, {"model": model, "messages": [{"role": "user", "content": prompt}],
+                          "max_tokens": 32, "temperature": 0}, headers, timeout=120)
+    except RuntimeError as e:  # 空流不致命(如被截断); 连接类错误与取消照常抛出
+        plog("warmup warning: %s" % e)
+
+
 def _warmup(url, headers, model, cfg, warmup_shapes):
-    """热身: 先单发; 再按"实际会跑的 (输入长度, 并发) 组合"各预热一发(out=32, 结果丢弃),
-    覆盖引擎按 batch shape 的编译/cudagraph/缓存冷启动, 避免首个格子吃到冷启动开销。"""
-    plog("warmup...")
-
-    def one(prompt):
-        try:
-            stream_call(url, {"model": model, "messages": [{"role": "user", "content": prompt}],
-                              "max_tokens": 32, "temperature": 0}, headers, timeout=120)
-        except RuntimeError as e:  # 空流不致命(如被截断); 连接类错误与取消照常抛出
-            plog("warmup warning: %s" % e)
-
-    one("回复 OK")
+    """按"实际会跑的 (输入长度, 并发) 组合"各预热一发(out=32, 结果丢弃), 覆盖引擎按 batch shape 的
+    编译/cudagraph/缓存冷启动, 避免首个格子吃到冷启动开销。cfg 里的档位已按校准结果算好句数(resolve_ladder)。
+    (最开始那一发单独的热身在校准之前, 见 run_suite)"""
     if not warmup_shapes:
         return
-    shapes = [(reps, 1) for _, reps in (cfg.get("prefill") or [])]
+    one = functools.partial(_warm_one, url, headers, model)
+    shapes = [(reps, 1) for _, reps, _ in (cfg.get("prefill") or [])]
     pc = cfg.get("prefill_conc")
     if pc:
-        shapes += [(reps, int(pc.get("conc") or 4)) for _, reps in (pc.get("ladder") or [])]
+        shapes += [(reps, int(pc.get("conc") or 4)) for _, reps, _ in (pc.get("ladder") or [])]
     shapes += [(1, c) for c in (1, 4, 8) if c in (cfg.get("conc") or [])]
     seen, uniq = set(), []
     for s in shapes:
@@ -1351,6 +1466,14 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
     result["status"] = "running"
     try:
         save()
+        plog("warmup...")
+        _warm_one(url, headers, model, "回复 OK")
+        cal = calibrate_prompt(url, headers, model)
+        result["prompt_calibration"] = cal
+        plog("  长度校准: " + _cal_text(cal))
+        cfg["prefill"] = resolve_ladder(cfg.get("prefill") or [], cal)
+        if cfg.get("prefill_conc"):
+            cfg["prefill_conc"]["ladder"] = resolve_ladder(cfg["prefill_conc"].get("ladder") or [], cal)
         _warmup(url, headers, model, cfg, warmup_shapes)
         plog("[phase] prefill")
         result["phases"].append(phase_prefill(url, headers, model, cfg["prefill"], 96, cfg["prefill_rep"])); save()
@@ -1378,7 +1501,7 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
             result["replay"]["wrapped"] = rp_pool.wrapped
         for ctx in cfg.get("longctx", []):
             plog("[phase] longctx %dK" % (ctx // 1024))
-            result["phases"].append(phase_longctx(url, headers, model, ctx, 256)); save()
+            result["phases"].append(phase_longctx(url, headers, model, ctx, 256, cal)); save()
         result["status"] = "done"
     except Cancelled:
         result["status"] = "cancelled"

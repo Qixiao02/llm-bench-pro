@@ -361,4 +361,36 @@ T("maskKey: API Key 掩码显示", () => {
   assert.equal(maskKey(null), "—");
 });
 
+T("输入长度: 旧算法拼的档位按实际长度显示, 新测试不动; 长度范围不同的两次测试不可比", () => {
+  const old = fixLenLabels({phases: [
+    {id: "prefill", points: [{label: "1K", in_tokens: 490}, {label: "32K", in_tokens: 14490}, {label: "128K", in_tokens: 57855}]},
+    {id: "prefill_conc", conc: 4, points: [{label: "1K", in_tokens: 488}, {label: "16K", in_tokens: 7245}]}]});
+  assert.deepEqual(old.phases[0].points.map(q => [q.label, q.label_nominal]), [["0.5K", "1K"], ["14.5K", "32K"], ["57.9K", "128K"]]);
+  assert.deepEqual(old.phases[1].points.map(q => q.label), ["0.5K", "7.2K"]);
+  assert.equal(fixLenLabels(old), old);                                   /* 同一份结果只处理一次 */
+  const neu = fixLenLabels({phases: [{id: "prefill_conc", conc: 4, points: [{label: "1K", in_tokens: 1012}, {label: "16K", in_tokens: 15990}]}]});
+  assert.deepEqual(neu.phases[0].points.map(q => [q.label, q.label_nominal]), [["1K", undefined], ["16K", undefined]]);
+  assert.equal(lenK(250000), "250K");
+  const note = perfAnomalies(old)[0];
+  assert.ok(note.includes("旧的估算方法") && note.includes("原来标 128K 的显示为 57.9K") && note.includes("45%"), note);
+  assert.ok(perfAnomalies({phases: [], prompt_calibration: {method: "guess", error: "没返回用量"}}).some(t => t.includes("没能按这个模型的实际 token 数校准")));
+  assert.equal(perfAnomalies(neu).length, 0);                              /* 新测试没有额外提示 */
+  const k = PERF_METRICS.find(x => x.key === "mpre");
+  assert.equal(ladderRef(perfCtx(neu)), "1K–16K、同时 4 个请求");
+  assert.equal(sameRef(k, perfCtx(old), perfCtx(neu)), false);             /* 旧 0.5K–7.2K 与新 1K–16K 不比 */
+  assert.equal(sameRef(k, perfCtx(neu), perfCtx(neu)), true);
+});
+
+T("看资料回答: 旧结果的资料长度按实际显示, 新旧测试实际长度差得多时不配对比较", () => {
+  const old = fixLenLabels({phases: [{id: "scn_rag", points: [{ctx_tokens: 4000, prompt_tokens_avg: 2136, conc: 4}]}]});
+  assert.equal(old.phases[0].points[0].ctx_actual, 2136);
+  assert.ok(perfAnomalies(old).some(t => t.includes("看资料回答") && t.includes("标 4K 的实际约 2.1K")));
+  const neu = fixLenLabels({phases: [{id: "scn_rag", points: [{ctx_tokens: 4000, prompt_tokens_avg: 3980, conc: 4}]}]});
+  assert.equal(neu.phases[0].points[0].ctx_actual, undefined);
+  assert.equal(ragPair(old.phases[0].points[0], neu.phases[0].points[0]), false);            /* 旧 2.1K 与新 4K 不比 */
+  assert.equal(ragPair(old.phases[0].points[0], {ctx_tokens: 4000, prompt_tokens_avg: 2125}), true);  /* 两次旧测试照常比 */
+  assert.equal(ragActualNote(old.phases[0], [1500, 4000]), "（旧方法估算的，实际约 — / 2.1K）");
+  assert.equal(ragActualNote(neu.phases[0], [4000]), "");
+});
+
 console.log("FRONTEND-OK " + __n);
