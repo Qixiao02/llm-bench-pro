@@ -1,6 +1,6 @@
 "use strict";
 /* LLM Bench Pro 前端逻辑 (零依赖经典脚本; 图表用本地内置的 ECharts) */
-const UI_VERSION="3.5.0";  /* 与 llm_bench_pro/version.py 保持一致 */
+const UI_VERSION="3.5.1";  /* 与 llm_bench_pro/version.py 保持一致 */
 /* ============================================================
    基础工具
    ============================================================ */
@@ -1304,8 +1304,36 @@ let RUNS={},RUNS_LOADED=false,perfPoll=null;
 const FULL={};  /* 测试完整记录缓存(列表接口只返回摘要) */
 let renderSeq=0,cmpSeq=0;
 async function ensureRuns(ids){
-  await Promise.all(ids.filter(id=>id&&!FULL[id]).map(async id=>{FULL[id]=await getJSON("/api/run?id="+encodeURIComponent(id))}));
+  await Promise.all(ids.filter(id=>id&&!FULL[id]).map(async id=>{FULL[id]=fixLenLabels(await getJSON("/api/run?id="+encodeURIComponent(id)))}));
 }
+/* 输入长度的标签: 1.5 之前的速度测试按「每句 77.5 token」估算着拼长输入, 在新一代分词器上实际只有标称的 45% 左右。
+   标签和实际长度差 10% 以上的档位改按实际长度显示(原标签留在 label_nominal); 图表、表格、结论和 A/B 是否可比都跟着按实际长度 */
+function lenK(t){const k=t/1000;return (k<100?Math.round(k*10)/10:Math.round(k))+"K"}
+function fixLenLabels(r){
+  if(!r||r._len)return r;
+  const moved=[],rag=[];
+  (r.phases||[]).forEach(ph=>{
+    if(ph.id==="scn_rag")(ph.points||[]).forEach(q=>{   /* 看资料回答: 实际输入和资料长度差 15% 以上(段落粒度粗些) */
+      if(!q.ctx_tokens||!q.prompt_tokens_avg||Math.abs(q.prompt_tokens_avg/q.ctx_tokens-1)<=0.15)return;
+      q.ctx_actual=Math.round(q.prompt_tokens_avg);
+      rag.push({from:kLabel(q.ctx_tokens),to:lenK(q.ctx_actual)});
+    });
+    if(ph.id!=="prefill"&&ph.id!=="prefill_conc")return;
+    (ph.points||[]).forEach(q=>{
+      const m=/^(\d+(?:\.\d+)?)K$/.exec(q.label||"");
+      if(!m||!q.in_tokens)return;
+      const ratio=q.in_tokens/(+m[1]*1000);
+      if(Math.abs(ratio-1)<=0.1)return;
+      moved.push({from:q.label,to:lenK(q.in_tokens),ratio});
+      q.label_nominal=q.label;q.label=lenK(q.in_tokens);
+    });
+  });
+  r._len={moved,rag};
+  return r;
+}
+/* 看资料回答: 一档的实际输入长度; 两次测试同一档的实际长度差 15% 以上(新旧算法)就不配对比较 */
+function ragActual(q){return q&&(q.ctx_actual||q.prompt_tokens_avg||q.ctx_tokens)}
+function ragPair(qa,qb){return !!(qa&&qb)&&Math.abs(ragActual(qa)/ragActual(qb)-1)<=0.15}
 const perfLog=LogBox("runLog","perf");
 const SUITE_NAME={quick:"快速",standard:"标准",full:"完整",custom:"自定义"};
 const saveForm=bindFormMemory("llm-bench-pro-form",["fBase","fModel","fTag","fSuite","fConc","fMConc","fLens","fFw","fFwVer",
@@ -1668,6 +1696,8 @@ function perfCtx(r){
     olLast:olp&&olp.points.length?olp.points[olp.points.length-1]:null,
     olMax:olp&&olp.points.length?Math.max(...olp.points.map(p=>p.max_inflight||0)):null};
 }
+/* 长输入并发这几项是整个长度阶梯的汇总: 阶梯的长度范围或同时请求数不同, 两次测试就不可比 */
+function ladderRef(m){const p=m.pcp,q=p&&p.points;return q&&q.length?`${q[0].label}–${q[q.length-1].label}、同时 ${p.conc} 个请求`:null}
 const PERF_METRICS=[
   {key:"zh",label:()=>"单个请求生成速度 · 中文",term:"decode",unit:"token/秒",dir:1,val:m=>m.zh&&m.zh.decode_tps_med,
     sub:m=>m.zh?`每次写 ${m.zh.out_tokens} token · 出字间隔 ${fmt(m.zh.itl_p50_ms_med)} 毫秒`:""},
@@ -1679,9 +1709,9 @@ const PERF_METRICS=[
     sub:m=>m.cLast?`同时 ${m.cLast.conc} 个请求 · 一般 ${fmtSec(m.cLast.ttft_p50_s)} 秒`:""},
   {key:"pmax",label:m=>`读入速度 · 输入 ${m.pLast?m.pLast.label:"最长"}`,term:"prefill",unit:"token/秒",dir:1,digits:0,val:m=>m.pLast&&m.pLast.prefill_tps_med,ref:m=>m.pLast&&m.pLast.label,
     sub:m=>m.pLast?`首字等待 ${fmtSec(m.pLast.ttft_med_s)} 秒`:""},
-  {key:"mpre",label:m=>`长输入同时 ${m.pcp?m.pcp.conc:"多"} 个请求 · 平均读入速度`,term:"prefill",unit:"token/秒",dir:1,digits:0,val:m=>m.s&&m.s.prefill_avg,
+  {key:"mpre",label:m=>`长输入同时 ${m.pcp?m.pcp.conc:"多"} 个请求 · 平均读入速度`,term:"prefill",unit:"token/秒",dir:1,digits:0,val:m=>m.s&&m.s.prefill_avg,ref:ladderRef,
     sub:m=>m.s?`范围 ${fmtInt(m.s.prefill_min)}–${fmtInt(m.s.prefill_max)}`:""},
-  {key:"mdec",label:m=>`长输入同时 ${m.pcp?m.pcp.conc:"多"} 个请求 · 平均总生成速度`,term:"agg",unit:"token/秒",dir:1,val:m=>m.s&&m.s.decode_avg,
+  {key:"mdec",label:m=>`长输入同时 ${m.pcp?m.pcp.conc:"多"} 个请求 · 平均总生成速度`,term:"agg",unit:"token/秒",dir:1,val:m=>m.s&&m.s.decode_avg,ref:ladderRef,
     sub:m=>m.s?`单个请求一般 ${fmt(m.s.per_stream_decode_p50)} · 较慢 ${fmt(m.s.per_stream_decode_p95)}`:""},
   {key:"succ",label:()=>"请求成功率",unit:"%",dir:1,val:m=>m.succ,sub:m=>m.fails?`失败 ${m.fails} 个`:"同时请求测试中全部成功"},
 ];
@@ -1689,7 +1719,7 @@ const CMP_EXTRA=[
   {key:"itl",label:()=>"出字间隔 · 英文（一般）",term:"itl",unit:"毫秒",dir:-1,val:m=>m.en&&m.en.itl_p50_ms_med},
   {key:"burst",label:()=>"每次返回的 token 数 · 中文",term:"burst",unit:"个",dir:1,digits:2,val:m=>m.zh&&m.zh.spec_burst_med},
   {key:"ttftmax",label:m=>`首字等待 · 输入 ${m.pLast?m.pLast.label:"最长"}`,term:"ttft",unit:"秒",dir:-1,digits:2,val:m=>m.pLast&&m.pLast.ttft_med_s,ref:m=>m.pLast&&m.pLast.label},
-  {key:"p50",label:()=>"长输入时单个请求生成速度（一般）",term:"per",unit:"token/秒",dir:1,val:m=>m.s&&m.s.per_stream_decode_p50},
+  {key:"p50",label:()=>"长输入时单个请求生成速度（一般）",term:"per",unit:"token/秒",dir:1,val:m=>m.s&&m.s.per_stream_decode_p50,ref:ladderRef},
   {key:"scnreq",label:()=>"模拟业务 · 每秒完成请求数",term:"rps",unit:"个/秒",dir:1,digits:2,val:m=>m.scnLast&&m.scnLast.req_s,ref:m=>m.scnLast&&m.scnLast.conc,
     sub:m=>m.scnLast?`同时 ${m.scnLast.conc} 个请求${m.jsonRate!=null?" · JSON 合格 "+fmt(m.jsonRate,0)+"%":""}`:""},
   {key:"rps",label:()=>"回放真实请求 · 每秒完成请求数",term:"rps",unit:"个/秒",dir:1,digits:2,val:m=>m.rpLast&&m.rpLast.req_s,ref:m=>m.rpLast&&m.rpLast.conc,
@@ -1701,7 +1731,8 @@ const CMP_EXTRA=[
 /* 参照档位的大白话, 例如"同时 16 个请求"、"输入 16K" */
 function refText(k,m){
   try{const r=k.ref(m);if(r==null)return "";
-    return {ttft:`同时 ${r} 个请求`,pmax:`输入 ${r}`,ttftmax:`输入 ${r}`,scnreq:`同时 ${r} 个请求`,rps:`同时 ${r} 个请求`,inf:`${r} 个/秒`}[k.key]||String(r)}
+    return {ttft:`同时 ${r} 个请求`,pmax:`输入 ${r}`,ttftmax:`输入 ${r}`,mpre:`输入 ${r}`,mdec:`输入 ${r}`,p50:`输入 ${r}`,
+      scnreq:`同时 ${r} 个请求`,rps:`同时 ${r} 个请求`,inf:`${r} 个/秒`}[k.key]||String(r)}
   catch(e){return ""}
 }
 function sameRef(k,ma,mb){if(!k.ref)return true;try{return k.ref(ma)===k.ref(mb)}catch(e){return false}}
@@ -1716,6 +1747,16 @@ function metricVal(k,v){const d=k.digits??1;return v==null?"—":(k.unit==="%"?f
 /* 自动识别值得注意的数据现象(不代表测试出错, 提示人工确认) */
 function perfAnomalies(r){
   const out=[...(r.notes||[])];
+  const mv=(r._len&&r._len.moved)||[];
+  if(mv.length){
+    const rs=mv.map(x=>x.ratio).sort((x,y)=>x-y),ex=mv.reduce((a,x)=>parseFloat(x.from)>parseFloat(a.from)?x:a);
+    out.unshift(`这次测试的长输入是用旧的估算方法拼的，在这个模型上实际只有标称长度的 ${fmt(100*rs[Math.floor(rs.length/2)],0)}% 左右。`+
+      `下面已按实际长度显示（例如原来标 ${ex.from} 的显示为 ${ex.to}）；速度是按实际 token 数算的，本身没有问题`);
+  }
+  const rg=(r._len&&r._len.rag)||[];
+  if(rg.length)out.splice(mv.length?1:0,0,`「看资料回答」的资料也是用旧方法估算长度的，例如标 ${rg[rg.length-1].from} 的实际约 ${rg[rg.length-1].to}；下面同样按实际长度显示`);
+  const cal=r.prompt_calibration;
+  if(cal&&cal.method==="guess")out.push(`没能按这个模型的实际 token 数校准输入长度（${cal.error||"原因不明"}），各档长度按旧的估算拼，可能和标签差得多，以表格里的「实际 token 数」为准`);
   const ov=r.overrides||{},cp=phase(r,"concurrency");
   if(cp&&cp.points.length>1){
     const pts=[...cp.points].sort((x,y)=>x.conc-y.conc);
@@ -1758,7 +1799,7 @@ function perfConclusions(a,b){
   }
   if(m.pLast&&m.pLast.ttft_med_s!=null){
     const t=m.pLast.ttft_med_s;
-    out.push({tone:t>10?"warn":"info",html:`输入 ${esc(m.pLast.label)}（约 ${fmtInt(m.pLast.in_tokens)} token）时要等 <b>${fmtSec(t)}</b> 秒才开始回答，${term("prefill")} ${fmtInt(m.pLast.prefill_tps_med)} token/秒。`});
+    out.push({tone:t>10?"warn":"info",html:`输入 ${esc(m.pLast.label)}（约 ${fmtInt(m.pLast.in_tokens)} token${m.pLast.label_nominal?`，原来标的是 ${esc(m.pLast.label_nominal)}`:""}）时要等 <b>${fmtSec(t)}</b> 秒才开始回答，${term("prefill")} ${fmtInt(m.pLast.prefill_tps_med)} token/秒。`});
   }
   if(m.succ!=null&&m.succ<100)out.push({tone:"bad",html:`有 <b>${m.fails}</b> 个请求失败（成功率 ${fmt(m.succ,1)}%）。`});
   scnPhases(a).forEach(ph=>{const f=scnFails(ph),name=(ph.task&&ph.task.label)||SCN_LABEL[(ph.id||"").slice(4)]||ph.id;
@@ -1868,7 +1909,8 @@ function drawPrefill(a,b,p){
   const labels=lenLabels(runs);
   const get=(x,l,k)=>{const q=x.ph.find(z=>z.label===l);return q&&q[k]!=null?q[k]:null};
   const ser=k=>runs.map(x=>({name:x.tag,color:x.color,data:labels.map(l=>get(x,l,k))}));
-  const title=i=>{const q=runs.map(x=>x.ph.find(z=>z.label===labels[i])).find(Boolean);return `输入 ${labels[i]}${q?`（约 ${fmtInt(q.in_tokens)} token）`:""}`};
+  const title=i=>{const q=runs.map(x=>x.ph.find(z=>z.label===labels[i])).find(Boolean);
+    return `输入 ${labels[i]}${q?`（约 ${fmtInt(q.in_tokens)} token${q.label_nominal?`，原来标的是 ${q.label_nominal}`:""}）`:""}`};
   lineChart(p+"PreTps",{cats:labels,xName:"输入长度",unit:"token/秒",digits:0,series:ser("prefill_tps_med"),area:true,tip:{title}});
   lineChart(p+"PreTtft",{cats:labels,xName:"输入长度",unit:"秒",digits:2,series:ser("ttft_med_s"),tip:{title}});
 }
@@ -2028,7 +2070,7 @@ function scnSection(a,b,p){
       {key:"rps",label:"每秒完成请求数",unit:"个/秒",type:"bar",digits:2,color:C.a},{key:"t95",label:"首字等待 较慢",unit:"秒",type:"sec"},{key:"e95",label:"完整响应 较慢",unit:"秒",type:"sec"},
       {key:"out",label:"平均输出",unit:"token",type:"int"},{key:"succ",label:"成功率",unit:"%",type:"num"},{key:"json",label:"JSON 合格率",unit:"%",type:"num",digits:0}],
       rows:phs.map(ph=>{const q=scnLast(ph)||{};const isRag=ph.id==="scn_rag";
-        return{name:nameOf(ph),at:isRag?`资料 ${fmtInt(q.ctx_tokens)} token`:`同时 ${q.conc} 个`,rps:q.req_s,t95:q.ttft_p95_s,e95:q.e2e_p95_s,out:q.out_tokens_avg,
+        return{name:nameOf(ph),at:isRag?(q.ctx_actual?`资料约 ${fmtInt(q.ctx_actual)} token（原来标 ${kLabel(q.ctx_tokens)}）`:`资料 ${fmtInt(q.ctx_tokens)} token`):`同时 ${q.conc} 个`,rps:q.req_s,t95:q.ttft_p95_s,e95:q.e2e_p95_s,out:q.out_tokens_avg,
           succ:q.total?100*q.ok/q.total:null,json:jsonRate(ph)}})};
   }
   const charts=[],details=[];
@@ -2038,7 +2080,7 @@ function scnSection(a,b,p){
     const t=ph.task||{};
     const desc=[jsonRate(ph)!=null?`JSON 合格率 ${fmt(jsonRate(ph),0)}%`:"",t.max_tokens?"每次最多 "+t.max_tokens+" token":"",t.requests_per_worker?"每个并发发 "+t.requests_per_worker+" 次":"",
       t.images?(t.image_source==="builtin"?"内置示例图片 ":"图片 ")+t.images+" 张"+(t.images_per_request?"，每次带 "+t.images_per_request+" 张":"")+(t.images_skipped?"（另有 "+t.images_skipped+" 张不能用，已跳过）":""):"",t.pool_size?"任务集 "+t.pool_size+" 条":"",
-      Array.isArray(t.rag_ctx)?"资料长度 "+t.rag_ctx.map(x=>(x/1000)+"K").join(" / "):""].filter(Boolean).join(" · ");
+      Array.isArray(t.rag_ctx)?"资料长度 "+t.rag_ctx.map(x=>(x/1000)+"K").join(" / ")+ragActualNote(ph,t.rag_ctx):""].filter(Boolean).join(" · ");
     const f=scnFails(ph);
     const failNote=!f.total||f.ok===f.total?"":f.ok===0?alertBox("bad",`<b>${f.total} 个请求全部失败</b>${esc(f.why)}${esc(f.hint)}，所以下面的图没有数据。`)
       :alertBox("warn",`${f.fail} / ${f.total} 个请求失败${esc(f.why)}，图里只算成功的请求。`);
@@ -2046,15 +2088,20 @@ function scnSection(a,b,p){
       <div class="grid-2">${ccard(`${p}Scn${idx}Rps`,term("rps"),{desc:(isRag?"横轴是资料长度":"横轴是同时请求数")+" · 越高越好",h:220})}
         ${ccard(`${p}Scn${idx}E2e`,term("e2e")+"（较慢的情况）",{desc:"95% 的请求比这更快拿到完整回答 · 越短越好",h:220})}</div></div>`);
     details.push({id:`${p}-scn-${ph.id}`,title:esc(nameOf(ph)),sub:esc(desc),columns:[{key:"k",label:isRag?"资料长度":"同时请求数",unit:isRag?"token":"",type:"int",sticky:true},
-      {key:"ok",label:"成功",type:"text"},{key:"rps",label:"每秒完成请求数",unit:"个/秒",type:"num",digits:2},...(pb?[{key:"rpsB",label:"B",unit:"个/秒",type:"num",digits:2}]:[]),
+      ...(isRag?[{key:"inTok",label:"实际输入",unit:"token",type:"int"}]:[]),{key:"ok",label:"成功",type:"text"},{key:"rps",label:"每秒完成请求数",unit:"个/秒",type:"num",digits:2},...(pb?[{key:"rpsB",label:"B",unit:"个/秒",type:"num",digits:2}]:[]),
       {key:"t95",label:"首字等待 较慢",unit:"秒",type:"sec"},{key:"e95",label:"完整响应 较慢",unit:"秒",type:"sec"},...(pb?[{key:"e95B",label:"B",unit:"秒",type:"sec"}]:[]),
       {key:"out",label:"平均输出",unit:"token",type:"int"},{key:"inf",label:"最多积压",type:"int"},...(hasJson?[{key:"json",label:"JSON 合格",type:"text"}]:[]),{key:"note",label:"备注",type:"html"}],
-      rows:(ph.points||[]).map(q=>{const z=pb?(pb.points||[]).find(x=>x[key]===q[key]):null;
-        return{k:q[key],ok:`${q.ok} / ${q.total}`,rps:q.req_s,rpsB:z&&z.req_s,t95:q.ttft_p95_s,e95:q.e2e_p95_s,e95B:z&&z.e2e_p95_s,out:q.out_tokens_avg,inf:q.max_inflight,
+      rows:(ph.points||[]).map(q=>{let z=pb?(pb.points||[]).find(x=>x[key]===q[key]):null;
+        if(isRag&&z&&!ragPair(q,z))z=null;   /* 新旧算法的资料实际长度不同, 不比 */
+        return{k:q[key],inTok:isRag&&q.prompt_tokens_avg?Math.round(q.prompt_tokens_avg):null,ok:`${q.ok} / ${q.total}`,rps:q.req_s,rpsB:z&&z.req_s,t95:q.ttft_p95_s,e95:q.e2e_p95_s,e95B:z&&z.e2e_p95_s,out:q.out_tokens_avg,inf:q.max_inflight,
           json:q.json_total!=null?`${fmtInt(q.json_ok)} / ${fmtInt(q.json_total)}`:"—",note:(retryTag(q)+(q.pool_wrapped?` <span class="badge" title="任务集用完一轮后重复使用">已循环</span>`:"")+(q.fail?` <span class="badge is-bad">失败 ${q.fail}</span>`:"")).trim()||"—"}})});
   });
   return panel({id:p+"-scn",title:"模拟真实业务",jump:"真实业务",desc:"不同业务类型的请求按真实方式结束（不强制写满长度），看每秒能处理多少、用户要等多久",
     chart:dataTable(summary)+`<div class="scn-list">${charts.join("")}</div>`,tables:[summary,...details],tcols:1});
+}
+function ragActualNote(ph,ctxs){
+  const act=ctxs.map(x=>{const q=(ph.points||[]).find(z=>z.ctx_tokens===x);return q&&q.ctx_actual?lenK(q.ctx_actual):null});
+  return act.some(Boolean)?`（旧方法估算的，实际约 ${act.map(x=>x||"—").join(" / ")}）`:"";
 }
 function drawScn(a,b,p){
   scnPhases(a).forEach((ph,idx)=>{
@@ -2062,9 +2109,12 @@ function drawScn(a,b,p){
     const pb=b?(b.phases||[]).find(x=>x.id===ph.id):null;
     const keys=[...new Set([...(ph.points||[]),...((pb&&pb.points)||[])].map(q=>q[key]))].sort((x,y)=>x-y);
     const runs=[{tag:"A",color:C.a,pts:ph.points||[]},pb?{tag:"B",color:C.b,pts:pb.points||[]}:null].filter(Boolean);
-    const get=(x,k,f)=>{const q=x.pts.find(z=>z[key]===k);return q&&q[f]!=null?q[f]:null};
-    const cats=keys.map(k=>isRag?kLabel(k):String(k)),xName=isRag?"资料长度（token）":"同时请求数";
-    const title=i=>isRag?`资料约 ${fmtInt(keys[i])} token`:`同时 ${keys[i]} 个请求`;
+    const at=(x,k)=>x.pts.find(z=>z[key]===k);
+    const get=(x,k,f)=>{const q=at(x,k);if(isRag&&x.tag==="B"&&q&&!ragPair(at(runs[0],k),q))return null;return q&&q[f]!=null?q[f]:null};
+    const ref=k=>at(runs[0],k)||(runs[1]&&at(runs[1],k));
+    const cats=keys.map(k=>{if(!isRag)return String(k);const q=ref(k);return q&&q.ctx_actual?lenK(q.ctx_actual):kLabel(k)}),xName=isRag?"资料长度（token）":"同时请求数";
+    const title=i=>{if(!isRag)return `同时 ${keys[i]} 个请求`;const q=ref(keys[i]);
+      return q&&q.ctx_actual?`资料约 ${fmtInt(q.ctx_actual)} token（原来标 ${kLabel(keys[i])}）`:`资料约 ${fmtInt(keys[i])} token`};
     lineChart(`${p}Scn${idx}Rps`,{cats,xName,unit:"个/秒",digits:2,series:runs.map(x=>({name:x.tag,color:x.color,data:keys.map(k=>get(x,k,"req_s"))})),area:true,tip:{title}});
     lineChart(`${p}Scn${idx}E2e`,{cats,xName,unit:"秒",digits:2,series:runs.map(x=>({name:x.tag,color:x.color,data:keys.map(k=>get(x,k,"e2e_p95_s"))})),
       tip:{title,sub:i=>runs.map(x=>`${x.tag} 首字等待较慢 ${fmtSec(get(x,keys[i],"ttft_p95_s"))} 秒`).join(" · ")}});

@@ -314,8 +314,9 @@ class TestScenarios(unittest.TestCase):
         self.assertEqual([p["id"] for p in doc["phases"]], ["prefill", "prefill_conc", "decode", "concurrency"])
         self.assertTrue(doc["overrides"]["warmup_shapes"])
         posts = [c for c in m.calls if c[0] == "POST"]
-        # 4 个预热请求(单发 + 3 个形状) + 5 个正式请求(prefill 1 + 矩阵 1 + 解码 2 + 并发 1)
-        self.assertEqual(len(posts), 9)
+        # 4 个预热请求(单发 + 3 个形状) + 2 个长度校准请求 + 5 个正式请求(prefill 1 + 矩阵 1 + 解码 2 + 并发 1)
+        self.assertEqual(len(posts), 11)
+        self.assertEqual(sum(1 for c in posts if c[2].get("max_tokens") == 1), 2)
 
 class TestGenEval(unittest.TestCase):
     def test_specs_cover_all_tasks(self):

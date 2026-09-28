@@ -8,6 +8,7 @@ render(a, b=None) -> HTML 字符串; a/b 为性能测试 run 文档, 传 b 时�
 """
 import html as _html
 import math
+import re
 from datetime import datetime, timezone
 
 try:
@@ -292,20 +293,34 @@ def _sec(title, body, note=None):
     return '<section><h2>%s</h2>%s%s</section>' % (title, ('<p class="muted">%s</p>' % note) if note else "", body)
 
 
+def _len_label(pt):
+    """输入长度的标签: 1.5 之前按旧估算拼长输入, 实际长度只有标称的 45% 左右; 标签和实际差 10% 以上时按实际长度显示。"""
+    lab, tok = pt.get("label"), pt.get("in_tokens")
+    m = re.match(r"^(\d+(?:\.\d+)?)K$", str(lab or ""))
+    if not (m and tok) or abs(tok / (float(m.group(1)) * 1000) - 1) <= 0.1:
+        return lab
+    k = tok / 1000.0
+    return "%sK（原标 %s）" % (("%.1f" % k).rstrip("0").rstrip(".") if k < 100 else "%d" % round(k), lab)
+
+
+def _same_len(a, b):
+    """两次测试的同一档实际长度是否接近(相差不到 10%); 没有实际长度时按档位对齐。"""
+    ta, tb = (a or {}).get("in_tokens"), (b or {}).get("in_tokens")
+    return not (ta and tb) or abs(ta / float(tb) - 1) <= 0.1
+
+
 def _prefill_sec(docs):
     any_p = any(_ph(d, "prefill") for d in docs)
     if not any_p:
         return ""
     labels, s1, s2, rows = [], [], [], []
-    for k, d in enumerate(docs):
-        pts = (_ph(d, "prefill") or {}).get("points") or []
-        if k == 0:
-            labels = [p.get("label") for p in pts]
-        series = [p.get("prefill_tps_med") for p in pts]
-        if k == 0:
-            s1 = series
-        else:
-            s2 = series
+    pa = (_ph(docs[0], "prefill") or {}).get("points") or []
+    pb = ((_ph(docs[1], "prefill") or {}).get("points") or []) if len(docs) > 1 else []
+    labels = [_len_label(p) for p in pa]
+    s1 = [p.get("prefill_tps_med") for p in pa]
+    # B 按档位对齐, 但实际长度差得多(新旧算法的测试放在一起)时不比
+    s2 = [(pb[i].get("prefill_tps_med") if _same_len(pa[i], pb[i]) else None) if i < len(pb) else None
+          for i in range(len(pa))] if pb else []
     chart = svg_chart(labels, [("Prefill 吞吐 A", CA, s1)] + ([("B", CB, s2)] if s2 else []))
     rows = []
     for i, lab in enumerate(labels):
@@ -324,7 +339,7 @@ def _matrix_sec(docs):
     pts = p.get("points") or []
 
     def row(pt):
-        return [esc(pt.get("label")), fmt(pt.get("in_tokens"), 0), "%d/%d" % (pt.get("ok", 0), pt.get("ok", 0) + pt.get("fail", 0)),
+        return [esc(_len_label(pt)), fmt(pt.get("in_tokens"), 0), "%d/%d" % (pt.get("ok", 0), pt.get("ok", 0) + pt.get("fail", 0)),
                 fmt(pt.get("ttft_avg_ms")), fmt(pt.get("itl_avg_ms")), fmt(pt.get("prefill_tps_agg"), 0),
                 fmt(pt.get("decode_tps_agg")), ('<span class="tag warn">重跑×%d</span>' % pt["attempts"]) if pt.get("attempts", 1) > 1 else ""]
 
