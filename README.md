@@ -162,8 +162,8 @@ python run.py --host 0.0.0.0 --token 自定义令牌   # 局域网访问, 用 ht
     - **代码生成**：函数 / 类 / 脚本 / 修 bug
     - **结构化抽取**：商品 → 标准 JSON，报合法率
     - **RAG 问答**：1.5K / 4K / 16K 档长上下文 + 引用式回答
-    - **图片理解**：多模态 content 数组，图片来自上传的图片包或服务器目录，每个请求 1–4 张
-    - **自定义任务集**：上传你自己的 JSONL，完全用你的请求
+    - **图片理解**：多模态 content 数组，每个请求 1–4 张。默认用内置的 6 张示例图（几何图形、柱状图、色块拼图等，纯标准库画出），每张图配只问图里内容的问题；也可以用上传的图片包或服务器上的文件夹，上传和开始测试前逐张检查，损坏或小于 28×28 像素的不发
+    - **自定义任务集**：上传你自己的 JSONL，完全用你的请求；页面上可以下载各种写法的模板，上传后逐行检查，有问题的行给出行号和原因
 - **真实请求回放**（可选，上传线上导出的 JSONL）：两次运行的到达时间轴相同，A / B 差异全部来自服务端；回放池 cursor 跨格推进，防止命中前缀缓存。
     - **闭环**：C 个 worker 各连发 N 条，回答「C 路并发扛不扛得住」；
     - **开环**：泊松到达、按速率施压，含在途时间线与最大在途，回答「线上到达速率下会不会越排越长」。
@@ -289,6 +289,7 @@ llm-bench-pro/
 │   ├── server.py           # HTTP 服务 + 全部 API(多线程, 任务取消/续跑/端点冲突保护/访问令牌)
 │   ├── version.py          # 应用版本号(与 web/static/app.js 的 UI_VERSION 一致)
 │   ├── bench.py            # 性能基准引擎(流式 TTFT/ITL/并发屏障同步 + 任务场景/回放场景)
+│   ├── vision_assets.py    # 看图场景的图片: 文件头检查(PNG/JPEG/WebP/GIF 宽高) + 内置示例图片(手写 PNG 编码)
 │   ├── iq.py               # 智力测试引擎(官方判分口径 + Wilson CI)
 │   ├── gen.py              # 生成测试引擎(33 题四档, 生成 + 续写 + 重新评测)
 │   ├── geneval.py          # 生成作品评测: 运行检测 / 源码检查降级 / 视觉评审
@@ -409,8 +410,8 @@ python -m llm_bench_pro.store stale             # 手动标记心跳超时的运
 | `GET /api/report?id=<run_id>[&cmp=<run_id>]` | 旧版速度测试 HTML 报告（内联 SVG，命令行 / 脚本用） |
 | `GET /api/replay-list` | 已上传的回放文件 |
 | `POST /api/replay-upload` | `{name, content}` 上传 JSONL（内容寻址、幂等，≤ 15 MB） |
-| `GET /api/scenario-list` | 任务集与图片包清单 |
-| `POST /api/scenario-upload` | `{kind: tasks\|images, ...}` 上传自定义任务集 / 图片包 |
+| `GET /api/scenario-list` | 任务集（含可用行数）与图片包（含尺寸范围、太小的张数）清单 |
+| `POST /api/scenario-upload` | `{kind: tasks\|images, ...}` 上传自定义任务集 / 图片包，返回逐行 / 逐张的检查结果 |
 | `GET /api/iq-items?id=<run_id>[&cmp=<run_id>,…]` | 逐题列表（题目 / 标准答案 / 各次作答摘要） |
 | `GET /api/iq-answer?ids=<run_id>,…&sid=&idx=` | 某题回答原文 |
 | `GET /api/iq-wrong?id=&sid=` | 某科错题 |
@@ -439,6 +440,7 @@ python -m llm_bench_pro.bench --url http://host:8011 --model NAME \
 ```
 
 - 默认输出 `data/results/<run_id>.json`（拷回本机 `data/results/` 后服务启动即自动入库）；`--sink db` 直接写库，`--sink both` 两者都写，`--db PATH` 指定库。
+- 场景里有 `vision` 但不给 `--vision-dir` 时用内置示例图片。请求失败时记下状态码和服务端返回的原因（前 300 字，例如 `HTTP 400: {"error": ...}`），页面的失败说明里直接能看到。
 - 默认发送 `ignore_eos` 固定输出长度（每次生成满 max_tokens，保证不同后端吞吐可比），`--no-fixed-output` 关闭；端点不支持时自动关闭并在结果中注明。
 
 </details>

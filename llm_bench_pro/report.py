@@ -417,7 +417,10 @@ def _scenarios_sec(docs):
             (" · 图片 %s 张/请求" % esc(task.get("images_per_request"))) if tpl == "vision" else "",
             (" · 任务集 %s 条" % esc(task.get("pool_size"))) if tpl == "custom" else "")
         if tpl == "vision":
-            note += "; 图片池 %s 张" % esc(task.get("images"))
+            note += "; 图片池 %s 张%s" % (esc(task.get("images")),
+                                         "(内置示例图片)" if task.get("image_source") == "builtin" else "")
+            if task.get("images_skipped"):
+                note += ", 另有 %s 张不能用已跳过" % esc(task.get("images_skipped"))
         cols = len(headers)
         fixed_rows = [r[:6] + [r[6]] + ([r[7]] if has_json else []) for r in rows]
         secs.append(_sec("场景 · " + label, _tbl(headers, fixed_rows), note=note))

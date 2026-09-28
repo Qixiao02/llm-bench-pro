@@ -14,6 +14,7 @@ import cdp
 import gen
 import gen_specs
 import geneval
+import vision_assets
 
 
 def sse(tokens=5, reasoning=False):
@@ -150,12 +151,17 @@ class TestScenarios(unittest.TestCase):
 
     def test_vision_body_and_missing_dir(self):
         d = temp_dir()
-        with open(os.path.join(d, "a.png"), "wb") as f:
+        with open(os.path.join(d, "a.png"), "wb") as f:  # 发送前会逐张检查, 夹具要是结构完整的图片
+            f.write(vision_assets.sample_images()[0][2])
+        with open(os.path.join(d, "b.jpg"), "wb") as f:  # 最小 JPEG 结构: SOI + SOF0(300×200) + EOI
+            f.write(b"\xff\xd8\xff\xc0\x00\x11\x08" + struct.pack(">HH", 200, 300) + b"\x03" + bytes(9) + b"\xff\xd9")
+        with open(os.path.join(d, "c.png"), "wb") as f:  # 只有文件头的坏图: 跳过, 不发给模型
             f.write(b"\x89PNG\r\n\x1a\n\n")
-        with open(os.path.join(d, "b.jpg"), "wb") as f:
-            f.write(b"\xff\xd8\xff\xe0")
-        imgs = bench._load_vision_images(d)
+        skipped = []
+        imgs = bench._load_vision_images(d, skipped)
         self.assertEqual(len(imgs), 2)
+        self.assertEqual([c["name"] for c in skipped], ["c.png"])
+        self.assertTrue(imgs[1].startswith("data:image/jpeg;base64,"))
         self.assertTrue(imgs[0].startswith("data:image/png;base64,"))
         body = bench._scn_vision_body("m", random.Random("v"), 512, "盐", imgs, 2)
         parts = body["messages"][0]["content"]

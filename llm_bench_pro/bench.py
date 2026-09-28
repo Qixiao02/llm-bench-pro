@@ -15,6 +15,7 @@ llm-bench-pro — LLM 推理专业基准测试引擎
 import argparse
 import base64
 import copy
+import io
 import json
 import os
 import random
@@ -30,12 +31,15 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 try:
-    from . import sinks  # 包内导入: python -m llm_bench_pro.bench
+    from . import sinks, vision_assets  # 包内导入: python -m llm_bench_pro.bench
 except ImportError:
     import sinks  # server.py 以包目录为 sys.path 顶层导入
+    import vision_assets
 
 # 1.3: 业务场景改为可插拔任务模板(对话问答/代码/结构化抽取/RAG/图片理解/自定义任务集); 1.2 的回放机制不变
-BENCH_VERSION = "1.3.0"
+# 1.4: 图片理解默认用内置示例图片(每张图配只问图里内容的提示词), 发送前检查图片(太小/损坏的不发);
+#      自定义任务集与回放逐行检查格式; HTTP 错误记下服务端返回的原因
+BENCH_VERSION = "1.4.0"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
 
 _PROGRESS_CB = None
@@ -88,6 +92,39 @@ def http_json(url, payload, headers, timeout=900):
         return json.loads(r.read())
 
 
+class HTTPStatusError(urllib.error.HTTPError):
+    """HTTP 错误 + 服务端返回的原因。str() 形如 'HTTP 400: {"error": {"message": "..."}}',
+    失败记录里能直接看出是模型不支持、参数不对还是图片有问题; 仍是 HTTPError 子类, 原有的异常处理不变。"""
+
+    def __init__(self, url, code, msg, hdrs, detail):
+        # 给一个内存里的 fp: Python 3.8 在 fp 为 None 时不初始化响应对象部分, 之后读属性会出错
+        super().__init__(url, code, msg, hdrs, io.BytesIO(detail.encode("utf-8")))
+        self.detail = detail
+
+    def __str__(self):
+        return "HTTP %s: %s" % (self.code, self.detail or self.msg or "")
+
+
+ERR_MAX = 320  # 失败记录里每条错误最多保留的字数: 状态码 + 服务端原因(300 字)
+
+
+def _error_brief(text, headers=None, limit=300):
+    """服务端错误正文 -> 一行摘要: 去掉 HTML 标签和换行, 隐去请求里的密钥(有的网关会原样回显), 截取前 limit 字。"""
+    t = text or ""
+    if t.lstrip()[:1] == "<":
+        t = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", t)
+        t = re.sub(r"<[^>]+>", " ", t)
+    t = " ".join(t.split())
+    for v in (headers or {}).values():
+        v = str(v)
+        secret = v.split(None, 1)[-1] if v[:7].lower() == "bearer " else v
+        if len(secret) >= 8:
+            t = t.replace(secret, "***")
+    t = re.sub(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}", "Bearer ***", t)
+    t = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}", "sk-***", t)
+    return t[:limit]
+
+
 def stream_call(url, payload, headers, timeout=900, apply_req_extra=True):
     """流式调用, 返回精确的时间戳序列 (SSE 逐 chunk 解析)。
     apply_req_extra=False: 不注入 ignore_eos 等基准附加字段(业务/回放场景需要真实生成行为)。"""
@@ -104,13 +141,16 @@ def stream_call(url, payload, headers, timeout=900, apply_req_extra=True):
     try:
         resp = urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")[:500] if e.fp else ""
+        try:
+            detail = e.read().decode("utf-8", "replace")[:4000] if e.fp else ""
+        except Exception:  # 读正文时连接断开: 只记状态码
+            detail = ""
         if e.code in (400, 422) and "ignore_eos" in payload and "ignore_eos" in detail:
             _NO_IGNORE_EOS.add(url)  # 端点不支持固定输出长度: 关闭后重试, 结果中会记录
             plog("  端点不支持 ignore_eos, 已关闭固定输出长度")
             return stream_call(url, {k: v for k, v in payload.items() if k not in ("stream", "stream_options")},
                                headers, timeout, apply_req_extra)
-        raise
+        raise HTTPStatusError(url, e.code, e.msg, e.hdrs, _error_brief(detail, headers)) from None
     with resp as r:
         buf = b""
         for raw in r:
@@ -314,7 +354,7 @@ def phase_concurrency(url, headers, model, conc_list, out_tok, per_conc):
                         results.append(derive(s))
                 except Exception as e:
                     with lock:
-                        results.append({"error": str(e)[:120]})
+                        results.append({"error": str(e)[:ERR_MAX]})
 
             round_t0 = time.perf_counter()
             with ThreadPoolExecutor(max_workers=conc) as ex:
@@ -364,7 +404,7 @@ def phase_prefill_conc(url, headers, model, ladder, conc, out_tok, max_attempts=
                     results.append(derive(s))
             except Exception as e:
                 with lock:
-                    results.append({"error": str(e)[:120]})
+                    results.append({"error": str(e)[:ERR_MAX]})
 
         with ThreadPoolExecutor(max_workers=conc) as ex:
             list(ex.map(worker, range(conc)))
@@ -547,11 +587,12 @@ RAG_QUESTIONS = [
     "资料未提及但与主题相关的'模型蒸馏'，资料里有没有任何间接信息？若没有请明确说明，并总结资料实际覆盖的主题。",
 ]
 
-# ---- 图片理解语料: 与具体图片无关也成立的分析型 prompt
+# ---- 图片理解语料: 上传的图片内容未知, 用与具体图片无关也成立的分析型 prompt;
+#      内置示例图片每张自带只问图里内容的提示词(vision_assets.SAMPLES)
 VISION_PROMPTS = [
     "详细描述这张图片的内容，指出其中最值得注意的三点。",
     "如果这是数据图表，请读出关键数值并给出三条分析结论；若不是图表，请做内容分析。",
-    "提取图片中的全部文字，尽量保持原始排版结构。",
+    "如果图片里有文字，请提取出来并尽量保持原始排版结构；没有文字就说明没有，再简单描述图片。",
     "为这张图片写一段 100 字左右的替代文本(alt text)，再写一段内容分析。",
     "评估这张图片的构图、清晰度与信息密度，并说明它适合用在什么场合。",
     "假设这张图片来自一份报告，请推断它想支持什么结论，并指出图中可能存在的误导之处。",
@@ -641,7 +682,7 @@ def _scenario_request(url, headers, body, res, lock, inflight=None):
         if json_req:
             rec["json_ok"] = _json_text_ok(s["text"])
     except Exception as e:
-        rec["err"] = str(e)[:160]
+        rec["err"] = str(e)[:ERR_MAX]
     finally:
         if inflight is not None:
             with lock:
@@ -691,31 +732,39 @@ def _scn_rag_body(model, rng, max_tokens, salt, ctx_tokens):
                          {"role": "user", "content": user}]}
 
 
-def _scn_vision_body(model, rng, max_tokens, salt, images, n_img):
+def _scn_vision_body(model, rng, max_tokens, salt, images, n_img, prompts=None):
+    """images: data URL 列表; prompts: 与 images 一一对应的提示词列表(内置示例图片),
+    为空时用通用的 VISION_PROMPTS(上传的图片内容未知)。一次带多张内置图时用对每张都成立的提示词。"""
     start = rng.randrange(len(images))
-    parts = [{"type": "text", "text": "[%s] %s" % (salt, rng.choice(VISION_PROMPTS))}]
+    if not prompts:
+        pool = VISION_PROMPTS
+    else:
+        pool = prompts[start] if n_img == 1 else vision_assets.SAMPLE_MULTI_PROMPTS
+    parts = [{"type": "text", "text": "[%s] %s" % (salt, rng.choice(pool))}]
     parts += [{"type": "image_url", "image_url": {"url": images[(start + k) % len(images)]}}
               for k in range(n_img)]
     return {"model": model, "max_tokens": max_tokens, "temperature": 0.2,
             "messages": [{"role": "user", "content": parts}]}
 
 
-_IMG_MIME = {".jpg": "jpeg", ".jpeg": "jpeg", ".png": "png", ".webp": "webp"}
-
-
-def _load_vision_images(d):
-    """读取图片目录 -> data URL 列表; 无目录/无图片时抛错(场景无法运行, 快速失败)。"""
+def _load_vision_images(d, skipped=None):
+    """读取图片目录 -> data URL 列表。逐张检查: 太小、损坏、太大的跳过(发出去服务端也会拒绝),
+    跳过的检查结果追加到 skipped; 无目录或没有能用的图片时抛错(场景无法运行, 快速失败)。"""
     if not d or not os.path.isdir(d):
         raise RuntimeError("图片目录不存在: %s (图片理解场景需要已上传的图片包或服务器图片目录)" % d)
-    names = sorted(n for n in os.listdir(d) if os.path.splitext(n)[1].lower() in _IMG_MIME)
-    if not names:
-        raise RuntimeError("图片目录中没有可用图片(jpg/png/webp): %s" % d)
-    out = []
-    for n in names:
-        with open(os.path.join(d, n), "rb") as f:
-            out.append("data:image/%s;base64,%s"
-                       % (_IMG_MIME[os.path.splitext(n)[1].lower()], base64.b64encode(f.read()).decode("ascii")))
-    return out
+    good, checks = vision_assets.scan_dir(d)
+    if not checks:
+        raise RuntimeError("图片目录中没有图片(jpg/png/webp/gif): %s" % d)
+    bad = [c for c in checks if not c["ok"]]
+    for c in bad[:5]:
+        plog("  跳过图片 %s: %s" % (c["name"], c["msg"]))
+    if len(bad) > 5:
+        plog("  另外还跳过 %d 张不能用的图片" % (len(bad) - 5))
+    if skipped is not None:
+        skipped.extend(bad)
+    if not good:
+        raise RuntimeError("图片目录里没有能用的图片: %s (%s)" % (d, "；".join("%s %s" % (c["name"], c["msg"]) for c in bad[:3])))
+    return [vision_assets.data_url(data, c["format"]) for _, data, c in good]
 
 
 def phase_scenario(url, headers, model, tpl_id, cfg):
@@ -729,10 +778,17 @@ def phase_scenario(url, headers, model, tpl_id, cfg):
     max_attempts = int(cfg.get("max_attempts") or 3)
     pause = cfg.get("retry_pause_s")
     pause = 30.0 if pause is None else float(pause)
-    images = pool = None
+    images = pool = prompts = None
+    n_img = int(cfg.get("vision_images") or 1)
+    img_skipped = []
     if tpl_id == "vision":
-        images = _load_vision_images(cfg.get("vision_dir") or "")
-        plog("  图片池 %d 张, 每请求 %d 张" % (len(images), int(cfg.get("vision_images") or 1)))
+        if cfg.get("vision_dir"):  # 上传的图片包或服务器上的文件夹
+            images = _load_vision_images(cfg["vision_dir"], img_skipped)
+        else:  # 默认: 内置示例图片, 每张图配只问图里内容的提示词
+            samples = vision_assets.sample_images()
+            images = [vision_assets.data_url(png, "png") for _, _, png, _ in samples]
+            prompts = [p for _, _, _, p in samples]
+        plog("  图片池 %d 张%s, 每请求 %d 张" % (len(images), "(内置示例图片)" if prompts else "", n_img))
     if tpl_id == "custom":
         pool = ReplayPool(cfg.get("custom_file") or "")
         plog("  任务集 %d 条" % len(pool))
@@ -747,7 +803,7 @@ def phase_scenario(url, headers, model, tpl_id, cfg):
             return _scn_json_body(model, rng, mt, bool(cfg.get("disable_thinking")))
         if tpl_id == "rag":
             return _scn_rag_body(model, rng, mt, salt, ctx)
-        return _scn_vision_body(model, rng, mt, salt, images, int(cfg.get("vision_images") or 1))
+        return _scn_vision_body(model, rng, mt, salt, images, n_img, prompts)
 
     points = []
     for conc in conc_list:
@@ -794,34 +850,197 @@ def phase_scenario(url, headers, model, tpl_id, cfg):
         task["rag_ctx"] = ctx_list
     if tpl_id == "vision":
         task["images"] = len(images)
-        task["images_per_request"] = int(cfg.get("vision_images") or 1)
+        task["images_per_request"] = n_img
+        task["image_source"] = "builtin" if prompts else "files"
+        if img_skipped:
+            task["images_skipped"] = len(img_skipped)
     if tpl_id == "custom":
         task["pool_size"] = len(pool)
     return {"id": "scn_" + tpl_id, "name": "场景 · " + tpl["label"], "points": points, "task": task}
 
 
+# ---- 自定义任务集 / 回放文件的逐行检查: 测试时实际发送(ReplayPool)与上传时的检查报告共用同一个判断
+TASK_MAX_PROMPT_TOKENS = 60000   # meta.prompt_tokens 超过它的行跳过(避免超长请求拖垮整格)
+TASK_MT_DEFAULT = 4096           # 行内没写 max_tokens 时的默认值
+TASK_MT_CAP = 8192               # 行内 max_tokens 的上限
+TASK_ROLES = ("system", "user", "assistant", "tool", "developer", "function")
+_JSON_ERR_ZH = [("Expecting ',' delimiter", "缺少逗号，或者括号没有配对"), ("Expecting ':' delimiter", "缺少冒号"),
+                ("Expecting property name enclosed in double quotes", "键名要用英文双引号括起来，最后一项后面不能有逗号"),
+                ("Illegal trailing comma", "最后一项后面不能有逗号"),
+                ("Unterminated string", "字符串没有结束（缺少英文双引号）"), ("Invalid control character", "字符串里不能直接换行（要写成 \\n）"),
+                ("Extra data", "一行里只能放一个 JSON 对象"), ("Expecting value", "这里缺少值（可能多了逗号，或用了中文引号、单引号）"),
+                ("Unexpected UTF-8 BOM", "文件开头有 BOM，请存为不带 BOM 的 UTF-8")]
+
+
+def _json_err_text(e):
+    msg = getattr(e, "msg", str(e))
+    zh = next((z for en, z in _JSON_ERR_ZH if msg.startswith(en)), msg)
+    return "第 %d 个字符附近%s" % (getattr(e, "colno", 0), "：" + zh if zh else "")
+
+
+def _check_image_url(url):
+    """任务集里的一张图: data URL 解码后按看图模型的要求检查; 网址没法离线检查, 只提醒。返回 (问题, 提醒)。"""
+    if url.startswith("data:"):
+        head, _, payload = url.partition(",")
+        if ";base64" not in head or not payload:
+            return "不是 base64 格式的 data URL（应为 data:image/png;base64,…）", None
+        try:
+            data = base64.b64decode(payload)
+        except (ValueError, TypeError):
+            return "的 base64 数据已损坏", None
+        c = vision_assets.check_image(data)
+        if not c["ok"]:
+            return c["msg"], None
+        return None, (c["msg"] or None)
+    if url.startswith(("http://", "https://")):
+        return None, "是网址，模型服务需要能访问到它"
+    return "的地址应为 data:image/…;base64,… 或 http(s) 网址", None
+
+
+def check_task_line(line, max_prompt_tokens=TASK_MAX_PROMPT_TOKENS):
+    """检查任务集 / 回放文件的一行。返回 {status, reason, warns, rec, json, images}:
+    status = ok(可以发) / skip(没有消息或超长, 跳过) / bad(格式不对, 发出去服务端也会拒绝);
+    json = 带 JSON 输出要求(response_format, 会统计 JSON 合法率); images = 带几张图。"""
+    out = {"status": "bad", "reason": "", "warns": [], "rec": None, "json": False, "images": 0}
+
+    def bad(reason):
+        out["reason"] = reason
+        return out
+    try:
+        r = json.loads(line)
+    except ValueError as e:
+        return bad("不是合法的 JSON（%s）" % _json_err_text(e))
+    if not isinstance(r, dict):
+        return bad("每行应是一个 JSON 对象，形如 {\"messages\": [...]}")
+    msgs = r.get("messages")
+    if not isinstance(msgs, list) or not msgs:
+        out["status"] = "skip"
+        return bad("缺少 messages（消息列表）" if not isinstance(msgs, list) else "messages 是空的")
+    for k, m in enumerate(msgs, 1):
+        where = "messages 第 %d 条" % k
+        if not isinstance(m, dict):
+            return bad(where + "不是对象，应为 {\"role\": ..., \"content\": ...}")
+        role = m.get("role")
+        if not isinstance(role, str) or not role:
+            return bad(where + "缺少 role")
+        if role not in TASK_ROLES:
+            return bad("%s的 role「%s」不认识（应为 system / user / assistant / tool）" % (where, role))
+        content = m.get("content")
+        if content is None:
+            if role != "assistant":  # 只有带 tool_calls 的助手消息可以没有 content
+                return bad(where + "缺少 content")
+        elif isinstance(content, list):
+            for j, part in enumerate(content, 1):
+                if not isinstance(part, dict) or not isinstance(part.get("type"), str):
+                    return bad("%s的 content 第 %d 项应为 {\"type\": ...}" % (where, j))
+                if part["type"] == "text" and not isinstance(part.get("text"), str):
+                    return bad("%s的 content 第 %d 项缺少 text" % (where, j))
+                if part["type"] == "image_url":
+                    iu = part.get("image_url")
+                    url = iu.get("url") if isinstance(iu, dict) else None
+                    if not isinstance(url, str) or not url:
+                        return bad("%s的图片应写成 {\"type\": \"image_url\", \"image_url\": {\"url\": \"...\"}}" % where)
+                    out["images"] += 1
+                    problem, warn = _check_image_url(url)
+                    if problem:
+                        return bad("%s的第 %d 张图%s" % (where, out["images"], problem))
+                    if warn:
+                        out["warns"].append("第 %d 张图%s" % (out["images"], warn))
+        elif not isinstance(content, str):
+            return bad(where + "的 content 应为文字，或文字和图片组成的列表")
+    params = r.get("params")
+    if params is not None and not isinstance(params, dict):
+        return bad("params 应为对象，如 {\"max_tokens\": 512}")
+    params = params or {}
+    rf = params.get("response_format")
+    if rf is not None:
+        if not isinstance(rf, dict) or rf.get("type") not in ("text", "json_object", "json_schema"):
+            return bad("response_format 应为 {\"type\": \"json_object\"} 或 {\"type\": \"json_schema\", \"json_schema\": {...}}")
+        js = rf.get("json_schema")
+        if rf["type"] == "json_schema" and not (isinstance(js, dict) and isinstance(js.get("name"), str) and js["name"]
+                                               and isinstance(js.get("schema", {}), dict)):
+            return bad("json_schema 应写成 {\"name\": \"名字\", \"schema\": {JSON Schema}}")
+        out["json"] = rf["type"] != "text"
+    for key in ("max_tokens", "max_completion_tokens"):
+        v = params.get(key)
+        if v is None:
+            continue
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            n = 0
+        if n <= 0:
+            out["warns"].append("%s 不是正整数，会按默认 %d" % (key, TASK_MT_DEFAULT))
+        elif n > TASK_MT_CAP:
+            out["warns"].append("%s 是 %d，超过上限，会按 %d" % (key, n, TASK_MT_CAP))
+    t = params.get("temperature")
+    if t is not None and (isinstance(t, bool) or not isinstance(t, (int, float)) or t < 0):
+        return bad("temperature 应为不小于 0 的数字")
+    meta = r.get("meta")
+    pt = meta.get("prompt_tokens") if isinstance(meta, dict) else None
+    if isinstance(pt, int) and pt > max_prompt_tokens:
+        out["status"] = "skip"
+        return bad("输入约 %d token，超过 %d 的上限，跳过" % (pt, max_prompt_tokens))
+    out.update(status="ok", rec=r)
+    return out
+
+
+def check_task_text(text, max_prompt_tokens=TASK_MAX_PROMPT_TOKENS, limit=10):
+    """检查整个任务集文件(上传时用): 共几行、可用几行、带 JSON 输出要求 / 带图片的各几条,
+    有问题的行给出行号和原因(前 limit 条)。行的判断与测试时实际发送完全一致。"""
+    rep = {"total": 0, "valid": 0, "skipped": 0, "bad": 0, "json": 0, "image": 0,
+           "problems": [], "warnings": [], "warning_count": 0, "hint": ""}
+    text = (text or "").lstrip("\ufeff")
+    for no, ln in enumerate(text.replace("\r\n", "\n").replace("\r", "\n").split("\n"), 1):
+        if not ln.strip():
+            continue
+        rep["total"] += 1
+        c = check_task_line(ln, max_prompt_tokens)
+        if c["status"] == "ok":
+            rep["valid"] += 1
+            rep["json"] += c["json"]
+            rep["image"] += c["images"] > 0
+        else:
+            rep["skipped" if c["status"] == "skip" else "bad"] += 1
+            if len(rep["problems"]) < limit:
+                rep["problems"].append({"line": no, "reason": c["reason"]})
+        for w in c["warns"]:
+            rep["warning_count"] += 1
+            if len(rep["warnings"]) < limit:
+                rep["warnings"].append({"line": no, "reason": w})
+    if rep["total"] > 1 and not rep["valid"] and text.lstrip()[:1] in ("[", "{"):
+        try:  # 常见错误: 整份文件是一个 JSON 数组, 或一个对象排版成了多行
+            whole = json.loads(text)
+        except ValueError:
+            whole = None
+        if isinstance(whole, list):
+            rep["hint"] = "整个文件是一个 JSON 数组；任务集要求每行一个 JSON 对象（JSONL），可以参考「下载模板」"
+        elif isinstance(whole, dict):
+            rep["hint"] = "一个请求被排版成了多行；任务集要求每个请求写在一行里（JSONL），可以参考「下载模板」"
+    return rep
+
+
 class ReplayPool:
     """真实请求池: JSONL 逐行 {"messages": [...], "params": {...}}; 固定种子洗牌,
-    cursor 跨格推进尽量不重发同一请求(重复请求会命中前缀缓存, 吞吐虚高)。"""
+    cursor 跨格推进尽量不重发同一请求(重复请求会命中前缀缓存, 吞吐虚高)。
+    每行按 check_task_line 判断: 没有消息或超长的跳过(skipped), 格式不对的算坏行(bad)。"""
 
-    def __init__(self, path, max_prompt_tokens=60000, seed=1, mt_default=4096, mt_cap=8192):
+    def __init__(self, path, max_prompt_tokens=TASK_MAX_PROMPT_TOKENS, seed=1,
+                 mt_default=TASK_MT_DEFAULT, mt_cap=TASK_MT_CAP):
         pool, skipped, bad = [], 0, 0
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             for ln in f:
                 if not ln.strip():
                     continue
-                try:
-                    r = json.loads(ln)
-                except json.JSONDecodeError:
-                    bad += 1
-                    continue
-                pt = (r.get("meta") or {}).get("prompt_tokens")
-                if not isinstance(r.get("messages"), list) or (isinstance(pt, int) and pt > max_prompt_tokens):
+                c = check_task_line(ln, max_prompt_tokens)
+                if c["status"] == "ok":
+                    pool.append(c["rec"])
+                elif c["status"] == "skip":
                     skipped += 1
-                    continue
-                pool.append(r)
+                else:
+                    bad += 1
         if not pool:
-            raise RuntimeError("回放文件没有可用请求: %s (超限跳过 %d, 坏行 %d)" % (path, skipped, bad))
+            raise RuntimeError("文件里没有可用请求: %s (没有消息或超长跳过 %d 行, 格式不对 %d 行)" % (path, skipped, bad))
         random.Random(seed).shuffle(pool)
         self.pool, self.skipped, self.bad, self.path = pool, skipped, bad, path
         self.mt_default, self.mt_cap, self.cursor = int(mt_default), int(mt_cap), 0
@@ -1067,7 +1286,7 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
     fixed_output: 请求带 ignore_eos, 每次输出都跑满 max_tokens, 使不同后端/模型的吞吐可比(任务场景/回放除外)。
     cancel: threading.Event, 置位后在下一个请求前停止, 已完成阶段保留, 状态记为 cancelled。
     scenarios: 任务场景配置 {"tasks": ["chat","code","json","rag","vision","custom"], "conc": [...],
-              "requests_per_worker": n, "max_tokens": n, "rag_ctx": [...], "vision_dir": 路径, "vision_images": n,
+              "requests_per_worker": n, "max_tokens": n, "rag_ctx": [...], "vision_dir": 路径(不给则用内置示例图片), "vision_images": n,
               "custom_file": 路径}; 默认不启用任何场景。
     replay: 真实请求回放配置 dict({"file": 路径, "closed": {...}, "open": {"rates": [...], "duration_s": n}, ...})。
     warmup_shapes: 按 batch shape 预热; retry_*: 场景/矩阵格失败整格重跑(留痕)。"""
@@ -1205,7 +1424,7 @@ def main():
     ap.add_argument("--scn-conc", default=None, help="任务场景并发列表, 逗号分隔, 如 4,8 (默认 4,8)")
     ap.add_argument("--scn-rpw", type=int, default=3, help="任务场景每并发请求数 (默认 3)")
     ap.add_argument("--rag-ctx", default=None, help="RAG 场景上下文档位(token), 逗号分隔, 如 1500,4000,16000")
-    ap.add_argument("--vision-dir", default=None, help="图片理解场景的图片目录(服务器路径)")
+    ap.add_argument("--vision-dir", default=None, help="图片理解场景的图片目录(服务器路径); 不填用内置示例图片")
     ap.add_argument("--vision-img", type=int, default=1, help="图片理解每请求图片数 1-4 (默认 1)")
     ap.add_argument("--custom-file", default=None, help="自定义任务集 JSONL (每行 {messages, params})")
     ap.add_argument("--replay-file", default=None, help="真实请求回放 JSONL 文件 (每行 {messages, params})")
@@ -1249,7 +1468,7 @@ def main():
             scen_cfg["rag_ctx"] = _int_list(args.rag_ctx, "--rag-ctx")
         if args.vision_dir:
             scen_cfg["vision_dir"] = args.vision_dir
-            scen_cfg["vision_images"] = max(1, min(4, args.vision_img))
+        scen_cfg["vision_images"] = max(1, min(4, args.vision_img))
         if args.custom_file:
             scen_cfg["custom_file"] = args.custom_file
     replay_cfg = None

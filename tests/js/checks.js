@@ -303,16 +303,53 @@ T("离线报告: 接口从报告数据里取(逐题只留请求的测试、回�
   assert.equal(workOpenUrl("works/x/t.html"), "/works/x/t.html?open=1");
   assert.equal(workFrameSrc("works/x/t.html"), 'src="/works/x/t.html"');
 });
-T("场景失败: 统计失败数与错误; 图片理解全部 HTTP 400 时提示可能不支持图片输入", () => {
+T("场景失败: 统计失败数与错误; 图片理解全部 HTTP 400 时先查图片尺寸再查模型是否支持看图", () => {
   const f = scnFails({id: "scn_vision", points: [{total: 12, ok: 0, errors: ["HTTP Error 400: Bad Request"]},
     {total: 24, ok: 0, errors: ["HTTP Error 400: Bad Request"]}]});
   assert.deepEqual([f.total, f.ok, f.fail, f.errs.length], [36, 0, 36, 1]);
-  assert.ok(f.hint.includes("不支持图片输入"));
+  assert.ok(f.hint.includes("28×28") && f.hint.includes("224×224") && f.hint.includes("是否支持看图"));
   const g = scnFails({id: "scn_chat", points: [{total: 10, ok: 9, errors: ["timeout", "reset"]}]});
   assert.deepEqual([g.fail, g.hint], [1, ""]);
   assert.ok(g.why.includes("等 2 种错误"));
   assert.equal(scnFails({id: "scn_vision", points: [{total: 5, ok: 0, errors: ["timeout"]}]}).hint, "");   /* 不是 400 不乱猜 */
   assert.equal(scnFails({id: "scn_json", points: []}).total, 0);
+});
+T("看图回答失败: 服务端原因看得出是图片太小 / 模型不支持看图时直说, 原因原样显示", () => {
+  const small = 'HTTP 400: {"error": {"message": "height:1 or width:1 must be larger than factor:28"}}';
+  const f = scnFails({id: "scn_vision", points: [{total: 4, ok: 0, errors: [small]}]});
+  assert.ok(f.hint.includes("图片太小") && f.why.includes("must be larger than factor"));
+  assert.ok(visionFailHint(['HTTP 400: {"message": "Qwen3 is not a multimodal model"}']).includes("不支持看图"));
+  assert.ok(visionFailHint(["HTTP 400: At most 0 image(s) may be provided in one request."]).includes("不支持看图"));
+  assert.equal(visionFailHint(["HTTP 500: boom"]), "");
+  assert.equal(scnFails({id: "scn_vision", points: [{total: 4, ok: 1, errors: [small]}]}).hint, "");  /* 有成功的不下结论 */
+});
+T("场景素材: 大小显示、图片包说明(标出太小的张数)、任务集检查报告", () => {
+  assert.deepEqual([fmtBytes(70), fmtBytes(2048), fmtBytes(3 * 1048576), fmtBytes(null)], ["70 B", "2 KB", "3.0 MB", "—"]);
+  const t = imgPackText({image_id: "img-c414cd0e204d", count: 1, dims: "1×1", size: 70, mtime: "2026-09-24T21:01:00", too_small: 1, broken: 0});
+  assert.ok(t.startsWith("图片包 c414cd0e · 1 张 · 1×1 · 70 B") && t.includes("有 1 张太小，会被模型拒绝"));
+  const ok = taskReportHtml({ok: true, check: {total: 3, valid: 2, json: 1, image: 1, hint: "",
+    problems: [{line: 2, reason: "不是合法的 JSON（第 5 个字符附近：缺少逗号）"}], warnings: [], warning_count: 0}}, "t.jsonl");
+  assert.ok(ok.includes("is-warn") && ok.includes("可用 2 行") && ok.includes("第 2 行：") && ok.includes("带 response_format 1 条") && ok.includes("带图片 1 条"));
+  const none = taskReportHtml({ok: false, error: "没有一行能用", check: {total: 1, valid: 0, json: 0, image: 0, hint: "",
+    problems: [{line: 1, reason: "<b>x</b>"}], warnings: [], warning_count: 0}}, "t.jsonl");
+  assert.ok(none.includes("is-bad") && none.includes("&lt;b&gt;x&lt;/b&gt;") && !none.includes("<b>x</b>"));  /* 原因转义 */
+  const img = imgReportHtml({ok: true, count: 1, size: 2000, dims: "448×448", files: [{name: "a.png", ok: true, level: "ok", msg: ""},
+    {name: "b.png", ok: false, level: "bad", msg: "只有 1×1 像素，太小"}]});
+  assert.ok(img.includes("已收进图片包 1 张") && img.includes("1 张没收") && img.includes("b.png：只有 1×1 像素"));
+  const warn = imgReportHtml({ok: true, count: 1, size: 2000, dims: "300×300", files: [{name: "p.jpg", ok: true, level: "warn", msg: "扩展名是 .jpg，实际是 PNG 图片"}]});
+  assert.ok(warn.includes("is-warn") && !warn.includes("没收") && warn.indexOf("收下了，但要注意") < warn.indexOf("p.jpg"));  /* 收下的不混进「没收」里 */
+});
+T("任务集模板: 每行都是带 messages 的对象, 覆盖 system / 多轮 / JSON 输出 / 图片 / max_tokens / temperature", () => {
+  const lines = TASK_TEMPLATE.map(x => JSON.stringify(x));
+  assert.ok(lines.every(l => !l.includes("\n") && Array.isArray(JSON.parse(l).messages)));
+  const has = f => TASK_TEMPLATE.some(f);
+  assert.ok(has(x => x.messages.some(m => m.role === "system")));
+  assert.ok(has(x => x.messages.some(m => m.role === "assistant")));
+  assert.ok(has(x => x.params && x.params.response_format && x.params.response_format.type === "json_object"));
+  assert.ok(has(x => x.params && x.params.response_format && x.params.response_format.type === "json_schema"));
+  assert.ok(has(x => x.messages.some(m => Array.isArray(m.content) && m.content.some(p => p.type === "image_url"))));
+  assert.ok(has(x => x.params && x.params.max_tokens) && has(x => x.params && x.params.temperature != null));
+  assert.ok(TASK_TEMPLATE.every(x => x.meta && x.meta.note));  /* 每行都有说明 */
 });
 T("主题切换过渡: 圆心取鼠标点击处", () => {
   assert.deepEqual(themeOrigin({clientX: 120, clientY: 48}), [120, 48]);

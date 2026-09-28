@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import base64
 import http.client
 import json
 import os
@@ -13,6 +14,7 @@ from _util import ROOT, temp_dir
 import server
 import sinks
 import store
+import vision_assets
 from test_store import gen_doc, iq_doc, perf_doc
 
 
@@ -484,6 +486,15 @@ class TestServer(ServerCase):
         self.assertTrue(all("phases" not in r for r in rows))
 
     def test_replay_upload_scenarios_start(self):
+        # 上传的文件写到临时目录: 以前这里直接写进项目的 data/, 在真实环境跑测试会留下 1×1 的测试图片包
+        saved = (server.REPLAY_DIR, server.SCN_TASKS_DIR, server.SCN_IMAGES_DIR)
+        server.REPLAY_DIR, server.SCN_TASKS_DIR, server.SCN_IMAGES_DIR = temp_dir(), temp_dir(), temp_dir()
+        try:
+            self._replay_upload_scenarios_start()
+        finally:
+            server.REPLAY_DIR, server.SCN_TASKS_DIR, server.SCN_IMAGES_DIR = saved
+
+    def _replay_upload_scenarios_start(self):
         st, _, d = self.request("POST", "/api/replay-upload", {"name": "t", "content": "根本不是 JSONL"})
         self.assertEqual(st, 400)
         content = "\n".join(json.dumps({"messages": [{"role": "user", "content": "q%d" % i}], "params": {}})
@@ -496,13 +507,17 @@ class TestServer(ServerCase):
         self.assertEqual(d2["file_id"], fid)  # 内容寻址幂等
         st, _, lst = self.request("GET", "/api/replay-list")
         self.assertTrue(any(f["file_id"] == fid for f in lst["files"]))
-        # 任务场景资产: 任务集 + 图片包(1x1 PNG)
-        png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        # 任务场景资产: 任务集 + 图片包。1×1 的 PNG 太小, 看图模型会拒绝, 不收
+        tiny = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        png = base64.b64encode(vision_assets.sample_images()[0][2]).decode()
         st, _, d = self.request("POST", "/api/scenario-upload",
                                 {"kind": "tasks", "name": "my.jsonl", "content": content})
         self.assertEqual((st, d["ok"], d["lines"]), (200, True, 3))
         tid = d["file_id"]
         self.assertRegex(tid, r"^scn-[0-9a-f]{12}$")
+        st, _, d = self.request("POST", "/api/scenario-upload",
+                                {"kind": "images", "files": [{"name": "a.png", "data": tiny}]})
+        self.assertEqual((st, d["ok"], d["files"][0]["code"]), (400, False, "too_small"))
         st, _, d = self.request("POST", "/api/scenario-upload",
                                 {"kind": "images", "files": [{"name": "a.png", "data": png}]})
         self.assertEqual((st, d["ok"], d["count"]), (200, True, 1))
@@ -518,7 +533,7 @@ class TestServer(ServerCase):
         # 非法场景配置在启动前被拒
         for scen in ({"tasks": ["nope"]},                       # 未知模板
                      {"tasks": ["chat"], "conc": "999"},        # 并发越界
-                     {"tasks": ["vision"]},                     # 缺图片来源
+                     {"tasks": ["vision"], "vision_src": {"image_id": "img-000000000000"}},  # 不存在的图片包
                      {"tasks": ["custom"]},                     # 缺任务集
                      {"tasks": ["custom"], "custom_file_id": "scn-deadbeefcafe"},  # 不存在的任务集
                      {"tasks": ["rag"], "rag_ctx": [10]}):      # 档位越界

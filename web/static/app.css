@@ -264,9 +264,30 @@ details.advanced>.form-grid{margin-top:var(--sp-3)}
 .budget-row{display:flex;gap:var(--sp-3) var(--sp-4);flex-wrap:wrap;align-items:center}
 .budget-row label{display:flex;gap:6px;align-items:center;font-size:var(--fs-13)}
 .budget-row .input{width:96px}
-.file-row{display:flex;gap:8px;align-items:center}
-.file-row .cselect,.file-row .select{flex:1;min-width:0}
+.file-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.file-row .cselect,.file-row .select{flex:1 1 220px;min-width:0}
 .file-row .btn{margin:0;cursor:pointer}
+/* 场景素材: 说明里的代码片段 / 上传后的检查结果 / 可折叠的文件格式说明 */
+.field code,.upcheck code{font:12px/1.5 var(--font-mono);padding:0 4px;border-radius:var(--r-sm);background:var(--surface-2);border:1px solid var(--border);color:var(--text-1);overflow-wrap:anywhere}
+.field .help code{white-space:nowrap}
+.upcheck .alert{margin:2px 0 0;font-size:var(--fs-13);line-height:1.6}
+.upcheck .alert .icon{margin-top:2px}
+.upcheck .hint-list{margin:2px 0 0;padding-left:18px;line-height:1.7;word-break:break-word}
+.upcheck-sub{color:var(--text-2)}
+.upcheck-h{margin-top:6px;color:var(--text-2)}
+details.fmt-help>summary{display:inline-flex;align-items:center;gap:6px;cursor:pointer;list-style:none;color:var(--text-2);font-size:var(--fs-13);font-weight:500;user-select:none}
+details.fmt-help>summary::-webkit-details-marker{display:none}
+details.fmt-help>summary:hover{color:var(--text-1)}
+details.fmt-help>summary .icon{transition:transform var(--dur-fast) var(--ease)}
+details.fmt-help[open]>summary .icon{transform:rotate(180deg)}
+.fmt-body{display:grid;gap:var(--sp-2);margin-top:var(--sp-2);font-size:var(--fs-12);color:var(--text-2);line-height:1.6}
+.fmt-body .table-wrap{max-height:none}
+/* 字段表: 桌面按固定列宽排, 示例里的长 JSON 在列内换行; 手机上每个字段排成一块(见响应式) */
+.table.fmt-table{table-layout:fixed}
+.table.fmt-table th,.table.fmt-table td{text-align:left;white-space:normal;font-size:var(--fs-12);line-height:1.55;overflow-wrap:anywhere}
+.table.fmt-table th:nth-child(1){width:25%}.table.fmt-table th:nth-child(2){width:10%}
+.table.fmt-table th:nth-child(3){width:35%}.table.fmt-table th:nth-child(4){width:30%}
+.table.fmt-table td:nth-child(2){color:var(--text-2)}
 
 /* 卡片 */
 .card{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--r-lg);padding:var(--sp-5)}
@@ -942,6 +963,14 @@ details.advanced.is-step{margin-top:0;border-top:0;padding-top:0}
   .pager-nums{display:none}
   .pager-of{display:inline}
   .pager-ctrl{margin-left:0}
+  /* 任务集字段表: 每个字段排成一块, 不用左右滑 */
+  .table.fmt-table thead{display:none}
+  .table.fmt-table,.table.fmt-table tbody,.table.fmt-table tr,.table.fmt-table td{display:block;width:auto}
+  .table.fmt-table tr{padding:8px 12px;border-bottom:1px solid var(--border)}
+  .table.fmt-table tbody tr:last-child{border-bottom:0}
+  .table.fmt-table td{padding:1px 0;border:0}
+  .table.fmt-table td:nth-child(2)::before{content:"必填："}
+  .table.fmt-table td:nth-child(4)::before{content:"示例："}
 }
 /* 离线报告: 只读, 隐藏需要后端的操作(新建、刷新、删除、重新检查、模型管理); 星级只看不能点 */
 .is-offline [data-online-only]{display:none!important}

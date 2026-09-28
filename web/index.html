@@ -290,26 +290,57 @@
           <span class="help">每种长度分别测一遍；资料是通用技术文章，问题要求回答时注明出处</span></div>
       </div>
       <div class="form-grid" id="scnVisionRow" hidden style="margin-top:12px">
-        <div class="field span-2"><label for="fImgSel">图片</label>
+        <div class="field span-2"><label for="fImgSel">图片来源</label>
           <div class="file-row">
-            <select class="select" id="fImgSel"><option value="">未选择</option></select>
-            <label class="btn btn-secondary" title="上传图片（可多选，jpg/png/webp，总共不超过 15MB）">
-              <svg class="icon"><use href="#i-image"/></svg>上传图片<input type="file" id="fImgUpload" accept=".jpg,.jpeg,.png,.webp" multiple hidden>
+            <select class="select" id="fImgSel"><option value="builtin">内置示例图片</option><option value="dir">服务器上的文件夹…</option></select>
+            <label class="btn btn-secondary" title="上传图片：可多选，jpg / png / webp / gif，一次总共不超过 11 MB">
+              <svg class="icon"><use href="#i-image"/></svg>上传图片<input type="file" id="fImgUpload" accept=".jpg,.jpeg,.png,.webp,.gif" multiple hidden>
             </label>
           </div>
-          <span class="help">也可以在下面填服务器上的图片文件夹，两者选一，上传的优先</span></div>
-        <div class="field"><label for="fImgDir">服务器上的图片文件夹</label><input class="input" id="fImgDir" placeholder="/path/to/images"></div>
+          <span class="help" id="fImgSrcHelp"></span>
+          <span class="help">自己的图片支持 JPG、PNG、WebP、GIF。每张至少 28×28 像素（更小的会被看图模型直接拒绝），推荐 224×224 以上；单张不超过 20 MB、边长不超过 8192。
+            图片会转成 base64 data URL（<code>data:image/png;base64,…</code>），放进请求消息里的 <code>image_url</code> 发给模型。</span>
+          <div class="upcheck" id="fImgCheck" hidden></div></div>
+        <div class="field span-2" id="fImgDirField" hidden><label for="fImgDir">服务器上的图片文件夹</label><input class="input" id="fImgDir" placeholder="/path/to/images">
+          <span class="help">运行本服务的机器上的路径；开始测试前会逐张检查，不能用的图会跳过</span></div>
         <div class="field"><label for="fImgN">每次请求带几张图</label><input class="input" id="fImgN" type="number" min="1" max="4" value="1"></div>
       </div>
       <div class="form-grid" id="scnCustomRow" hidden style="margin-top:12px">
         <div class="field span-2"><label for="fTaskSel">自定义任务集</label>
           <div class="file-row">
             <select class="select" id="fTaskSel"><option value="">未选择</option></select>
-            <label class="btn btn-secondary" title="上传任务集：JSONL，每行 {&quot;messages&quot;: [...], &quot;params&quot;: {...}}，不超过 15MB">
+            <label class="btn btn-secondary" title="上传任务集：JSONL 文件，每行一个请求，不超过 12 MB">
               <svg class="icon"><use href="#i-inbox"/></svg>上传<input type="file" id="fTaskUpload" accept=".jsonl,.json,.txt" hidden>
             </label>
+            <button class="btn btn-secondary" type="button" id="btnTaskTpl" title="下载 JSONL 模板：每种写法都有一两行示例，每行的 meta.note 是说明"><svg class="icon"><use href="#i-download"/></svg>下载模板</button>
           </div>
-          <span class="help">完全用你自己的请求；带 response_format 的请求会统计 JSON 是否合法</span></div>
+          <span class="help">完全用你自己的请求，每行一个（JSONL）。带 response_format 的请求会统计 JSON 是否合法；每行自己写的 max_tokens 优先，不写按 4096（上面的「每次最多生成」只管内置场景）</span>
+          <div class="upcheck" id="fTaskCheck" hidden></div></div>
+        <div class="field span-2">
+          <details class="fmt-help">
+            <summary><svg class="icon"><use href="#i-chevron-down"/></svg>文件格式说明</summary>
+            <div class="fmt-body">
+              <p>每行一个 JSON 对象，空行会被忽略，不能写注释。模型名用上面填的，请求一律按流式发送，所以不用写 <code>model</code>、<code>stream</code>。
+                测试时各行按固定顺序打乱后轮流发送，行数少于「同时请求数 × 每个并发发几次」时会重复使用（结果里标「已循环」，重复的请求可能因为命中缓存而偏快）。</p>
+              <div class="table-wrap"><table class="table fmt-table">
+                <thead><tr><th>字段</th><th>必填</th><th>含义</th><th>示例</th></tr></thead>
+                <tbody>
+                  <tr><td><code>messages</code></td><td>是</td><td>按顺序发给模型的消息列表，每条有 role 和 content</td><td><code>[{"role":"user","content":"你好"}]</code></td></tr>
+                  <tr><td><code>role</code></td><td>是</td><td>谁说的：system 系统提示、user 用户、assistant 模型之前的回答、tool 工具结果</td><td><code>"system"</code></td></tr>
+                  <tr><td><code>content</code></td><td>是</td><td>一段文字；带图片时写成列表，里面放文字项和图片项</td><td><code>"用一句话介绍你自己"</code></td></tr>
+                  <tr><td>content 里的文字</td><td>—</td><td>列表里的文字项</td><td><code>{"type":"text","text":"图里有什么？"}</code></td></tr>
+                  <tr><td>content 里的图片</td><td>—</td><td>url 用 <code>data:image/png;base64,…</code>，或模型服务能访问到的图片网址；每张至少 28×28 像素</td><td><code>{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBOR…"}}</code></td></tr>
+                  <tr><td><code>params</code></td><td>否</td><td>这一行额外带的请求参数，原样发给模型服务（model、stream、stream_options、n 由测试程序决定，写了也不用）</td><td><code>{"max_tokens":512,"temperature":0.3}</code></td></tr>
+                  <tr><td><code>params.<wbr>max_tokens</code></td><td>否</td><td>最多生成多少 token；不写按 4096，超过 8192 按 8192；也可以写 max_completion_tokens</td><td><code>512</code></td></tr>
+                  <tr><td><code>params.<wbr>temperature</code></td><td>否</td><td>随机性，0 最稳定，不小于 0</td><td><code>0.3</code></td></tr>
+                  <tr><td><code>params.<wbr>response_format</code></td><td>否</td><td>要求输出 JSON，带了它的行会统计 JSON 合法率；json_schema 要写 name 和 schema</td><td><code>{"type":"json_object"}</code></td></tr>
+                  <tr><td><code>params.<wbr>enable_thinking</code></td><td>否</td><td>思考开关（Qwen3 等），会转成 chat_template_kwargs.enable_thinking</td><td><code>false</code></td></tr>
+                  <tr><td><code>meta</code></td><td>否</td><td>备注，不会发给模型；meta.prompt_tokens 超过 60000 的行会被跳过</td><td><code>{"note":"写给自己看的说明"}</code></td></tr>
+                </tbody>
+              </table></div>
+            </div>
+          </details>
+        </div>
       </div>
     </div>
     <div class="form-section">

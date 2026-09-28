@@ -1331,8 +1331,8 @@ const SCN_TPL=[
   ["code","写代码","实现函数、类、脚本或修 bug"],
   ["json","提取成 JSON","把商品描述整理成标准 JSON，统计格式是否合法"],
   ["rag","看资料回答","给一段长资料再提问，要求注明出处；可选资料长度"],
-  ["vision","看图回答","描述图片、解读图表、识别文字"],
-  ["custom","自定义任务集","上传你自己的请求（JSONL）"],
+  ["vision","看图回答","看图说出形状和颜色、读柱状图和饼图；默认用内置示例图片，也可以上传自己的图片"],
+  ["custom","自定义任务集","上传你自己的请求（JSONL，可以先下载模板照着改）"],
 ];
 const RAG_CTX_OPTS=[[1500,"1.5K"],[4000,"4K"],[16000,"16K"]];
 function scnChip(val,label,tip,checked){
@@ -1360,47 +1360,139 @@ function scnSyncVisibility(){
 renderScnChips();
 scnSyncVisibility();
 
+/* 自定义任务集模板: 每种写法一两行, 每行的 meta.note 是说明(不会发给模型)。
+   这段是严格 JSON: 测试直接读出来, 用 bench.py 的解析器逐行检查, 所以不要在里面写注释。
+   带图片那一行的示例图是 224×224 的 PNG(vision_assets.Canvas 画的): 左边红色圆形、右边蓝色正方形 */
+const TASK_TEMPLATE=/*TASK-TEMPLATE-BEGIN*/[
+{"messages":[{"role":"user","content":"用两三句话解释什么是 KV cache。"}],"meta":{"note":"最简单的写法：只有一条用户消息；不写 params 时最多生成 4096 token"}},
+{"messages":[{"role":"system","content":"你是简洁的技术助手，回答不超过 100 字。"},{"role":"user","content":"推理服务的首字延迟主要受哪些因素影响？"}],"params":{"max_tokens":256,"temperature":0.3},"meta":{"note":"带 system 提示，并限定这一行最多生成 256 token、temperature 为 0.3"}},
+{"messages":[{"role":"system","content":"你是客服助手，回答礼貌、简短。"},{"role":"user","content":"我的订单还没发货。"},{"role":"assistant","content":"抱歉让您久等了，请提供订单号，我帮您查询。"},{"role":"user","content":"订单号是 20260928001。"}],"params":{"max_tokens":300},"meta":{"note":"多轮对话：assistant 是模型之前的回答，按时间顺序排列，最后一条是这次要回答的问题"}},
+{"messages":[{"role":"user","content":"把这个地址整理成 JSON，字段为 province、city、street：浙江省杭州市西湖区文三路 90 号"}],"params":{"max_tokens":200,"temperature":0,"response_format":{"type":"json_object"}},"meta":{"note":"要求输出 JSON 对象（提示词里也要写明 JSON），会统计 JSON 合法率"}},
+{"messages":[{"role":"system","content":"从商品描述里提取信息，只输出 JSON。"},{"role":"user","content":"无线蓝牙耳机，续航 30 小时，售价 199 元，有黑色和白色两种。"}],"params":{"max_tokens":300,"temperature":0,"response_format":{"type":"json_schema","json_schema":{"name":"product","schema":{"type":"object","properties":{"name":{"type":"string"},"price":{"type":"number"},"colors":{"type":"array","items":{"type":"string"}}},"required":["name","price","colors"]}}}},"meta":{"note":"按指定的 JSON Schema 输出：name 是随便起的名字，schema 规定字段；会统计 JSON 合法率"}},
+{"messages":[{"role":"user","content":[{"type":"text","text":"图里有哪些形状？分别是什么颜色？"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAOAAAADgCAIAAACVT/22AAAC5klEQVR42u3d0Q0CMQxEQZqBxmibDigCWkDJKdjredoKnPlEx+0jFe7mBAJUAlSASoBKgApQCVABKgEqASpAJUAFqASoBKgAlQAVoBKgEqACVAJUgEqASoAKUAlQCVABKgEqQCVAJUAFqASoAJUAlQAVoBKgAlQCVAJUgEqAClAJUAlQASoBKgEqQCVABagEqASoAJUAFaASoFI+0Nfj8eO8N6C1RPIKaDOUsALajCamgFZ3SSqgbWhiCmgDmpgC2kMno4CWponpdKBddDI6DmgvmpjOAtpXJ6P5QLvrZDQZaIZORjOBJulkNA1onk5Gc4Cm6mQ0AWi2TkZ7A52g8xKj9+e79VoCnaNz3yiggAIK6GCdm0YBPQp0ps4do4ACCiig43UuGwX0EFA614wCCiig44FyuWwUUEABnQ2UyB2jgAIKKKAGaE2gLG4aBRRQQKcCpXDfKKCAAgqoAQoooIDSedoooIACCqgBCiiggAIKaARQ8q4yCiiggAJqgAIKKKCAAgoooIACCiigBiiggAIKKKCAAgoooIACCiiggAIKKKN+bgeoAQoooIACCiiggAJ6JVBGfbgBUEABBRRQQAEF9A9AGfUBW0ABBZRRf6IAKKCAAgoooIxepxNQQAEFlNFVnYACCiigjK7qBPQo0OFG1y4GKKCAAjre6PK5AD0NdKDRnVsBCiiggA42unkoQP8DdIjRj/oCjTdKUnugwUYxCgEaaZShKKBhRgEKBBpjlJ5YoAFG0QkH2tooNyOAdmRKzDigjYziMhRofaagAFrXKCWAFmXKB6BFmZIBaEWpQABalCkKgJbD6vkBreXVewMqASpAJUAlQAWoBKgAlQCVABWgEqACVAJUAlSASoBKgApQCVABKgEqASpAJUAFqASoBKgAlQAVoBKgEqACVAJUgEqASoAKUAlQCVABKgEqQCVAJUAFqASoAJUAlQAVoBKgAlQCVAJUgEqAClAJUAlQASod7Avc2fHFfVzcpAAAAABJRU5ErkJggg=="}}]}],"params":{"max_tokens":300},"meta":{"note":"带图片（模型要能看图）：content 写成列表，图片用 base64 data URL，每张至少 28×28 像素；这张示例图 224×224，左边红色圆形、右边蓝色正方形"}},
+{"messages":[{"role":"user","content":"用一句话说明大模型推理时为什么要做批处理。"}],"params":{"max_tokens":512,"enable_thinking":false},"meta":{"note":"关闭思考（Qwen3 等有思考开关的模型），会转成 chat_template_kwargs.enable_thinking；服务不认这个参数时删掉即可"}}
+]/*TASK-TEMPLATE-END*/;
+function downloadTaskTemplate(){
+  downloadText("自定义任务集模板.jsonl",TASK_TEMPLATE.map(x=>JSON.stringify(x)).join("\n")+"\n","application/x-ndjson;charset=utf-8");
+}
+$("btnTaskTpl").addEventListener("click",downloadTaskTemplate);
+
+/* 素材列表(任务集带可用行数; 图片包带张数、尺寸范围、有几张不能用)与上传后的检查结果 */
+let SCN_ASSETS={tasks:[],images:[],builtin_images:null},IMG_REPORT=null,TASK_REPORT=null;
+function fmtBytes(n){return n==null||!isFinite(n)?"—":n<1024?n+" B":n<1048576?Math.round(n/1024)+" KB":(n/1048576).toFixed(1)+" MB"}
+function hintList(items){return items&&items.length?`<ul class="hint-list">${items.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`:""}
+function imgPackText(p){
+  return ["图片包 "+p.image_id.slice(4,12),p.count+" 张",p.dims||"尺寸读不出",fmtBytes(p.size),shortTime(p.mtime),
+    p.too_small?`有 ${p.too_small} 张太小，会被模型拒绝`:"",p.broken?`有 ${p.broken} 张不能用`:""].filter(Boolean).join(" · ");
+}
+function taskSetText(p){
+  return [p.file_id.slice(4,12),`${fmtInt(p.lines)} 条可用${p.total>p.lines?`（共 ${fmtInt(p.total)} 行）`:""}`,fmtBytes(p.size),shortTime(p.mtime)].join(" · ");
+}
 async function loadScenarioAssets(keepImg,keepTask){
   try{
     const d=await getJSON("/api/scenario-list");
-    const img=$("fImgSel"),keep1=keepImg||img.value;
-    img.innerHTML=`<option value="">未选择</option>`+d.images.map(p=>
-      `<option value="${esc(p.image_id)}">${esc(p.image_id.slice(4,12))} · ${p.count} 张 · ${(p.size/1048576).toFixed(1)} MB</option>`).join("");
-    if(keep1&&d.images.find(p=>p.image_id===keep1))img.value=keep1;
-    const tsk=$("fTaskSel"),keep2=keepTask||tsk.value;
-    tsk.innerHTML=`<option value="">未选择</option>`+d.tasks.map(p=>
-      `<option value="${esc(p.file_id)}">${esc(p.file_id.slice(4,12))} · ${(p.size/1024).toFixed(0)} KB · ${shortTime(p.mtime)}</option>`).join("");
-    if(keep2&&d.tasks.find(p=>p.file_id===keep2))tsk.value=keep2;
+    SCN_ASSETS=d;
+    const st=lsGet("llm-bench-pro-scn"),b=d.builtin_images||{count:0,width:0,height:0};
+    const img=$("fImgSel"),want1=keepImg||st.img||img.value;
+    img.innerHTML=`<option value="builtin">内置示例图片（${b.count} 张） · ${b.width}×${b.height}</option>`+
+      d.images.map(p=>`<option value="${esc(p.image_id)}">${esc(imgPackText(p))}</option>`).join("")+
+      `<option value="dir">服务器上的文件夹…</option>`;
+    img.value=[...img.options].some(o=>o.value===want1)?want1:"builtin";
+    const tsk=$("fTaskSel"),want2=keepTask||st.task||tsk.value;
+    tsk.innerHTML=`<option value="">未选择</option>`+d.tasks.map(p=>`<option value="${esc(p.file_id)}">${esc(taskSetText(p))}</option>`).join("");
+    if(want2&&d.tasks.find(p=>p.file_id===want2))tsk.value=want2;
+    scnAssetRemember();
+    scnAssetSync();
   }catch(e){/* 服务不可达时保持空列表 */}
 }
+/* 记住选的图片来源和任务集(列表加载完、或用户改了选择时才记, 页面刚打开时不能用默认值覆盖) */
+function scnAssetRemember(){
+  const st=lsGet("llm-bench-pro-scn");
+  st.img=$("fImgSel").value;st.task=$("fTaskSel").value;lsSet("llm-bench-pro-scn",st);
+}
+/* 选择变化: 图片来源的说明; 选中的图片包里有不能用的图时提前提示(刚上传的检查结果优先显示) */
+function scnAssetSync(){
+  const v=$("fImgSel").value,t=$("fTaskSel").value;
+  $("fImgDirField").hidden=v!=="dir";
+  const b=SCN_ASSETS.builtin_images,p=(SCN_ASSETS.images||[]).find(x=>x.image_id===v);
+  $("fImgSrcHelp").textContent=v==="builtin"?(b?`内置 ${b.count} 张 ${b.width}×${b.height} 的图：${(b.names||[]).join("、")}。不用上传；每张图配的问题只问图里有的东西，比如哪根柱子最高`:"")
+    :v==="dir"?"用运行本服务的机器上的图片文件夹，在下面填路径":p?`上传的图片包：${p.count} 张${p.dims?"，尺寸 "+p.dims:""}`:"";
+  const ib=$("fImgCheck");
+  if(IMG_REPORT&&IMG_REPORT.id===v){ib.innerHTML=IMG_REPORT.html;ib.hidden=false}
+  else if(p&&p.usable<p.count){
+    IMG_REPORT=null;ib.hidden=false;
+    ib.innerHTML=alertBox(p.usable?"warn":"bad",`<b>${p.usable?`这个图片包里有 ${p.count-p.usable} 张不能用，测试时会跳过：`:"这个图片包里没有能用的图片，请重新上传，或改用内置示例图片："}</b>`+hintList(p.problems));
+  }else{IMG_REPORT=null;ib.hidden=true;ib.innerHTML=""}
+  const tb=$("fTaskCheck");
+  if(TASK_REPORT&&TASK_REPORT.id===t){tb.innerHTML=TASK_REPORT.html;tb.hidden=false}
+  else{TASK_REPORT=null;tb.hidden=true;tb.innerHTML=""}
+}
+["fImgSel","fTaskSel"].forEach(id=>$(id).addEventListener("change",()=>{scnAssetRemember();scnAssetSync()}));
+scnAssetSync();
 function readFileBase64(f){
   return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(",",2)[1]||"");r.onerror=()=>rej(new Error("读取失败"));r.readAsDataURL(f)});
 }
+/* 图片上传后的检查结果: 没收的逐张说原因; 收下但要注意的(偏小、扩展名不对)单独列出 */
+function imgReportHtml(d){
+  const files=d.files||[],bad=files.filter(f=>!f.ok),warn=files.filter(f=>f.ok&&f.level==="warn");
+  const list=fs=>hintList(fs.slice(0,10).map(f=>`${f.name}：${f.msg}`).concat(fs.length>10?[`……还有 ${fs.length-10} 张`]:[]));
+  const head=d.ok?`已收进图片包 ${d.count} 张（${[d.dims,fmtBytes(d.size)].filter(Boolean).join("，")}）`+(bad.length?`，${bad.length} 张没收：`:warn.length?"":"，全部可以用。")
+    :files.length?"没有能用的图片，这次没有上传：":(d.error||"上传失败");
+  return alertBox(!d.ok?"bad":bad.length||warn.length?"warn":"good",`<b>${esc(head)}</b>${list(bad)}`+
+    (warn.length?`<div class="upcheck-h">收下了，但要注意：</div>${list(warn)}`:""));
+}
+const IMG_MAX_BYTES=20*1024*1024,IMG_UPLOAD_MAX=11*1024*1024;  /* 单张上限; 一次上传的总量(base64 后约大三分之一, 服务一次最多收 16 MB) */
 $("fImgUpload").addEventListener("change",async e=>{
   const files=[...e.target.files];
   e.target.value="";
   if(!files.length)return;
-  if(files.reduce((s,f)=>s+f.size,0)>15*1024*1024){msg("probeOut","error","图片总共超过 15MB：请分批上传，或放到服务器文件夹后填路径");return}
-  msg("probeOut","info","正在上传 "+files.length+" 张图片…");
+  const send=files.filter(f=>f.size<=IMG_MAX_BYTES);
+  const local=files.filter(f=>f.size>IMG_MAX_BYTES).map(f=>({name:f.name,ok:false,level:"bad",msg:`有 ${fmtBytes(f.size)}，超过单张 20 MB 的上限`}));
+  const total=send.reduce((s,f)=>s+f.size,0);
+  const show=d=>{IMG_REPORT={id:d.ok?d.image_id:$("fImgSel").value,html:imgReportHtml(d)};scnAssetSync()};
+  if(total>IMG_UPLOAD_MAX){show({ok:false,files:[],error:`这次选的图片一共 ${fmtBytes(total)}，超过一次上传的上限 11 MB（上传时会编码变大约三分之一，服务一次最多收 16 MB）。请压缩图片、少选几张，或者把图片放到服务器上，选「服务器上的文件夹」`});return}
+  if(!send.length){show({ok:false,files:local});return}
+  msg("probeOut","info","正在上传并检查 "+send.length+" 张图片…");
   try{
-    const payload=await Promise.all(files.map(async f=>({name:f.name,data:await readFileBase64(f)})));
+    const payload=await Promise.all(send.map(async f=>({name:f.name,data:await readFileBase64(f)})));
     const d=await postJSON("/api/scenario-upload",{kind:"images",files:payload});
-    if(!d.ok){msg("probeOut","error","上传失败："+d.error);return}
-    await loadScenarioAssets(d.image_id);
-    msg("probeOut","success",`已上传图片：${d.count} 张（${(d.size/1048576).toFixed(1)} MB）`);
+    d.files=local.concat(d.files||[]);
+    if(d.ok)await loadScenarioAssets(d.image_id);
+    show(d);
+    const n=d.files.filter(f=>!f.ok).length;
+    msg("probeOut",d.ok?"success":"error",d.ok?`已上传图片 ${d.count} 张${n?`，${n} 张没收（原因见图片来源下方）`:""}`:"上传失败："+(d.error||"没有能用的图片"));
   }catch(err){msg("probeOut","error",err.message)}
 });
+/* 任务集上传后的检查结果: 共几行、可用几行、带 response_format / 带图片的各几条, 有问题的行给出行号和原因 */
+function taskReportHtml(d,name){
+  const c=d.check;
+  if(!c)return alertBox("bad",`<b>${esc(d.error||"上传失败")}</b>`);
+  const n=c.total-c.valid;
+  const head=!d.ok?`${name} 没有上传：共 ${c.total} 行，没有一行能用`
+    :n?`已上传 ${name}：共 ${c.total} 行，可用 ${c.valid} 行，${n} 行有问题（测试时会跳过）`:`已上传 ${name}：共 ${c.total} 行，全部可用`;
+  const items=c.problems.map(x=>`第 ${x.line} 行：${x.reason}`).concat(n>c.problems.length?[`……另外还有 ${n-c.problems.length} 行有问题`]:[]);
+  const warns=c.warnings.map(x=>`第 ${x.line} 行：${x.reason}`).concat(c.warning_count>c.warnings.length?[`……另外还有 ${c.warning_count-c.warnings.length} 条提醒`]:[]);
+  return alertBox(!d.ok?"bad":n||warns.length?"warn":"good",`<b>${esc(head)}</b>`+
+    (d.ok?`<div class="upcheck-sub">带 response_format ${c.json} 条（会统计 JSON 是否合法） · 带图片 ${c.image} 条</div>`:"")+
+    (c.hint?`<div>${esc(c.hint)}</div>`:"")+
+    (items.length?`<div class="upcheck-h">有问题的行${c.problems.length<n?`（只列前 ${c.problems.length} 条）`:""}：</div>${hintList(items)}`:"")+
+    (warns.length?`<div class="upcheck-h">提醒（这些行照常发送）：</div>${hintList(warns)}`:""));
+}
+const TASK_BODY_MAX=16*1024*1024-64*1024;  /* 服务一次最多收 16 MB 的请求 */
 $("fTaskUpload").addEventListener("change",async e=>{
   const f=e.target.files[0];
   e.target.value="";
   if(!f)return;
-  msg("probeOut","info","正在上传任务集 "+f.name+"…");
+  const show=d=>{TASK_REPORT={id:d.ok?d.file_id:$("fTaskSel").value,html:taskReportHtml(d,f.name)};scnAssetSync()};
   try{
-    const d=await postJSON("/api/scenario-upload",{kind:"tasks",name:f.name,content:await f.text()});
-    if(!d.ok){msg("probeOut","error","上传失败："+d.error);return}
-    await loadScenarioAssets(null,d.file_id);
-    msg("probeOut","success",`已上传任务集：${fmtInt(d.lines)} 条可用请求${d.bad_lines?`（${d.bad_lines} 行格式不对，已忽略）`:""}`);
-  }catch(err){msg("probeOut","error",err.message)}
+    const body={kind:"tasks",name:f.name,content:await f.text()};
+    if(new Blob([JSON.stringify(body)]).size>TASK_BODY_MAX){show({ok:false,error:`${f.name} 太大：上传时超过服务一次最多收的 16 MB，请拆成几个小文件，或放到服务器上用命令行 --custom-file 引用`});return}
+    msg("probeOut","info","正在上传并检查任务集 "+f.name+"…");
+    const d=await postJSON("/api/scenario-upload",body);
+    if(d.ok)await loadScenarioAssets(null,d.file_id);
+    show(d);
+    msg("probeOut",d.ok?"success":"error",d.ok?`已上传任务集：${fmtInt(d.lines)} 条可用${d.bad_lines?`，${d.bad_lines} 行有问题（见任务集下方的检查结果）`:""}`:"上传失败："+d.error);
+  }catch(err){msg("probeOut","error","读取文件失败："+err.message)}
 });
 $("fSuite").addEventListener("change",suitePlaceholders);
 suitePlaceholders();
@@ -1431,7 +1523,9 @@ async function start(){
     const ragCtx=[...document.querySelectorAll("#ragCtxChips input:checked")].map(x=>+x.value);
     if(tasks.includes("rag")&&ragCtx.length)scen.rag_ctx=ragCtx;
     if(tasks.includes("vision")){
-      scen.vision_src={image_id:$("fImgSel").value||undefined,dir:$("fImgDir").value.trim()||undefined,images:parseInt($("fImgN").value)||1};
+      const v=$("fImgSel").value,n=parseInt($("fImgN").value)||1,dir=$("fImgDir").value.trim();
+      if(v==="dir"&&!dir){msg("probeOut","error","请填写服务器上的图片文件夹，或换成内置示例图片");$("fImgDir").focus();return}
+      scen.vision_src=v==="dir"?{dir,images:n}:v&&v!=="builtin"?{image_id:v,images:n}:{builtin:true,images:n};
     }
     if(tasks.includes("custom")&&$("fTaskSel").value)scen.custom_file_id=$("fTaskSel").value;
   }
@@ -1896,12 +1990,21 @@ const SCN_LABEL=Object.fromEntries(SCN_TPL.map(([id,name])=>[id,name]));
 const kLabel=v=>(v/1000).toFixed(v%1000?1:0)+"K";
 function retryTag(p){return (p.attempts||1)>1?` <span class="badge is-warn" title="这一档失败后整档重跑过，明细见导出的报告">重跑 ${p.attempts} 次</span>`:""}
 function scnPhases(r){return (r.phases||[]).filter(ph=>(ph.id||"").startsWith("scn_"))}
-/* 场景的失败情况: 总请求数 / 成功数 / 不重复的错误; 图片理解全部 HTTP 400 时多半是模型或服务不支持图片输入 */
+/* 场景的失败情况: 总请求数 / 成功数 / 不重复的错误(带服务端返回的原因); 图片理解全部失败时给出具体建议 */
 function scnFails(ph){
   const pts=ph.points||[],total=pts.reduce((s,q)=>s+(q.total||0),0),ok=pts.reduce((s,q)=>s+(q.ok||0),0);
   const errs=[...new Set(pts.flatMap(q=>q.errors||[]))];
-  const hint=ph.id==="scn_vision"&&ok===0&&errs.some(e=>/\b400\b/.test(e))?"，模型或服务可能不支持图片输入":"";
+  const hint=ph.id==="scn_vision"&&ok===0?visionFailHint(errs):"";
   return{total,ok,fail:total-ok,errs,hint,why:errs.length?`（${errs[0]}${errs.length>1?` 等 ${errs.length} 种错误`:""}）`:""};
+}
+/* 看图回答全部 HTTP 400: 服务端原因里能看出是模型不支持看图、还是图片太小, 就直说; 看不出时两样都先查 */
+function visionFailHint(errs){
+  if(!errs.some(e=>/\b400\b/.test(e)))return "";
+  const all=errs.join(" ");
+  if(/not a multimodal|at most 0 image|image input is not supported|does not support (image|vision)|image_url is only supported|not support(ed)? (image|vision)/i.test(all))
+    return "，模型或服务不支持看图（图片输入），请换一个能看图的模型";
+  if(/must be larger than factor|too small/i.test(all))return "，图片太小：每张至少 28×28 像素，推荐 224×224 以上";
+  return "，请先检查图片尺寸（每张至少 28×28 像素，推荐 224×224 以上），再确认模型是否支持看图";
 }
 function scnLast(ph){const pts=ph.points||[];return pts.length?pts.reduce((m,q)=>((q.conc||0)>(m.conc||0)||(q.ctx_tokens||0)>(m.ctx_tokens||0)?q:m),pts[0]):null}
 function scnSection(a,b,p){
@@ -1929,7 +2032,7 @@ function scnSection(a,b,p){
     const hasJson=(ph.points||[]).some(x=>x.json_total);
     const t=ph.task||{};
     const desc=[jsonRate(ph)!=null?`JSON 合格率 ${fmt(jsonRate(ph),0)}%`:"",t.max_tokens?"每次最多 "+t.max_tokens+" token":"",t.requests_per_worker?"每个并发发 "+t.requests_per_worker+" 次":"",
-      t.images?"图片 "+t.images+" 张"+(t.images_per_request?"，每次带 "+t.images_per_request+" 张":""):"",t.pool_size?"任务集 "+t.pool_size+" 条":"",
+      t.images?(t.image_source==="builtin"?"内置示例图片 ":"图片 ")+t.images+" 张"+(t.images_per_request?"，每次带 "+t.images_per_request+" 张":"")+(t.images_skipped?"（另有 "+t.images_skipped+" 张不能用，已跳过）":""):"",t.pool_size?"任务集 "+t.pool_size+" 条":"",
       Array.isArray(t.rag_ctx)?"资料长度 "+t.rag_ctx.map(x=>(x/1000)+"K").join(" / "):""].filter(Boolean).join(" · ");
     const f=scnFails(ph);
     const failNote=!f.total||f.ok===f.total?"":f.ok===0?alertBox("bad",`<b>${f.total} 个请求全部失败</b>${esc(f.why)}${esc(f.hint)}，所以下面的图没有数据。`)
