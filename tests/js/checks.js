@@ -314,6 +314,10 @@ T("场景失败: 统计失败数与错误; 图片理解全部 HTTP 400 时提示
   assert.equal(scnFails({id: "scn_vision", points: [{total: 5, ok: 0, errors: ["timeout"]}]}).hint, "");   /* 不是 400 不乱猜 */
   assert.equal(scnFails({id: "scn_json", points: []}).total, 0);
 });
+T("主题切换过渡: 圆心取鼠标点击处", () => {
+  assert.deepEqual(themeOrigin({clientX: 120, clientY: 48}), [120, 48]);
+  assert.equal(themeOrigin(null).length, 2);   /* 没有事件时也给出圆心(右上角), 不报错 */
+});
 T("maskKey: API Key 掩码显示", () => {
   assert.equal(maskKey("sk-1234567890abcdef"), "sk-1…cdef");
   assert.equal(maskKey(""), "—");

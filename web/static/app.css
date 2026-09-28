@@ -947,3 +947,10 @@ details.advanced.is-step{margin-top:0;border-top:0;padding-top:0}
 /* 作品「新标签页打开」 */
 .modal-head #modalBadges .btn:last-child{margin-left:0}
 .split-head .work-open{margin-left:auto}
+/* 亮色 / 暗色切换: 新主题从点击处圆形展开(动画在 toggleTheme 里), 不用默认的交叉淡入 */
+::view-transition-old(root),::view-transition-new(root){animation:none;mix-blend-mode:normal}
+::view-transition-old(root){z-index:1}
+::view-transition-new(root){z-index:2}
+/* 不支持 View Transitions 的浏览器: 颜色渐变 */
+.theme-fade,.theme-fade *,.theme-fade *::before,.theme-fade *::after{
+  transition:background-color .35s ease,color .35s ease,border-color .35s ease,fill .35s ease,stroke .35s ease,box-shadow .35s ease!important}

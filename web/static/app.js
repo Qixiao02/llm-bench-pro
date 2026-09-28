@@ -1,6 +1,6 @@
 "use strict";
 /* LLM Bench Pro 前端逻辑 (零依赖经典脚本; 图表用本地内置的 ECharts) */
-const UI_VERSION="3.2.1";  /* 与 llm_bench_pro/version.py 保持一致 */
+const UI_VERSION="3.3.0";  /* 与 llm_bench_pro/version.py 保持一致 */
 /* ============================================================
    基础工具
    ============================================================ */
@@ -232,9 +232,35 @@ function applyTheme(t,persist){
   $("themeBtn").querySelector("use").setAttribute("href",t==="dark"?"#i-sun":"#i-moon");
   $("themeBtn").setAttribute("aria-label",t==="dark"?"切换为亮色":"切换为暗色");
   readTheme();
-  redrawVisible();
+  return redrawVisible();
 }
-function toggleTheme(){applyTheme(document.documentElement.dataset.theme==="dark"?"light":"dark",true)}
+/* 亮色 / 暗色切换的过渡: 支持 View Transitions 的浏览器, 新主题从点击处圆形展开(整页截图过渡, 图表也一起);
+   其他浏览器颜色渐变; 系统设置了「减少动画」时直接切换 */
+function toggleTheme(ev){
+  const next=document.documentElement.dataset.theme==="dark"?"light":"dark";
+  if(matchMedia("(prefers-reduced-motion: reduce)").matches){applyTheme(next,true);return}
+  if(typeof document.startViewTransition==="function"){
+    const [x,y]=themeOrigin(ev),r=Math.ceil(Math.hypot(Math.max(x,innerWidth-x),Math.max(y,innerHeight-y)));
+    const vt=document.startViewTransition(()=>applyTheme(next,true));
+    vt.ready.then(()=>document.documentElement.animate(
+      {clipPath:[`circle(0px at ${x}px ${y}px)`,`circle(${r}px at ${x}px ${y}px)`]},
+      {duration:480,easing:"cubic-bezier(.4,0,.2,1)",pseudoElement:"::view-transition-new(root)"})).catch(()=>{});
+    vt.updateCallbackDone.catch(e=>console.error("切换主题失败:",e));
+    return;
+  }
+  const html=document.documentElement;
+  html.classList.add("theme-fade");
+  applyTheme(next,true);
+  clearTimeout(toggleTheme.t);
+  toggleTheme.t=setTimeout(()=>html.classList.remove("theme-fade"),420);
+}
+/* 圆形展开的圆心: 鼠标点在哪就从哪开始; 键盘触发(没有坐标)时用按钮中心; 都没有时从右上角 */
+function themeOrigin(ev){
+  if(ev&&ev.clientX>0&&ev.clientY>0)return[ev.clientX,ev.clientY];
+  const el=ev&&ev.target&&ev.target.closest&&ev.target.closest("button,[data-theme-toggle]");
+  if(el&&el.getClientRects().length){const r=el.getBoundingClientRect();return[r.left+r.width/2,r.top+r.height/2]}
+  return[innerWidth-40,40];
+}
 $("themeBtn").onclick=toggleTheme;
 /* 侧栏: 默认 64px 图标栏, 悬停展开; 「固定」后一直展开(记在本机) */
 function applyRailPin(on,persist){
@@ -273,11 +299,11 @@ function showView(v){
   window.scrollTo(0,0);
 }
 function redrawVisible(){
-  if(VIEW==="dash")render();
-  else if(VIEW==="cmp")renderCmp();
-  else if(VIEW==="iq")renderIq();
-  else if(VIEW==="gen")renderGen();
-  else if(VIEW==="styleguide")renderStyleguide();
+  if(VIEW==="dash")return render();
+  if(VIEW==="cmp")return renderCmp();
+  if(VIEW==="iq")return renderIq();
+  if(VIEW==="gen")return renderGen();
+  if(VIEW==="styleguide")return renderStyleguide();
 }
 /* 新建测试用右侧抽屉: 同一时间只开一个, 结果页保持可见 */
 const DRAWERS=["launcher","iqLauncher","genLauncher","epDrawer"];
@@ -308,7 +334,7 @@ document.addEventListener("click",e=>{
   if(tm&&!e.target.closest("th,.cselect-panel,select")){e.preventDefault();showGlossary(tm.dataset.term);return}
   const nav=e.target.closest(".nav-item");if(nav&&nav.dataset.view){showView(nav.dataset.view);return}
   if(e.target.closest("[data-density-toggle]")){applyDensity(document.documentElement.dataset.density==="compact"?"normal":"compact",true);closeMenus();return}
-  if(e.target.closest("[data-theme-toggle]")){toggleTheme();closeMenus();return}
+  if(e.target.closest("[data-theme-toggle]")){toggleTheme(e);closeMenus();return}
   const rt=e.target.closest(".bar-runs-toggle");
   if(rt){const bar=rt.closest(".bar"),on=!bar.classList.contains("show-runs");bar.classList.toggle("show-runs",on);rt.setAttribute("aria-expanded",String(on));return}
   if(e.target.closest(".menu .menu-item"))setTimeout(()=>closeMenus(),0);
