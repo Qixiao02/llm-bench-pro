@@ -1,6 +1,6 @@
 "use strict";
 /* LLM Bench Pro 前端逻辑 (零依赖经典脚本; 图表用本地内置的 ECharts) */
-const UI_VERSION="3.4.0";  /* 与 llm_bench_pro/version.py 保持一致 */
+const UI_VERSION="3.5.0";  /* 与 llm_bench_pro/version.py 保持一致 */
 /* ============================================================
    基础工具
    ============================================================ */
@@ -1478,7 +1478,8 @@ function taskReportHtml(d,name){
     (items.length?`<div class="upcheck-h">有问题的行${c.problems.length<n?`（只列前 ${c.problems.length} 条）`:""}：</div>${hintList(items)}`:"")+
     (warns.length?`<div class="upcheck-h">提醒（这些行照常发送）：</div>${hintList(warns)}`:""));
 }
-const TASK_BODY_MAX=16*1024*1024-64*1024;  /* 服务一次最多收 16 MB 的请求 */
+/* 服务一次最多收 16 MB 的请求(超出的部分会被截掉); 文件里的引号、换行转成上传格式后会变长, 所以按请求体算 */
+const UPLOAD_BODY_MAX=16*1024*1024-64*1024;
 $("fTaskUpload").addEventListener("change",async e=>{
   const f=e.target.files[0];
   e.target.value="";
@@ -1486,7 +1487,7 @@ $("fTaskUpload").addEventListener("change",async e=>{
   const show=d=>{TASK_REPORT={id:d.ok?d.file_id:$("fTaskSel").value,html:taskReportHtml(d,f.name)};scnAssetSync()};
   try{
     const body={kind:"tasks",name:f.name,content:await f.text()};
-    if(new Blob([JSON.stringify(body)]).size>TASK_BODY_MAX){show({ok:false,error:`${f.name} 太大：上传时超过服务一次最多收的 16 MB，请拆成几个小文件，或放到服务器上用命令行 --custom-file 引用`});return}
+    if(new Blob([JSON.stringify(body)]).size>UPLOAD_BODY_MAX){show({ok:false,error:`${f.name} 太大：上传时超过服务一次最多收的 16 MB，请拆成几个小文件，或放到服务器上用命令行 --custom-file 引用`});return}
     msg("probeOut","info","正在上传并检查任务集 "+f.name+"…");
     const d=await postJSON("/api/scenario-upload",body);
     if(d.ok)await loadScenarioAssets(null,d.file_id);
@@ -1567,13 +1568,17 @@ $("fReplayFile").addEventListener("change",async e=>{
   const f=e.target.files[0];
   e.target.value="";
   if(!f)return;
-  if(f.size>15*1024*1024){msg("probeOut","error","文件超过 15MB：请放到运行服务的机器上，用命令行 --replay-file 引用");return}
-  msg("probeOut","info","正在上传 "+f.name+"…");
+  const tooBig=`${f.name} 太大：请放到运行服务的机器上，用命令行 --replay-file 引用`;
+  if(f.size>15*1024*1024){msg("probeOut","error",tooBig+"（文件超过 15 MB）");return}
   try{
-    const d=await postJSON("/api/replay-upload",{name:f.name,content:await f.text()});
-    if(!d.ok){msg("probeOut","error","上传失败："+d.error);return}
+    const body={name:f.name,content:await f.text()};
+    if(new Blob([JSON.stringify(body)]).size>UPLOAD_BODY_MAX){msg("probeOut","error",tooBig+"（上传时超过服务一次最多收的 16 MB）");return}
+    msg("probeOut","info","正在上传并检查 "+f.name+"…");
+    const d=await postJSON("/api/replay-upload",body);
+    const p=d.check&&d.check.problems[0],first=p?`第 ${p.line} 行：${p.reason}`:"";
+    if(!d.ok){msg("probeOut","error","上传失败："+d.error+(first?`（${first}）`:""));return}
     await loadReplayFiles(d.file_id);
-    msg("probeOut","success",`已上传 ${f.name}：${fmtInt(d.lines)} 条可用请求${d.bad_lines?`（${d.bad_lines} 行格式不对，已忽略）`:""}`);
+    msg("probeOut","success",`已上传 ${f.name}：${fmtInt(d.lines)} 条可用请求${d.bad_lines?`（${d.bad_lines} 行有问题，回放时跳过${first?`，比如${first}`:""}）`:""}`);
   }catch(err){msg("probeOut","error","读取文件失败："+err.message)}
 });
 

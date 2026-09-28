@@ -373,6 +373,28 @@ class TestScenarioUploadAPI(ServerCase):
         self.assertIn("没有能用的图片", str(cm.exception))
         self.assertIn("1×1", str(cm.exception))
 
+    def test_list_caches_checks_but_sees_changed_files(self):
+        """素材列表的检查结果按文件的大小和修改时间缓存: 没变时不重读; 文件被手动改过时重新检查。"""
+        line = '{"messages":[{"role":"user","content":"a"}]}'
+        st, _, d = self.request("POST", "/api/scenario-upload", {"kind": "tasks", "name": "t.jsonl", "content": line})
+        path = os.path.join(server.SCN_TASKS_DIR, d["file_id"] + ".jsonl")
+        pack = os.path.join(server.SCN_IMAGES_DIR, "img-0123456789ab")
+        os.makedirs(pack)
+        with open(os.path.join(pack, "00.png"), "wb") as f:
+            f.write(TINY_PNG)
+        lst = self.request("GET", "/api/scenario-list")[2]
+        self.assertEqual((lst["tasks"][0]["lines"], lst["images"][0]["usable"]), (1, 0))
+        hits = lambda: (server._task_file_check.cache_info().hits, server._image_pack_check.cache_info().hits)
+        before = hits()
+        self.request("GET", "/api/scenario-list")
+        self.assertEqual(hits(), (before[0] + 1, before[1] + 1))                # 第二次直接用缓存
+        with open(path, "a", encoding="utf-8") as f:                             # 手动改过: 大小和修改时间都变了
+            f.write("\n" + line.replace('"a"', '"b"'))
+        with open(os.path.join(pack, "01.png"), "wb") as f:
+            f.write(png_of(300, 300))
+        lst = self.request("GET", "/api/scenario-list")[2]
+        self.assertEqual((lst["tasks"][0]["lines"], lst["images"][0]["count"], lst["images"][0]["usable"]), (2, 2, 1))
+
     def test_vision_source_defaults_to_builtin(self):
         for src in (None, {}, {"builtin": True, "dir": "/nope"}, {"image_id": "builtin"}):
             with self.subTest(src=src):
