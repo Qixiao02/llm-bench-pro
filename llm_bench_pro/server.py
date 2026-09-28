@@ -6,6 +6,7 @@ llm-bench-pro 服务: UI 页面 + 模型探测 + 在线起测 + 结果接口 (�
 """
 import argparse
 import base64
+import functools
 import glob
 import hashlib
 import hmac
@@ -582,6 +583,24 @@ def _img_reject(name, msg, code="unsupported"):
             "ok": False, "level": "bad", "code": code, "msg": msg}
 
 
+# 素材列表里的检查结果缓存: 上传的任务集和图片包按内容命名、写入后不再改, 按 (路径, 大小, 修改时间) 缓存,
+# 打开素材列表时不用每次把所有文件重读、重查一遍(任务集最大 15 MB)。文件被手动改过时键会变, 自动重查
+@functools.lru_cache(maxsize=256)
+def _task_file_check(path, size, mtime_ns):
+    with open(path, encoding="utf-8-sig", errors="replace") as f:
+        return bench.check_task_text(f.read(), limit=0)
+
+
+@functools.lru_cache(maxsize=256)
+def _image_pack_check(d, stamp):
+    return vision_assets.scan_dir(d, keep_data=False)
+
+
+def _dir_stamp(d):
+    """目录里各文件的 (名字, 大小, 修改时间), 作图片包检查结果的缓存键。"""
+    return tuple(sorted((e.name, e.stat().st_size, e.stat().st_mtime_ns) for e in os.scandir(d) if e.is_file()))
+
+
 def _parse_scenarios(body):
     """任务场景配置: scenarios.tasks(模板多选) + 共用参数 + 各模板专属参数。
     返回可直接传给 bench.run_suite 的 dict(无任务时返回 None); 非法抛 ValueError。"""
@@ -936,9 +955,9 @@ class Handler(BaseHTTPRequestHandler):
             for fn in os.listdir(SCN_TASKS_DIR):
                 if re.match(r"^scn-[0-9a-f]{12}\.jsonl$", fn):
                     p = os.path.join(SCN_TASKS_DIR, fn)
-                    with open(p, encoding="utf-8-sig", errors="replace") as f:
-                        chk = bench.check_task_text(f.read(), limit=0)
-                    tasks.append({"file_id": fn[:-6], "size": os.path.getsize(p), "mtime": _mtime_iso(p),
+                    st = os.stat(p)
+                    chk = _task_file_check(p, st.st_size, st.st_mtime_ns)
+                    tasks.append({"file_id": fn[:-6], "size": st.st_size, "mtime": _mtime_iso(p),
                                   "lines": chk["valid"], "total": chk["total"], "json": chk["json"], "image": chk["image"]})
         images = []
         if os.path.isdir(SCN_IMAGES_DIR):
@@ -946,7 +965,7 @@ class Handler(BaseHTTPRequestHandler):
                 d = os.path.join(SCN_IMAGES_DIR, dn)
                 if not (re.match(r"^img-[0-9a-f]{12}$", dn) and os.path.isdir(d)):
                     continue
-                good, checks = vision_assets.scan_dir(d, keep_data=False)
+                good, checks = _image_pack_check(d, _dir_stamp(d))
                 if not checks:
                     continue
                 small = sum(1 for c in checks if c["code"] == "too_small")
