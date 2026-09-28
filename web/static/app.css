@@ -182,7 +182,9 @@ a:hover{text-decoration-color:currentColor}
 .ov-stats{--cols:2;display:grid;grid-template-columns:repeat(var(--cols),minmax(0,1fr));gap:1px;align-self:start;
   background:var(--border);border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden}
 .stat{background:var(--surface-1);padding:14px 16px;min-width:0}
-.stat-label{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;min-height:22px;font-size:var(--fs-12);color:var(--text-3);line-height:1.45}
+/* 格子窄时（手机两列）「比 B …」换到标题下一行，标题不会被挤成每行一两个字 */
+.stat-label{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:4px 8px;min-height:22px;font-size:var(--fs-12);color:var(--text-3);line-height:1.45}
+.stat-label>span:first-child{flex:1 1 8em;min-width:0}
 .stat-value{margin-top:4px;font-size:var(--fs-28);font-weight:650;line-height:1.15;color:var(--text-1);letter-spacing:-.01em;font-variant-numeric:tabular-nums;white-space:nowrap}
 .stat-value small{margin-left:5px;font-size:var(--fs-13);font-weight:400;color:var(--text-3);letter-spacing:0}
 .stat-sub{margin-top:4px;font-size:var(--fs-12);color:var(--text-3);line-height:1.5}
