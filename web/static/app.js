@@ -1,6 +1,6 @@
 "use strict";
 /* LLM Bench Pro 前端逻辑 (零依赖经典脚本; 图表用本地内置的 ECharts) */
-const UI_VERSION="3.5.1";  /* 与 llm_bench_pro/version.py 保持一致 */
+const UI_VERSION="3.6.0";  /* 与 llm_bench_pro/version.py 保持一致 */
 /* ============================================================
    基础工具
    ============================================================ */
@@ -282,20 +282,25 @@ function applyDensity(d,persist){
    导航 / 抽屉 / 弹窗 / 通用点击
    ============================================================ */
 let VIEW="dash";
-const VIEWS={dash:"viewDash",cmp:"viewCmp",iq:"viewIq",gen:"viewGen",styleguide:"viewSg"};
+const VIEWS={dash:"viewDash",cmp:"viewCmp",iq:"viewIq",gen:"viewGen",tasks:"viewTasks",styleguide:"viewSg"};
+/* 地址 #页面, 任务集页面看某一个时是 #tasks/<任务集 id>: 拆成页面和后面的部分 */
+function parseRoute(h){const s=String(h||"").replace(/^#/,""),i=s.indexOf("/");return i<0?{view:s,sub:""}:{view:s.slice(0,i),sub:s.slice(i+1)}}
 function showView(v){
-  if(!VIEWS[v])v="dash";
-  if(OFF&&v!==OFF.page)v=OFF.page;
-  VIEW=v;
-  document.querySelectorAll(".nav-item").forEach(b=>{if(b.dataset.view===v)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
-  Object.entries(VIEWS).forEach(([k,id])=>$(id).classList.toggle("is-active",k===v));
+  let {view,sub}=parseRoute(v);
+  if(!VIEWS[view]){view="dash";sub=""}
+  if(OFF&&view!==OFF.page)view=OFF.page;
+  VIEW=view;
+  document.querySelectorAll(".nav-item").forEach(b=>{if(b.dataset.view===view)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
+  Object.entries(VIEWS).forEach(([k,id])=>$(id).classList.toggle("is-active",k===view));
   closeDrawers();closeMenus();
-  try{history.replaceState(null,"","#"+v)}catch(e){}
-  if(v==="dash")render();
-  if(v==="cmp")renderCmp();
-  if(v==="iq"){loadBanks();loadIqResults();}
-  if(v==="gen"){renderTaskChips();loadGenResults();}
-  if(v==="styleguide")renderStyleguide();
+  const tsId=view==="tasks"&&TS_ID_RE.test(sub)?sub:"";
+  try{history.replaceState(null,"","#"+view+(tsId?"/"+tsId:""))}catch(e){}
+  if(view==="dash")render();
+  if(view==="cmp")renderCmp();
+  if(view==="iq"){loadBanks();loadIqResults();}
+  if(view==="gen"){renderTaskChips();loadGenResults();}
+  if(view==="tasks")tsShow(tsId);
+  if(view==="styleguide")renderStyleguide();
   window.scrollTo(0,0);
 }
 function redrawVisible(){
@@ -303,6 +308,7 @@ function redrawVisible(){
   if(VIEW==="cmp")return renderCmp();
   if(VIEW==="iq")return renderIq();
   if(VIEW==="gen")return renderGen();
+  if(VIEW==="tasks")return tsRedraw();
   if(VIEW==="styleguide")return renderStyleguide();
 }
 /* 新建测试用右侧抽屉: 同一时间只开一个, 结果页保持可见 */
@@ -322,8 +328,14 @@ function toggleLauncher(id,force){
   if(open&&force==null){const f=el.querySelector("input:not([type=checkbox]):not([type=file]),select");if(f)setTimeout(()=>f.focus(),60)}
 }
 $("drawerBackdrop").addEventListener("click",()=>closeDrawers());
-/* 地址栏 #dash / #iq … 变化(前进/后退、手动修改)时切换页面 */
-window.addEventListener("hashchange",()=>{const v=(location.hash||"").slice(1);if(VIEWS[v]&&v!==VIEW)showView(v)});
+/* 地址栏 #dash / #iq … 变化(前进/后退、手动修改、点页面里的链接)时切换页面; 任务集页面里 #tasks ↔ #tasks/<id> 切换列表和详情 */
+function routeHash(){
+  const {view,sub}=parseRoute(location.hash);
+  if(!VIEWS[view])return;
+  if(view!==VIEW){showView(location.hash);return}
+  if(view==="tasks")tsRoute(sub);
+}
+window.addEventListener("hashchange",routeHash);
 /* 运行中的任务: 侧栏圆点 + 页头"进行中"按钮, 抽屉关着也看得到 */
 function setRunning(job,on){
   document.querySelectorAll(`[data-running="${job}"],[data-running-pill="${job}"]`).forEach(el=>el.hidden=!on);
@@ -1160,10 +1172,10 @@ function tablesCSV(ids){
 }
 function tableIdsIn(root){return root?[...new Set([...root.querySelectorAll("[data-dt]")].map(x=>x.dataset.dt))]:[]}
 function exportPageTables(page){
-  const root={dash:"dashBody",cmp:"cmpBody",iq:"iqResult",gen:"genResult"}[page];
+  const root={dash:"dashBody",cmp:"cmpBody",iq:"iqResult",gen:"genResult",tasks:"tasksBody"}[page];
   const ids=tableIdsIn($(root));
   if(!ids.length){toast("这一页没有可以导出的表格","warning");return}
-  downloadText(`${{dash:"速度测试",cmp:"速度对比",iq:"能力测试",gen:"代码生成"}[page]}_全部表格.csv`,tablesCSV(ids));
+  downloadText(`${{dash:"速度测试",cmp:"速度对比",iq:"能力测试",gen:"代码生成",tasks:"任务集"}[page]}_全部表格.csv`,tablesCSV(ids));
   toast(`已导出 ${ids.length} 张表`,"success",2500);
 }
 async function copyText(text,what){
@@ -1282,7 +1294,7 @@ function setPanelMode(sec,mode){
 function applyViewMode(page,mode,persist){
   VIEWMODE[page]=mode;
   if(persist)lsSet("llm-bench-pro-viewmode",VIEWMODE);
-  const root=$({dash:"dashBody",cmp:"cmpBody",iq:"iqResult",gen:"genResult"}[page]);
+  const root=$({dash:"dashBody",cmp:"cmpBody",iq:"iqResult",gen:"genResult",tasks:"tasksBody"}[page]);
   document.querySelectorAll(`[data-vm-page="${page}"] [data-vm]`).forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.vm===mode)));
   if(!root)return;
   root.querySelectorAll("section.sec[data-pv]").forEach(sec=>{PANEL_OVR.delete(sec.id);setPanelMode(sec,mode)});
@@ -1360,7 +1372,7 @@ const SCN_TPL=[
   ["json","提取成 JSON","把商品描述整理成标准 JSON，统计格式是否合法"],
   ["rag","看资料回答","给一段长资料再提问，要求注明出处；可选资料长度"],
   ["vision","看图回答","看图说出形状和颜色、读柱状图和饼图；默认用内置示例图片，也可以上传自己的图片"],
-  ["custom","自定义任务集","上传你自己的请求（JSONL，可以先下载模板照着改）"],
+  ["custom","自定义任务集","用你导入的任务集（JSONL，每行一个请求）；在左侧「任务集」页面导入、逐行查看、下载模板"],
 ];
 const RAG_CTX_OPTS=[[1500,"1.5K"],[4000,"4K"],[16000,"16K"]];
 function scnChip(val,label,tip,checked){
@@ -1401,9 +1413,9 @@ const TASK_TEMPLATE=/*TASK-TEMPLATE-BEGIN*/[
 {"messages":[{"role":"user","content":"用一句话说明大模型推理时为什么要做批处理。"}],"params":{"max_tokens":512,"enable_thinking":false},"meta":{"note":"关闭思考（Qwen3 等有思考开关的模型），会转成 chat_template_kwargs.enable_thinking；服务不认这个参数时删掉即可"}}
 ]/*TASK-TEMPLATE-END*/;
 function downloadTaskTemplate(){
-  downloadText("自定义任务集模板.jsonl",TASK_TEMPLATE.map(x=>JSON.stringify(x)).join("\n")+"\n","application/x-ndjson;charset=utf-8");
+  downloadText("任务集模板.jsonl",TASK_TEMPLATE.map(x=>JSON.stringify(x)).join("\n")+"\n","application/x-ndjson;charset=utf-8");
 }
-$("btnTaskTpl").addEventListener("click",downloadTaskTemplate);
+$("btnTaskImport").addEventListener("click",()=>$("fTaskUpload").click());
 
 /* 素材列表(任务集带可用行数; 图片包带张数、尺寸范围、有几张不能用)与上传后的检查结果 */
 let SCN_ASSETS={tasks:[],images:[],builtin_images:null},IMG_REPORT=null,TASK_REPORT=null;
@@ -1413,8 +1425,9 @@ function imgPackText(p){
   return ["图片包 "+p.image_id.slice(4,12),p.count+" 张",p.dims||"尺寸读不出",fmtBytes(p.size),shortTime(p.mtime),
     p.too_small?`有 ${p.too_small} 张太小，会被模型拒绝`:"",p.broken?`有 ${p.broken} 张不能用`:""].filter(Boolean).join(" · ");
 }
+/* 新建面板里任务集的选项: 名称 · 可用条数(旧版本导入、还没有名称的显示 id) */
 function taskSetText(p){
-  return [p.file_id.slice(4,12),`${fmtInt(p.lines)} 条可用${p.total>p.lines?`（共 ${fmtInt(p.total)} 行）`:""}`,fmtBytes(p.size),shortTime(p.mtime)].join(" · ");
+  return [p.name||p.file_id,`${fmtInt(p.lines)} 条可用${p.total>p.lines?`（共 ${fmtInt(p.total)} 行）`:""}`].join(" · ");
 }
 async function loadScenarioAssets(keepImg,keepTask){
   try{
@@ -1491,13 +1504,15 @@ $("fImgUpload").addEventListener("change",async e=>{
     msg("probeOut",d.ok?"success":"error",d.ok?`已上传图片 ${d.count} 张${n?`，${n} 张没收（原因见图片来源下方）`:""}`:"上传失败："+(d.error||"没有能用的图片"));
   }catch(err){msg("probeOut","error",err.message)}
 });
-/* 任务集上传后的检查结果: 共几行、可用几行、带 response_format / 带图片的各几条, 有问题的行给出行号和原因 */
+/* 任务集导入后的检查结果: 共几行、可用几行、带 response_format / 带图片的各几条, 有问题的行给出行号和原因;
+   内容完全相同的已经导入过时说明它叫什么(不重复保存) */
 function taskReportHtml(d,name){
   const c=d.check;
-  if(!c)return alertBox("bad",`<b>${esc(d.error||"上传失败")}</b>`);
-  const n=c.total-c.valid;
-  const head=!d.ok?`${name} 没有上传：共 ${c.total} 行，没有一行能用`
-    :n?`已上传 ${name}：共 ${c.total} 行，可用 ${c.valid} 行，${n} 行有问题（测试时会跳过）`:`已上传 ${name}：共 ${c.total} 行，全部可用`;
+  if(!c)return alertBox("bad",`<b>${esc(d.error||"导入失败")}</b>`);
+  const n=c.total-c.valid,who=d.ok&&d.name?`「${d.name}」`:` ${name}`;
+  const rest=n?`共 ${c.total} 行，可用 ${c.valid} 行，${n} 行有问题（测试时会跳过）`:`共 ${c.total} 行，全部可用`;
+  const head=!d.ok?`${name} 没有导入：共 ${c.total} 行，没有一行能用`
+    :d.exists?`这个任务集已经导入过（名称：${d.name}），没有重复保存：${rest}`:`已导入${who}：${rest}`;
   const items=c.problems.map(x=>`第 ${x.line} 行：${x.reason}`).concat(n>c.problems.length?[`……另外还有 ${n-c.problems.length} 行有问题`]:[]);
   const warns=c.warnings.map(x=>`第 ${x.line} 行：${x.reason}`).concat(c.warning_count>c.warnings.length?[`……另外还有 ${c.warning_count-c.warnings.length} 条提醒`]:[]);
   return alertBox(!d.ok?"bad":n||warns.length?"warn":"good",`<b>${esc(head)}</b>`+
@@ -1516,11 +1531,12 @@ $("fTaskUpload").addEventListener("change",async e=>{
   try{
     const body={kind:"tasks",name:f.name,content:await f.text()};
     if(new Blob([JSON.stringify(body)]).size>UPLOAD_BODY_MAX){show({ok:false,error:`${f.name} 太大：上传时超过服务一次最多收的 16 MB，请拆成几个小文件，或放到服务器上用命令行 --custom-file 引用`});return}
-    msg("probeOut","info","正在上传并检查任务集 "+f.name+"…");
+    msg("probeOut","info","正在导入并检查任务集 "+f.name+"…");
     const d=await postJSON("/api/scenario-upload",body);
-    if(d.ok)await loadScenarioAssets(null,d.file_id);
+    if(d.ok){await loadScenarioAssets(null,d.file_id);tsInvalidate(d.file_id)}
     show(d);
-    msg("probeOut",d.ok?"success":"error",d.ok?`已上传任务集：${fmtInt(d.lines)} 条可用${d.bad_lines?`，${d.bad_lines} 行有问题（见任务集下方的检查结果）`:""}`:"上传失败："+d.error);
+    msg("probeOut",d.ok?"success":"error",!d.ok?"导入失败："+d.error:d.exists?`这个任务集已经导入过（名称：${d.name}），已选中它`
+      :`已导入任务集「${d.name}」：${fmtInt(d.lines)} 条可用${d.bad_lines?`，${d.bad_lines} 行有问题（见任务集下方的检查结果）`:""}`);
   }catch(err){msg("probeOut","error","读取文件失败："+err.message)}
 });
 $("fSuite").addEventListener("change",suitePlaceholders);
@@ -2084,13 +2100,16 @@ function scnSection(a,b,p){
     const isRag=ph.id==="scn_rag",key=isRag?"ctx_tokens":"conc",pb=b?(b.phases||[]).find(x=>x.id===ph.id):null;
     const hasJson=(ph.points||[]).some(x=>x.json_total);
     const t=ph.task||{};
+    const ts=t.task_set&&t.task_set.id?t.task_set:null;  /* 3.6.0 起记下用的是哪个任务集 */
     const desc=[jsonRate(ph)!=null?`JSON 合格率 ${fmt(jsonRate(ph),0)}%`:"",t.max_tokens?"每次最多 "+t.max_tokens+" token":"",t.requests_per_worker?"每个并发发 "+t.requests_per_worker+" 次":"",
-      t.images?(t.image_source==="builtin"?"内置示例图片 ":"图片 ")+t.images+" 张"+(t.images_per_request?"，每次带 "+t.images_per_request+" 张":"")+(t.images_skipped?"（另有 "+t.images_skipped+" 张不能用，已跳过）":""):"",t.pool_size?"任务集 "+t.pool_size+" 条":"",
+      t.images?(t.image_source==="builtin"?"内置示例图片 ":"图片 ")+t.images+" 张"+(t.images_per_request?"，每次带 "+t.images_per_request+" 张":"")+(t.images_skipped?"（另有 "+t.images_skipped+" 张不能用，已跳过）":""):"",
+      ts?`任务集：${ts.name||ts.id}`:"",t.pool_size?(ts?t.pool_size+" 条请求":"任务集 "+t.pool_size+" 条"):"",
       Array.isArray(t.rag_ctx)?"资料长度 "+t.rag_ctx.map(x=>(x/1000)+"K").join(" / ")+ragActualNote(ph,t.rag_ctx):""].filter(Boolean).join(" · ");
+    const tsLink=ts&&TS_ID_RE.test(ts.id)?` <a class="qb-link" href="#tasks/${esc(ts.id)}" data-online-only title="到任务集页面逐行查看这个任务集">查看任务集</a>`:"";
     const f=scnFails(ph);
     const failNote=!f.total||f.ok===f.total?"":f.ok===0?alertBox("bad",`<b>${f.total} 个请求全部失败</b>${esc(f.why)}${esc(f.hint)}，所以下面的图没有数据。`)
       :alertBox("warn",`${f.fail} / ${f.total} 个请求失败${esc(f.why)}，图里只算成功的请求。`);
-    charts.push(`<div class="scn-block"><div class="sub-h">${esc(nameOf(ph))}${desc?`<span class="sub-h-note">${esc(desc)}</span>`:""}</div>${failNote}
+    charts.push(`<div class="scn-block"><div class="sub-h">${esc(nameOf(ph))}${desc?`<span class="sub-h-note">${esc(desc)}${tsLink}</span>`:""}</div>${failNote}
       <div class="grid-2">${ccard(`${p}Scn${idx}Rps`,term("rps"),{desc:(isRag?"横轴是资料长度":"横轴是同时请求数")+" · 越高越好",h:220})}
         ${ccard(`${p}Scn${idx}E2e`,term("e2e")+"（较慢的情况）",{desc:"95% 的请求比这更快拿到完整回答 · 越短越好",h:220})}</div></div>`);
     details.push({id:`${p}-scn-${ph.id}`,title:esc(nameOf(ph)),sub:esc(desc),columns:[{key:"k",label:isRag?"资料长度":"同时请求数",unit:isRag?"token":"",type:"int",sticky:true},
@@ -3718,6 +3737,902 @@ function markRepeat(seg,offset,rep){
   const k=Math.max(0,rep.start-offset);
   return esc(seg.slice(0,k))+`<mark title="从这里开始重复">${esc(seg.slice(k))}</mark>`;
 }
+
+/* ============================================================
+   任务集: 列表(导入 / 下载模板 / 改名 / 删除) · 详情(概况 / 输入长度分布 / 逐行查看) · 拖文件到页面上导入
+   地址 #tasks 是列表, #tasks/<id> 是某一个; 浏览器后退回到列表, 刷新停在原处。
+   逐行数据按页从服务端取(筛选、搜索也在服务端做), 图片只在看到时按行号取
+   ============================================================ */
+const TS_ID_RE=/^scn-[0-9a-f]{12}$/;
+const TS_LS="llm-bench-pro-ts";          /* 每页几行、卡片 / 表格、每个任务集看到第几页和筛选条件 */
+const TS_SIZES=[6,12,24,48];
+const TS_NAME_MAX=80;
+const TS_EXTS=[".jsonl",".json",".txt"];
+const TS_PREF=lsGet(TS_LS);
+const TS={list:null,listErr:"",listLoading:null,cur:"",data:null,dataErr:"",dataStatus:0,dataFor:"",lines:null,linesErr:"",
+  seq:0,filter:"all",q:"",page:0,size:TS_SIZES.includes(TS_PREF.size)?TS_PREF.size:6,mem:{},full:new Map(),
+  report:null,flash:"",importing:false,fromList:false,focusAfter:"",bins:[]};
+
+/* ---------- 纯逻辑(tests/js/checks.js 有断言) ---------- */
+/* 名称: 去掉控制字符、会打乱文字方向的不可见字符和首尾空白; 1–80 个字(按字数, 不按字节)。与服务端 tasksets.clean_name 同一套规则 */
+function tsNameCheck(raw){
+  const name=String(raw??"").replace(/[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩﻿]/g,"").trim();
+  const n=[...name].length;
+  if(!n)return{ok:false,name,n,error:"名称不能为空"};
+  if(n>TS_NAME_MAX)return{ok:false,name,n,error:`名称最多 ${TS_NAME_MAX} 个字（现在 ${n} 个）`};
+  return{ok:true,name,n,error:""};
+}
+/* 一行的状态: 文字 + 图标 + 颜色, 不只靠颜色区分 */
+const TS_STATUS={ok:{text:"可用",tone:"good",icon:"check",tip:"测试时会发送这一行"},
+  skip:{text:"会跳过",tone:"warn",icon:"ban",tip:"没有消息，或者输入太长，测试时跳过这一行"},
+  bad:{text:"有问题",tone:"bad",icon:"x",tip:"格式不对，发出去服务端也会拒绝，测试时跳过这一行"}};
+function tsStatusOf(st){return TS_STATUS[st]||TS_STATUS.bad}
+/* 消息的角色: 大白话(原来的 role 在悬停提示里) */
+const TS_ROLE={system:"系统提示",user:"用户",assistant:"模型之前的回答",tool:"工具结果",developer:"开发者提示",function:"函数结果"};
+function tsRoleName(role){return TS_ROLE[role]||(role?`不认识的角色「${role}」`:"没写角色")}
+/* 筛选标签: 全部 / 可用 / 有问题 / 带图片 / 要求 JSON, 数字是按搜索过滤之后的行数 */
+const TS_FILTERS=[["all","全部",""],["ok","可用","测试时会发送的行"],["bad","有问题","格式不对、没有消息或输入太长的行，测试时会跳过"],
+  ["image","带图片","消息里带图片的行，要用能看图的模型"],["json","要求 JSON","带 response_format 的行，测试时统计 JSON 是否合法"]];
+function tsChipsHTML(counts,cur){
+  return TS_FILTERS.map(([f,label,tip])=>`<button type="button" class="filter-chip" data-ts-filter="${f}" aria-pressed="${f===cur}"${tip?` title="${esc(tip)}"`:""}>${esc(label)} <b>${fmtInt((counts||{})[f]||0)}</b></button>`).join("");
+}
+/* 能导入的文件: .jsonl / .json / .txt(不分大小写); 不能导入时说明原因 */
+function tsFileCheck(name){
+  const n=String(name||""),m=/\.([^.\\/]+)$/.exec(n),ext=m?"."+m[1].toLowerCase():"";
+  if(TS_EXTS.includes(ext))return{ok:true,reason:""};
+  const kind=/^\.(png|jpe?g|gif|webp|bmp|svg|heic|avif)$/.test(ext)?"图片":/^\.(xlsx?|csv|tsv)$/.test(ext)?"表格":
+    /^\.(docx?|pdf|md|pptx?)$/.test(ext)?"文档":/^\.(zip|rar|7z|gz|tgz|tar)$/.test(ext)?"压缩包":"";
+  return{ok:false,reason:`${n||"这个文件"} ${kind?"是"+kind+"，":""}不能导入：任务集要是 .jsonl、.json 或 .txt 文件（每行一个 JSON 请求）`};
+}
+/* 输入长度分档: 最长比最短大很多(20 倍以上)时按 10–20–50 倍数分档(0、10、20、50、100、200、500、1K…), 否则等宽分成 10 档左右;
+   每档含下限、不含上限。返回 [{lo, hi, n, label}], 从第一个有数的档到最后一个有数的档 */
+function lenBins(values){
+  const xs=(values||[]).filter(v=>typeof v==="number"&&isFinite(v)&&v>=0);
+  if(!xs.length)return[];
+  let mn=Infinity,mx=-Infinity;
+  for(const v of xs){if(v<mn)mn=v;if(v>mx)mx=v}
+  let edges;
+  if(mx===mn)edges=[mn,mn+1];
+  else if(mx>=Math.max(mn,1)*20){
+    edges=[0];
+    for(let b=10;edges[edges.length-1]<=mx;b*=10)for(const k of [1,2,5])if(k*b>edges[edges.length-1]&&edges[edges.length-1]<=mx)edges.push(k*b);
+  }else{
+    const raw=(mx-mn)/10,p=10**Math.floor(Math.log10(Math.max(raw,1))),r=raw/p;
+    const step=Math.max(1,(r<=1?1:r<=2?2:r<=5?5:10)*p),start=Math.floor(mn/step)*step;
+    edges=[start];while(edges[edges.length-1]<=mx)edges.push(edges[edges.length-1]+step);
+  }
+  const bins=edges.slice(0,-1).map((lo,i)=>({lo,hi:edges[i+1],n:0}));
+  for(const v of xs){let i=bins.length-1;while(i>0&&v<bins[i].lo)i--;bins[i].n++}
+  let a=0,b=bins.length-1;
+  while(a<b&&!bins[a].n)a++;
+  while(b>a&&!bins[b].n)b--;
+  return bins.slice(a,b+1).map(x=>Object.assign(x,{label:x.hi-x.lo===1?lenShort(x.lo):`${lenShort(x.lo)}–${lenShort(x.hi)}`}));
+}
+function lenShort(v){return v>=1000&&v%100===0?(v/1000).toFixed(v%1000?1:0)+"K":String(v)}
+function lenBinText(b){return b.hi-b.lo===1?fmtInt(b.lo):`${fmtInt(b.lo)}–${fmtInt(b.hi)}`}
+/* params 的大白话: [{text, tip, tone}]; mt 是服务端算好的实际发送的 max_tokens */
+function tsParamItems(p,mt){
+  p=p&&typeof p==="object"&&!Array.isArray(p)?p:{};
+  const out=[],has=k=>p[k]!=null&&p[k]!=="";
+  const key=p.max_tokens?"max_tokens":p.max_completion_tokens?"max_completion_tokens":has("max_tokens")?"max_tokens":has("max_completion_tokens")?"max_completion_tokens":"";
+  const eff=fmtInt(mt||4096),sent=mt!=null;  /* mt 为空: 这一行不会发送, 不说「按多少」 */
+  if(!key){if(sent)out.push({text:`没写每次最多生成多少，按 ${eff} token`,tip:"params.max_tokens 没写时按默认 4096"})}
+  else{
+    const n=Math.trunc(Number(p[key]));
+    if(!(n>0))out.push({text:`每次最多生成：写的「${tsShort(p[key])}」不是正整数${sent?`，按 ${eff} token`:""}`,tip:`params.${key}`,tone:"warn"});
+    else if(sent&&n>mt)out.push({text:`每次最多生成：写的 ${fmtInt(n)} 超过上限，按 ${eff} token`,tip:`params.${key}，上限 8192`,tone:"warn"});
+    else out.push({text:`每次最多生成 ${fmtInt(n)} token`,tip:`params.${key}`});
+  }
+  if(p.temperature!=null)out.push({text:`随机性 ${tsShort(p.temperature)}`,tip:"params.temperature：0 最稳定，越大越随机"});
+  const rf=p.response_format;
+  if(rf&&typeof rf==="object"){
+    if(rf.type==="json_object")out.push({text:"要求输出 JSON 对象",tip:"params.response_format = json_object，测试时统计 JSON 是否合法"});
+    else if(rf.type==="json_schema")out.push({text:`按 JSON Schema「${tsShort((rf.json_schema&&rf.json_schema.name)||"没写名字")}」输出`,tip:"params.response_format = json_schema，测试时统计 JSON 是否合法"});
+    else if(rf.type==="text")out.push({text:"输出普通文字",tip:"params.response_format = text"});
+  }
+  if(p.enable_thinking!=null)out.push({text:p.enable_thinking?"开启思考":"关闭思考",tip:"params.enable_thinking：发送时转成 chat_template_kwargs.enable_thinking"});
+  const unused=["model","stream","stream_options","n"].filter(k=>k in p);
+  const known=new Set(["max_tokens","max_completion_tokens","temperature","response_format","enable_thinking",...unused]);
+  const other=Object.keys(p).filter(k=>!known.has(k));
+  if(other.length)out.push({text:"其他参数："+other.map(k=>`${k} = ${tsShort(p[k])}`).join("，"),tip:"原样发给模型服务"});
+  if(unused.length)out.push({text:`测试时不用：${unused.join("、")}`,tip:"模型用新建面板里填的，请求一律按流式发送；这几项由测试程序决定",tone:"faint"});
+  return out;
+}
+function tsShort(v){const s=typeof v==="string"?v:JSON.stringify(v);return s.length>60?s.slice(0,60)+"…":s}
+/* 多久以前: 刚刚 / 5 分钟前 / 3 小时前 / 2 天前, 一个月以上写日期(放在窄的数字格里也不会挤出去) */
+function tsAgo(iso,now){
+  const d=toDate(iso);if(!d)return "—";
+  const s=Math.max(0,((now||Date.now())-d.getTime())/1000);
+  if(s<60)return "刚刚";if(s<3600)return Math.floor(s/60)+" 分钟前";if(s<86400)return Math.floor(s/3600)+" 小时前";
+  if(s<30*86400)return Math.floor(s/86400)+" 天前";
+  return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+}
+/* 搜到的文字标出来: 先转义再标, 不分大小写 */
+function tsHighlight(text,q){
+  const s=String(text??"");q=String(q||"").trim();
+  if(!q)return esc(s);
+  const re=new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"),"gi");
+  let out="",last=0,m;
+  while((m=re.exec(s))){out+=esc(s.slice(last,m.index))+`<mark class="ts-hl">${esc(m[0])}</mark>`;last=m.index+m[0].length;if(!m[0].length)re.lastIndex++}
+  return out+esc(s.slice(last));
+}
+/* 每行最多生成的概况: 「所有行都是 512 token」/「多数是 512 token（8 行）」, 没写的按 4096 单独说 */
+function tsMtSummary(dist,unset){
+  const d=(dist||[]).filter(x=>Array.isArray(x)&&x[1]>0);
+  if(!d.length)return{value:null,text:"没有可用的行"};
+  const total=d.reduce((t,x)=>t+x[1],0),[v,n]=d[0];
+  const tail=unset?`；其中 ${fmtInt(unset)} 行没写，按 4096`:"";
+  if(d.length===1)return{value:v,text:`每行都是 ${fmtInt(v)} token${tail}`};
+  return{value:v,text:`多数是 ${fmtInt(v)} token（${fmtInt(n)} / ${fmtInt(total)} 行），另外还有 ${d.slice(1,4).map(x=>`${fmtInt(x[0])}（${fmtInt(x[1])} 行）`).join("、")}${d.length>4?" 等":""}${tail}`};
+}
+
+/* ---------- 接口 ---------- */
+/* 出错时带上服务端说的原因(getJSON 只给 HTTP 状态码) */
+async function tsApi(url){
+  if(OFF)throw new Error("离线报告里没有任务集");
+  let r;
+  try{r=await fetch(url,{cache:"no-store"})}catch(e){const err=new Error("连不上后端服务（"+e.message+"）");err.status=0;throw err}
+  let d=null;try{d=await r.json()}catch(e){}
+  if(!r.ok||!d||d.ok===false){const err=new Error((d&&d.error)||("HTTP "+r.status));err.status=r.status;throw err}
+  return d;
+}
+function tsFind(id){return (TS.list||[]).find(x=>x.id===id)||(TS.data&&TS.data.set&&TS.data.set.id===id?TS.data.set:null)}
+function tsLoadList(){
+  const p=TS.listLoading=tsApi("/api/task-sets")
+    .then(d=>{if(TS.listLoading===p){TS.list=d.sets||[];TS.listErr=""}})
+    .catch(e=>{if(TS.listLoading===p){TS.listErr=e.message;if(TS.list)toast("刷新任务集失败："+e.message,"error")}})
+    .finally(()=>{if(TS.listLoading===p){TS.listLoading=null;if(VIEW==="tasks"&&!TS.cur)tsRenderList()}});
+  return p;
+}
+/* 新建面板里导入了任务集: 列表要重新取 */
+function tsInvalidate(id){
+  if(VIEW==="tasks"){tsLoadList();if(id)TS.flash=id}else TS.list=null;
+}
+
+/* ---------- 路由 ---------- */
+function tsShow(id){  /* 切到任务集页面(showView 调用) */
+  TS.cur=id||"";TS.fromList=false;
+  if(!TS.list&&!TS.listLoading)tsLoadList();
+  tsRender();
+}
+function tsRoute(sub){  /* 同一页面里 #tasks ↔ #tasks/<id>(点链接、后退、前进) */
+  const id=TS_ID_RE.test(sub)?sub:"",prev=TS.cur;
+  if(id===prev)return;
+  TS.fromList=!prev&&!!id;  /* 从列表点进来的: 「← 全部任务集」用浏览器后退, 不多出一条历史 */
+  TS.focusAfter=id?"detail":prev?"row:"+prev:"";
+  TS.cur=id;closeMenus();
+  if(!id&&!TS.list&&!TS.listLoading)tsLoadList();
+  tsRender();
+  window.scrollTo(0,0);
+}
+function tsOpen(id){location.hash="#tasks/"+id}
+function tsBack(){
+  if(TS.fromList){TS.fromList=false;history.back();return}
+  const prev=TS.cur;
+  try{history.replaceState(null,"","#tasks")}catch(e){}
+  TS.cur="";TS.focusAfter="row:"+prev;
+  if(!TS.list&&!TS.listLoading)tsLoadList();
+  tsRender();window.scrollTo(0,0);
+}
+function tsRender(){if(VIEW==="tasks")TS.cur?tsRenderDetail():tsRenderList()}
+function tsRedraw(){if(TS.cur&&TS.data&&TS.dataFor===TS.cur)tsDrawChart()}  /* 换了主题: 图表按新配色重画 */
+function tsRefresh(){
+  if(TS.cur){TS.dataFor="";TS.full.clear()}  /* 详情: 连概况一起重新取(保留筛选和页码) */
+  tsLoadList();tsRender();
+}
+
+/* ---------- 公共小块 ---------- */
+function tsReportHTML(forId){
+  const r=TS.report;
+  if(!r||(forId&&r.id&&r.id!==forId))return "";
+  return `<div class="ts-report" role="status">${r.html}<button type="button" class="btn btn-ghost btn-icon btn-sm ts-report-x" data-ts-report-close aria-label="关闭检查结果" title="关闭">${icon("x")}</button></div>`;
+}
+function tsErrorHTML(title,message,what){
+  return emptyState(title,message,{iconName:"alert",action:`<button type="button" class="btn btn-secondary" data-ts-retry="${what}">${icon("refresh")}重试</button>`});
+}
+function tsSkOv(){
+  const line=w=>`<div class="skeleton" style="height:12px;width:${w}%;margin-top:14px"></div>`;
+  return `<div class="ov"><div><div class="skeleton" style="height:12px;width:18%"></div>${line(86)}${line(72)}${line(80)}</div>
+    <div class="ov-stats">${'<div class="stat"><div class="skeleton" style="height:10px;width:50%"></div><div class="skeleton" style="height:26px;width:62%;margin-top:12px"></div></div>'.repeat(4)}</div></div>`;
+}
+function tsSkCardItems(n){
+  return `<div class="qcard ts-sk-card" aria-hidden="true"><div class="skeleton" style="height:14px;width:36%"></div>
+    <div class="skeleton" style="height:56px"></div><div class="skeleton" style="height:12px;width:70%"></div><div class="skeleton" style="height:12px;width:45%"></div></div>`.repeat(n);
+}
+function tsSkCards(n){return `<div class="qb-list">${tsSkCardItems(n)}</div>`}
+function tsLink(s){return `<a class="qb-link" href="#tasks/${esc(s.id)}">「${esc(s.name)}」</a>`}
+function tsImportBusy(on){
+  document.querySelectorAll("[data-ts-import]").forEach(b=>{
+    setBusy(b,on);
+    const sp=b.querySelector("span");if(sp)sp.textContent=on?"正在检查…":"导入任务集";
+    if(b.id==="tsImportBtn")b.setAttribute("aria-label",on?"正在检查…":"导入任务集");
+  });
+}
+
+/* ---------- 列表 ---------- */
+function tsRenderList(){
+  const el=$("tasksBody");if(!el)return;
+  const rep=tsReportHTML("");
+  if(!TS.list){
+    el.innerHTML=rep+(TS.listErr?tsErrorHTML("没能加载任务集",TS.listErr,"list"):tsSkOv()+
+      `<div class="sec"><div class="skeleton" style="height:14px;width:22%"></div><div class="ts-sk-rows">${'<div class="skeleton" style="height:14px"></div>'.repeat(6)}</div></div>`);
+    buildJump("tasksJump",null);return;
+  }
+  if(!TS.list.length){el.innerHTML=rep+tsEmptyHTML()+tsFormatSec();buildJump("tasksJump",null);tsFocusAfter();return}
+  el.innerHTML=rep+tsListOverview()+panel({id:"ts-list",title:"全部任务集",jump:"任务集列表",
+    desc:"点一行查看每一行请求；新导入的排在最前面。「用过」只统计 3.6.0 之后的速度测试",tables:[tsListSpec()]})+tsFormatSec();
+  buildJump("tasksJump",el);
+  tsFlashRow();
+  tsFocusAfter();
+}
+function tsEmptyHTML(){
+  return `<div class="empty ts-empty">${icon("file-json")}<div class="empty-title">还没有任务集</div>
+    <div class="empty-desc">任务集是你自己的一批请求（JSONL 文件，每行一个），速度测试时轮流发给模型，看你的业务跑得多快。</div>
+    <ol class="ts-steps"><li><b>下载模板</b><span>每种写法都有示例</span></li><li><b>照着改</b><span>换成自己的请求</span></li><li><b>导入</b><span>也可以直接拖到这一页上</span></li></ol>
+    <div class="ts-empty-acts"><button type="button" class="btn btn-primary" data-ts-import>${icon("upload")}<span>导入任务集</span></button>
+      <button type="button" class="btn btn-secondary" data-ts-tpl>${icon("download")}下载模板</button></div></div>`;
+}
+function tsListOverview(){
+  const L=TS.list,valid=L.reduce((t,s)=>t+s.valid,0),total=L.reduce((t,s)=>t+s.total,0);
+  const badSets=L.filter(s=>s.total>s.valid),badLines=badSets.reduce((t,s)=>t+s.total-s.valid,0);
+  const last=L.reduce((m,s)=>!m||(s.imported_utc||"")>(m.imported_utc||"")?s:m,null);
+  const most=L.filter(s=>s.uses).sort((a,b)=>b.uses-a.uses)[0];
+  const concl=[{tone:"info",html:`一共 <b>${fmtInt(L.length)}</b> 个任务集，能用的请求一共 <b>${fmtInt(valid)}</b> 条。`},
+    badLines?{tone:"warn",html:`有 <b>${fmtInt(badSets.length)}</b> 个任务集带有问题的行（一共 ${fmtInt(badLines)} 行），测试时会跳过这些行：${badSets.slice(0,3).map(tsLink).join("、")}${badSets.length>3?" 等":""}。`}
+      :{tone:"good",html:"每个任务集的每一行都能用。"},
+    {tone:"info",html:`最近一次导入是 <b>${esc(timeText(last.imported_utc))}</b>：${tsLink(last)}。`},
+    most?{tone:"info",html:`用得最多的是 ${tsLink(most)}，在速度测试里用过 <b>${most.uses}</b> 次。`}
+      :{tone:"info",html:"还没有在速度测试里用过任务集：新建速度测试时勾选「自定义任务集」，再选一个；或者在这里点「在速度测试里使用」。"}];
+  const stats=stat("任务集",fmtInt(L.length),"个",{sub:`文件一共 ${esc(fmtBytes(L.reduce((t,s)=>t+s.size,0)))}`})+
+    stat("能用的请求",fmtInt(valid),"条",{sub:`总行数 ${fmtInt(total)}`})+
+    stat("有问题的行",fmtInt(badLines),"行",{sub:badLines?`在 ${badSets.length} 个任务集里，测试时跳过`:"没有"})+
+    stat("最近导入",esc(tsAgo(last.imported_utc)),"",{sub:`${esc(timeText(last.imported_utc))} · ${esc(last.name)}`});
+  return overview(concl,stats,{title:"概况"});
+}
+function tsListSpec(){
+  return{id:"ts-list-t",title:`任务集 <span class="dt-sub">${fmtInt(TS.list.length)} 个</span>`,exportName:"任务集列表",search:TS.list.length>8,pageSize:20,pageSizes:[10,20,50,100],rowKey:s=>s.id,
+    rows:TS.list.map(s=>Object.assign({_cls:"is-link"},s)),empty:"没有任务集",
+    columns:[
+      {key:"name",label:"名称",type:"html",sticky:true,sortValue:s=>s.name,text:(v,s)=>s.name,
+        get:s=>`<a class="ts-name-link" href="#tasks/${esc(s.id)}" title="${esc(s.name)}">${esc(s.name)}</a>${s.busy?` <span class="badge is-info" title="有速度测试正在用它">${icon("clock")}测试中</span>`:""}`},
+      {key:"valid",label:"可用 / 总行数",type:"html",align:"right",sortValue:s=>s.valid,text:(v,s)=>`${s.valid} / ${s.total}`,tip:"测试时会发送的行 / 文件里的行（空行不算）",
+        get:s=>`<span class="ts-count"><b>${fmtInt(s.valid)}</b> / ${fmtInt(s.total)}</span>`},
+      {key:"bad",label:"有问题",type:"status",sortValue:s=>s.total-s.valid,tip:"格式不对、没有消息或输入太长的行，测试时跳过",
+        get:s=>s.total>s.valid?{tone:"warn",text:`${fmtInt(s.total-s.valid)} 行`,tip:"测试时跳过这些行，点进去筛选「有问题」查看原因"}:{tone:"neutral",text:"—"}},
+      {key:"json",label:"要求 JSON",unit:"条",type:"int",tip:"可用的行里带 response_format 的：测试时统计 JSON 是否合法"},
+      {key:"image",label:"带图片",unit:"条",type:"int",tip:"可用的行里带图片的：要用能看图的模型"},
+      {key:"chars_avg",label:"平均",unit:"字符",group:"输入长度",type:"int",tip:"每行发给模型的文字有多少个字符（中文 1 个字算 1 个），图片不算；只算可用的行"},
+      {key:"chars_max",label:"最长",unit:"字符",group:"输入长度",type:"int",tip:"最长的一行有多少个字符"},
+      {key:"size",label:"文件大小",type:"text",align:"right",get:s=>fmtBytes(s.size),sortValue:s=>s.size},
+      {key:"imported_utc",label:"导入时间",type:"text",get:s=>timeText(s.imported_utc),sortValue:s=>s.imported_utc||""},
+      {key:"uses",label:"用过",unit:"次",type:"int",tip:"在速度测试里用过几次（3.6.0 之后的测试才有记录）"},
+      {key:"act",label:"操作",type:"html",noSort:true,get:tsActionsHTML,text:()=>""}]};
+}
+function tsActionsHTML(s){
+  const b=(act,ic,label)=>`<button type="button" class="btn btn-ghost btn-icon btn-sm ts-act${act==="delete"?" ts-act-del":""}" data-ts-act="${act}" data-id="${esc(s.id)}" title="${esc(label)}" aria-label="${esc(label)}：${esc(s.name)}">${icon(ic)}</button>`;
+  return `<span class="dt-actions">${b("view","eye","查看")}${b("use","play","在速度测试里使用")}${b("download","download","下载原文件")}${b("rename","pencil","改名")}${b("delete","trash","删除")}</span>`;
+}
+/* 刚导入(或重复导入)的那一行短暂高亮 */
+function tsFlashRow(){
+  const id=TS.flash;if(!id)return;
+  const tr=document.querySelector(`[data-dt="ts-list-t"] tr[data-rk="${CSS.escape(id)}"]`);if(!tr)return;
+  TS.flash="";
+  tr.classList.add("is-flash");
+  if(tr.getBoundingClientRect().bottom>innerHeight-8)tr.scrollIntoView({block:"nearest"});  /* 只滚到刚好看得到, 上面的检查结果尽量留在屏幕上 */
+  setTimeout(()=>tr.classList.remove("is-flash"),1600);
+}
+/* 页面切换后焦点放到合适的地方: 进详情放到名称上, 回列表放回刚才那一行 */
+function tsFocusAfter(){
+  const f=TS.focusAfter;if(!f)return;
+  const a=document.activeElement;
+  if(a&&a!==document.body&&!$("tasksBody").contains(a)&&!a.closest(".nav"))return;  /* 焦点在别处(比如搜索框), 不去抢 */
+  TS.focusAfter="";
+  const el=f==="detail"?$("tsNameH"):f.startsWith("row:")?document.querySelector(`[data-dt="ts-list-t"] tr[data-rk="${CSS.escape(f.slice(4))}"] .ts-name-link`):null;
+  if(el)el.focus({preventScroll:true});
+}
+/* 文件格式说明: 默认收起; 手机上每个字段排成一块 */
+function tsFormatSec(){
+  const row=(f,need,what,eg)=>`<tr><td>${f}</td><td>${need}</td><td>${what}</td><td>${eg}</td></tr>`;
+  return `<section class="sec ts-format" id="ts-format" data-jump="文件格式说明"><details class="fmt-help">
+    <summary>${icon("chevron-down")}文件格式说明：每行一个 JSON 请求</summary>
+    <div class="fmt-body">
+      <p>每行一个 JSON 对象，空行会被忽略，不能写注释。模型名用新建速度测试里填的，请求一律按流式发送，所以不用写 <code>model</code>、<code>stream</code>。
+        测试时各行按固定顺序打乱后轮流发送，行数少于「同时请求数 × 每个并发发几次」时会重复使用（结果里标「已循环」，重复的请求可能因为命中缓存而偏快）。
+        不知道怎么写时，先点「下载模板」，每种写法都有一两行示例。</p>
+      <div class="table-wrap"><table class="table fmt-table">
+        <thead><tr><th>字段</th><th>必填</th><th>含义</th><th>示例</th></tr></thead>
+        <tbody>
+          ${row("<code>messages</code>","是","按顺序发给模型的消息列表，每条有 role 和 content",'<code>[{"role":"user","content":"你好"}]</code>')}
+          ${row("<code>role</code>","是","谁说的：system 系统提示、user 用户、assistant 模型之前的回答、tool 工具结果",'<code>"system"</code>')}
+          ${row("<code>content</code>","是","一段文字；带图片时写成列表，里面放文字项和图片项",'<code>"用一句话介绍你自己"</code>')}
+          ${row("content 里的文字","—","列表里的文字项",'<code>{"type":"text","text":"图里有什么？"}</code>')}
+          ${row("content 里的图片","—","url 用 <code>data:image/png;base64,…</code>，或模型服务能访问到的图片网址；每张至少 28×28 像素",'<code>{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBOR…"}}</code>')}
+          ${row("<code>params</code>","否","这一行额外带的请求参数，原样发给模型服务（model、stream、stream_options、n 由测试程序决定，写了也不用）",'<code>{"max_tokens":512,"temperature":0.3}</code>')}
+          ${row("<code>params.<wbr>max_tokens</code>","否","最多生成多少 token；不写按 4096，超过 8192 按 8192；也可以写 max_completion_tokens","<code>512</code>")}
+          ${row("<code>params.<wbr>temperature</code>","否","随机性，0 最稳定，不小于 0","<code>0.3</code>")}
+          ${row("<code>params.<wbr>response_format</code>","否","要求输出 JSON，带了它的行会统计 JSON 合法率；json_schema 要写 name 和 schema",'<code>{"type":"json_object"}</code>')}
+          ${row("<code>params.<wbr>enable_thinking</code>","否","思考开关（Qwen3 等），会转成 chat_template_kwargs.enable_thinking","<code>false</code>")}
+          ${row("<code>meta</code>","否","备注，不会发给模型；meta.prompt_tokens 超过 60000 的行会被跳过",'<code>{"note":"写给自己看的说明"}</code>')}
+        </tbody></table></div>
+    </div></details></section>`;
+}
+
+/* ---------- 详情 ---------- */
+function tsViewState(id){return Object.assign({filter:"all",page:0,q:""},(TS_PREF.pos||{})[id]||{},TS.mem[id]||{})}
+function tsSaveState(){
+  const id=TS.cur;if(!id)return;
+  TS.mem[id]={filter:TS.filter,page:TS.page,q:TS.q};
+  const pos=Object.assign({},TS_PREF.pos||{});delete pos[id];pos[id]={filter:TS.filter,page:TS.page};
+  const keys=Object.keys(pos);while(keys.length>30)delete pos[keys.shift()];  /* 只记最近看过的 30 个 */
+  TS_PREF.pos=pos;TS_PREF.size=TS.size;lsSet(TS_LS,TS_PREF);
+}
+function tsUrl(head){
+  return `/api/task-set?id=${encodeURIComponent(TS.cur)}&offset=${TS.page*TS.size}&limit=${TS.size}&status=${TS.filter}&q=${encodeURIComponent(TS.q)}${head?"":"&head=0"}`;
+}
+/* 取数据: head=true 连概况一起(打开一个任务集时); 翻页、筛选、搜索只取这一页。慢的时候(超过 150 毫秒)才换成骨架, 不闪 */
+async function tsFetch(head){
+  const id=TS.cur,seq=++TS.seq;
+  const slow=!head&&TS.lines?setTimeout(()=>{const list=$("tsList");if(seq===TS.seq&&list){list.innerHTML=tsSkCardItems(Math.min(TS.size,6));list.setAttribute("aria-busy","true")}},150):null;
+  try{
+    const d=await tsApi(tsUrl(head));
+    if(seq!==TS.seq||id!==TS.cur)return;
+    const pages=Math.max(1,Math.ceil(d.total/TS.size));
+    if(TS.page>pages-1){TS.page=pages-1;tsSaveState();clearTimeout(slow);return tsFetch(head)}  /* 记住的页码超出了(比如换了筛选) */
+    if(head){TS.data=d;TS.dataErr=""}
+    TS.lines=d;TS.linesErr="";
+  }catch(e){
+    if(seq!==TS.seq||id!==TS.cur)return;
+    if(head){TS.dataErr=e.message;TS.dataStatus=e.status}else TS.linesErr=e.message;
+  }finally{clearTimeout(slow)}
+  if(head)tsRenderDetail();else tsRenderLines();
+}
+function tsRenderDetail(){
+  const el=$("tasksBody"),id=TS.cur;if(!el)return;
+  if(TS.dataFor!==id){  /* 换了一个任务集: 恢复它上次的筛选和页码, 重新取 */
+    Object.assign(TS,tsViewState(id),{data:null,dataErr:"",dataStatus:0,dataFor:id,lines:null,linesErr:""});
+    tsFetch(true);
+  }
+  const back=`<button type="button" class="btn btn-ghost btn-sm ts-back" data-ts-back>${icon("arrow-left")}全部任务集</button>`;
+  if(TS.dataErr){
+    el.innerHTML=tsReportHTML(id)+`<div class="ts-head">${back}</div>`+(TS.dataStatus===404
+      ?emptyState("这个任务集不存在","可能已经被删除了。已经跑完的测试结果不受影响",{iconName:"inbox",action:`<button type="button" class="btn btn-secondary" data-ts-back>${icon("arrow-left")}回到全部任务集</button>`})
+      :tsErrorHTML("没能加载这个任务集",TS.dataErr,"detail"));
+    buildJump("tasksJump",null);return;
+  }
+  if(!TS.data){
+    el.innerHTML=tsReportHTML(id)+`<div class="ts-head">${back}<div class="skeleton" style="height:24px;width:34%;margin-top:6px"></div>
+      <div class="skeleton" style="height:12px;width:22%;margin-top:6px"></div></div>`+tsSkOv()+
+      `<div class="sec"><div class="skeleton" style="height:14px;width:18%"></div><div style="margin-top:20px">${tsSkCards(3)}</div></div>`;
+    buildJump("tasksJump",null);return;
+  }
+  const s=TS.data.set,uses=TS.data.uses||[];
+  TS.bins=lenBins(s.chars);
+  el.innerHTML=tsReportHTML(id)+tsDetailHead(s,back)+tsDetailOverview(s,uses)+tsLenPanel(s)+tsLinesSec();
+  disposeDetached();
+  tsDrawChart();
+  tsRenderLines();
+  buildJump("tasksJump",el);
+  tsFocusAfter();
+}
+function tsDetailHead(s,back){
+  return `<div class="ts-head">${back}
+    <div class="ts-head-main">
+      <div class="ts-title" id="tsTitle">${tsTitleHTML(s)}</div>
+      <div class="ts-actions">
+        <button type="button" class="btn btn-primary btn-sm" data-ts-act="use" data-id="${esc(s.id)}" title="打开新建速度测试，自动勾选「自定义任务集」并选中它">${icon("play")}<span>在速度测试里使用</span></button>
+        <button type="button" class="btn btn-secondary btn-sm ts-dl" data-ts-act="download" data-id="${esc(s.id)}" title="下载原文件（文件名用任务集名称）" aria-label="下载原文件">${icon("download")}<span>下载</span></button>
+        <details class="dropdown more ts-more"><summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作" title="更多操作">${icon("more")}</summary>
+          <div class="dropdown-panel menu is-right" role="menu">
+            <button class="menu-item" type="button" data-ts-act="rename" data-id="${esc(s.id)}">${icon("pencil")}改名</button>
+            <button class="menu-item is-danger" type="button" data-ts-act="delete" data-id="${esc(s.id)}">${icon("trash")}删除这个任务集</button>
+          </div></details>
+      </div>
+    </div>
+    <div class="ts-meta">${[`导入于 ${esc(timeText(s.imported_utc))}`,`文件 ${esc(fmtBytes(s.size))}`,
+      `<span class="mono" title="任务集 id：按文件内容算出来的，内容一样的文件 id 也一样">${esc(s.id)}</span>`,
+      s.busy?`<span class="badge is-info">${icon("clock")}有速度测试正在用它</span>`:""].filter(Boolean).join('<span class="ts-dot" aria-hidden="true">·</span>')}</div>
+  </div>`;
+}
+function tsTitleHTML(s){
+  return `<h2 class="ts-name" id="tsNameH" tabindex="-1" title="${esc(s.name)}">${esc(s.name)}</h2>
+    <button type="button" class="btn btn-ghost btn-icon btn-sm ts-edit" data-ts-edit aria-label="改名：${esc(s.name)}" title="改名（回车保存，Esc 取消）">${icon("pencil")}</button>`;
+}
+function tsRunText(u){return [u.model||"?",[u.framework,u.fw_version].filter(Boolean).join(" "),u.tag,shortTime(u.started_utc),u.status&&u.status!=="done"?STATUS_NAME[u.status]||u.status:""].filter(Boolean).join(" · ")}
+function tsRunLink(u){return `<a href="#dash" class="qb-link" data-ts-run="${esc(u.run_id)}" title="到速度测试页看这次测试">${esc(tsRunText(u))}</a>`}
+function tsDetailOverview(s,uses){
+  const bad=s.total-s.valid,mt=tsMtSummary(s.mt_dist,s.mt_unset);
+  const concl=[
+    {tone:"info",html:`共 <b>${fmtInt(s.total)}</b> 行，<b>${fmtInt(s.valid)}</b> 行能用。测试时各行按固定顺序打乱后轮流发送。`},
+    bad?{tone:"warn",html:`有 <b>${fmtInt(bad)}</b> 行有问题（${[s.bad?`格式不对 ${fmtInt(s.bad)} 行`:"",s.skipped?`没有消息或输入太长 ${fmtInt(s.skipped)} 行`:""].filter(Boolean).join("，")}），测试时会跳过。
+      <a href="javascript:void 0" class="qb-link" data-ts-goto="bad">看有问题的行</a>`}:{tone:"good",html:"每一行都能用。"},
+    {tone:"info",html:`要求输出 JSON 的 <b>${fmtInt(s.json)}</b> 行（会统计 JSON 是否合法）；带图片的 <b>${fmtInt(s.image)}</b> 行${s.image?"（要用能看图的模型）":""}。`},
+    s.valid?{tone:"info",html:`输入平均 <b>${fmtInt(s.chars_avg)}</b> 字符、最长 <b>${fmtInt(s.chars_max)}</b> 字符；每次最多生成：${esc(mt.text)}。`}:null,
+    uses.length?{tone:"info",html:`在速度测试里用过 <b>${uses.length}</b> 次，最近一次：${tsRunLink(uses[0])}。`}
+      :{tone:"info",html:"还没有在速度测试里用过。点「在速度测试里使用」就能用它测一次。"}].filter(Boolean);
+  const stats=stat("能用的行",`${fmtInt(s.valid)}<small class="ts-of">/ ${fmtInt(s.total)}</small>`,"行",{sub:bad?`<span class="warn">有问题 ${fmtInt(bad)} 行</span>`:"全部能用"})+
+    stat("要求 JSON 输出",fmtInt(s.json),"行",{sub:`带图片 ${fmtInt(s.image)} 行`})+
+    stat("输入长度 · 平均",s.valid?fmtInt(s.chars_avg):"—","字符",{sub:s.valid?`最短 ${fmtInt(s.chars_min)} · 最长 ${fmtInt(s.chars_max)}`:"",tip:"每行发给模型的文字有多少个字符（中文 1 个字算 1 个），图片不算；只算能用的行"})+
+    stat("每次最多生成",mt.value!=null?fmtInt(mt.value):"—","token",{sub:esc(mt.value!=null&&(s.mt_dist||[]).length>1?"各行不一样，这是最多的":s.mt_unset?"没写的按 4096":"每行都一样"),tip:mt.text})+
+    stat("用过",fmtInt(uses.length),"次",{sub:uses.length?`最近 ${esc(shortTime(uses[0].started_utc))}`:"还没用过",tip:"在速度测试里用过几次（3.6.0 之后的测试才有记录）"})+
+    stat("文件",esc(fmtBytes(s.size)),"",{sub:`导入于 ${esc(shortTime(s.imported_utc))}`});
+  const renamed=u=>u.name&&u.name!==s.name?`<span class="faint">（当时叫「${esc(u.name)}」）</span>`:"";
+  const meta=uses.length?`<div class="ts-uses-h">用过的测试（点一下到速度测试页看）：</div><ul class="ts-uses">${uses.slice(0,5).map(u=>`<li>${tsRunLink(u)}${renamed(u)}</li>`).join("")}</ul>${uses.length>5?`<div>……还有 ${uses.length-5} 次</div>`:""}`:"";
+  return overview(concl,stats,{title:"概况",meta,cols:2});
+}
+function tsLenPanel(s){
+  const bins=TS.bins,total=bins.reduce((t,b)=>t+b.n,0);
+  const spec={id:"ts-len-t",title:"输入长度分布",exportName:"输入长度分布",columns:[{key:"label",label:"输入长度",unit:"字符",type:"text",sticky:true,tip:"每档含下限、不含上限"},
+    {key:"n",label:"行数",type:"int"},{key:"pct",label:"占比",unit:"%",type:"num",digits:1}],
+    rows:bins.map(b=>({label:lenBinText(b),n:b.n,pct:total?100*b.n/total:null})),empty:"没有能用的行"};
+  return panel({id:"ts-len",title:"输入长度分布",jump:"输入长度",
+    desc:`每行发给模型的文字有多少个字符（中文 1 个字算 1 个，图片不算），只算能用的 ${fmtInt(s.valid)} 行${s.valid?`：平均 ${fmtInt(s.chars_avg)}、最长 ${fmtInt(s.chars_max)}`:""}`,
+    chart:ccard("tsLenChart","每档有几行",{desc:"横轴是输入长度（字符），每档含下限、不含上限",h:260}),tables:[spec]});
+}
+function tsDrawChart(){
+  const bins=TS.bins||[];if(!$("tsLenChart"))return;
+  if(!bins.length){chartEmpty("tsLenChart","没有能用的行");return}
+  const total=bins.reduce((t,b)=>t+b.n,0);
+  barChart("tsLenChart",{cats:bins.map(b=>b.label),series:[{name:"行数",color:C.series[4]||C.a,data:bins.map(b=>b.n)}],unit:"行",digits:0,labels:true,
+    tip:{title:i=>`输入长度 ${lenBinText(bins[i])} 字符`,sub:i=>`占能用的行的 ${fmt(100*bins[i].n/total,1)}%`}});
+  const inst=CHARTS.get("tsLenChart");if(inst)inst.setOption({yAxis:{minInterval:1}});  /* 行数只有整数刻度 */
+}
+function tsLinesSec(){
+  const mode=PANEL_OVR.get("ts-lines")||(TS_PREF.mode==="table"?"table":"chart");
+  return `<section class="sec" id="ts-lines" data-jump="逐行查看" data-pv="${mode}">
+    <div class="sec-head"><div class="sec-head-text"><h2 class="sec-title">逐行查看</h2>
+      <p class="sec-desc">每一行发给模型的消息、参数和备注；有问题的行写明原因（和测试时实际发送的判断一样）。键盘 ← → 翻页</p></div>
+      <div class="sec-tools">${segHTML("data-pv-set",mode,[["chart","卡片","layers"],["table","表格","table"]])}</div></div>
+    <div class="qb ts-lines">
+      <div class="qb-bar"><label class="qb-search">${icon("search")}<input class="input" id="tsSearch" type="search" placeholder="搜索消息里的文字或备注" value="${esc(TS.q)}" aria-label="搜索消息里的文字或备注"></label></div>
+      <div class="qb-chiprow" id="tsChipRow"><div class="filter-chips ts-chips" id="tsChips" role="group" aria-label="筛选"></div><div class="qb-pager-top" id="tsPagerTop"></div></div>
+      <div id="tsEmpty"></div>
+      <div class="pv-chart"><div class="qb-list" id="tsList"></div></div>
+      <div class="pv-table" id="tsTable"></div>
+      <div class="qb-pager" id="tsPager"></div>
+    </div></section>`;
+}
+function tsRenderLines(){
+  const L=TS.lines,list=$("tsList");if(!list)return;
+  const chipFocus=document.activeElement&&document.activeElement.closest&&document.activeElement.closest("#tsChips [data-ts-filter]");
+  $("tsChips").innerHTML=tsChipsHTML(L&&L.counts,TS.filter);
+  if(chipFocus){const c=$("tsChips").querySelector(`[data-ts-filter="${TS.filter}"]`);if(c)c.focus({preventScroll:true})}
+  list.removeAttribute("aria-busy");
+  const clear=()=>{$("tsEmpty").innerHTML="";$("tsTable").innerHTML="";$("tsPagerTop").innerHTML="";$("tsPager").innerHTML=""};
+  if(TS.linesErr){clear();list.innerHTML="";$("tsEmpty").innerHTML=tsErrorHTML("没能加载这一页",TS.linesErr,"lines");return}
+  if(!L){clear();list.innerHTML=tsSkCardItems(3);return}
+  const pages=Math.max(1,Math.ceil(L.total/TS.size));
+  if(!L.lines.length){
+    clear();list.innerHTML="";
+    const narrowed=TS.filter!=="all"||TS.q;
+    $("tsEmpty").innerHTML=narrowed?emptyState("没有符合条件的行",TS.q?`没有找到「${TS.q}」，换个关键词或筛选条件试试`:"换一个筛选条件看看",
+      {iconName:TS.q?"search":"inbox",inline:true,action:`<button type="button" class="btn btn-secondary" data-ts-clear>${icon("x")}清除筛选</button>`})
+      :emptyState("这里没有行","",{inline:true});
+    return;
+  }
+  $("tsEmpty").innerHTML="";
+  list.innerHTML=L.lines.map(l=>tsCard(l)).join("");
+  $("tsTable").innerHTML=dataTable(tsLinesTableSpec(L.lines));
+  $("tsPagerTop").innerHTML=pagerHTML("ts",{page:TS.page,pages,compact:true,keys:true});
+  $("tsPager").innerHTML=pagerHTML("ts",{page:TS.page,pages,total:L.total,unit:"行",size:TS.size,sizes:TS_SIZES,keys:true});
+  if(list.offsetParent)tsUnclamp(list);  /* 卡片藏着(表格视图)时量不出高度, 切回卡片时再量 */
+}
+/* 实际没有被截断的文字去掉「展开全文」 */
+function tsUnclamp(root){
+  if(!root)return;
+  root.querySelectorAll(".ts-text.is-clamp").forEach(el=>{
+    const more=el.nextElementSibling;
+    if(el.scrollHeight>el.clientHeight+2||(more&&more.dataset.cut))return;
+    el.classList.remove("is-clamp");
+    if(more&&more.hasAttribute("data-ts-more"))more.remove();
+  });
+}
+function tsFirstText(l){
+  const t=(l.messages||[]).map(m=>(m.parts||[]).filter(p=>p.t==="text").map(p=>p.text).join(" ")).find(Boolean)||(l.raw&&l.raw.text)||"";
+  return t.length>160?t.slice(0,160)+"…":t;
+}
+function tsLinesTableSpec(lines){
+  return{id:"ts-lines-t",title:"逐行",exportName:"逐行查看",search:false,noSort:true,pageSize:1000,rowKey:l=>String(l.no),rows:lines,
+    columns:[{key:"no",label:"行号",type:"int",sticky:true},
+      {key:"st",label:"状态",type:"status",get:l=>{const s=tsStatusOf(l.status);return{tone:s.tone,text:s.text,icon:s.icon,tip:l.reason||s.tip}}},
+      {key:"first",label:"消息",type:"html",get:l=>`<span class="dt-ellipsis ts-first" title="${esc(tsFirstText(l))}">${tsHighlight(tsFirstText(l),TS.q)}</span>`,text:(v,l)=>tsFirstText(l)},
+      {key:"chars",label:"输入长度",unit:"字符",type:"int"},
+      {key:"mt",label:"最多生成",unit:"token",type:"int"},
+      {key:"tags",label:"标记",type:"text",tip:"要求 JSON 输出 / 带几张图 / 几条消息",
+        get:l=>[l.json?"要求 JSON":"",l.images.length?`${l.images.length} 张图`:"",l.messages&&l.messages.length>1?`${l.messages.length} 条消息`:""].filter(Boolean).join(" · ")||"—"},
+      {key:"why",label:"原因 / 提醒",type:"text",wrap:true,get:l=>[l.reason,...l.warns].filter(Boolean).join("；")||"—"},
+      {key:"note",label:"备注",type:"html",get:l=>{const n=(l.meta&&typeof l.meta.note==="string"&&l.meta.note)||"";return n?`<span class="dt-ellipsis ts-note-cell" title="${esc(n)}">${tsHighlight(n,TS.q)}</span>`:"—"},
+        text:(v,l)=>(l.meta&&typeof l.meta.note==="string"&&l.meta.note)||""}],
+    expand:l=>tsCard(l,{inTable:true}),note:"点一行展开看完整内容"};
+}
+function tsCard(l,opt={}){
+  const st=tsStatusOf(l.status),q=TS.q;
+  const badges=[l.json?`<span class="badge is-info" title="带 response_format，测试时统计 JSON 是否合法">${icon("braces")}要求 JSON</span>`:"",
+    l.images.length?`<span class="badge" title="消息里带图片，要用能看图的模型">${icon("image")}${l.images.length} 张图</span>`:"",
+    l.warns.length?`<span class="badge is-warn" title="这些行照常发送">${icon("alert")}${l.warns.length} 条提醒</span>`:""].join("");
+  const head=`<header class="qcard-head"><span class="qcard-where">第 ${fmtInt(l.no)} 行</span><span class="qv is-${st.tone}" title="${esc(st.tip)}">${icon(st.icon,"icon-sm")}${esc(st.text)}</span>${badges}
+    ${l.chars!=null?`<span class="ts-card-len" title="发给模型的文字有多少个字符（图片不算）">${fmtInt(l.chars)} 字符</span>`:""}</header>`;
+  const reason=l.status!=="ok"?`<div class="ts-reason is-${st.tone}">${icon(l.status==="skip"?"ban":"x-circle","icon-sm")}<span><b>原因：</b>${esc(l.reason||"—")}</span></div>`:"";
+  const warns=l.warns.length?`<ul class="ts-warns" aria-label="提醒">${l.warns.map(w=>`<li>${icon("alert","icon-sm")}<span>${esc(w)}</span></li>`).join("")}</ul>`:"";
+  const msgs=l.messages?`<div class="ts-msgs">${l.messages.map((m,i)=>tsMsgHTML(l,m,i,q)).join("")||`<div class="faint small">（messages 是空的）</div>`}</div>`
+    :l.raw?`<div class="ts-msgs"><div class="ts-msg is-raw"><div class="ts-role">这一行的原文（不能按消息显示）</div>${tsTextHTML(l,l.raw,"raw",q)}</div></div>`:"";
+  const items=l.status==="ok"||l.params?tsParamItems(l.params,l.mt):[];
+  const params=items.length?`<div class="ts-params" aria-label="参数">${items.map(x=>`<span class="ts-param${x.tone?" is-"+x.tone:""}"${x.tip?` title="${esc(x.tip)}"`:""}>${esc(x.text)}</span>`).join("")}</div>`:"";
+  const meta=l.meta&&typeof l.meta==="object"?l.meta:null;
+  const noteText=meta&&typeof meta.note==="string"?meta.note:"";
+  const metaExtra=meta?Object.keys(meta).filter(k=>k!=="note").map(k=>k==="prompt_tokens"?`约 ${fmtInt(meta[k])} token（meta.prompt_tokens）`:`${k} = ${tsShort(meta[k])}`):[];
+  const note=noteText||metaExtra.length?`<div class="ts-note">${icon("info","icon-sm")}<span>${noteText?`<b>备注：</b>${tsHighlight(noteText,q)}`:""}${metaExtra.length?`<span class="faint">${noteText?" · ":""}${esc(metaExtra.join(" · "))}</span>`:""}</span></div>`:"";
+  const foot=`<footer class="qcard-foot ts-card-foot">
+    <button type="button" class="btn btn-ghost btn-sm" data-ts-copy="${l.no}" title="复制这一行的原始 JSON（和文件里一模一样）">${icon("copy")}复制这一行 JSON</button>
+    <button type="button" class="btn btn-ghost btn-sm" data-ts-raw="${l.no}" title="格式化显示这一行的 JSON">${icon("braces")}看原始 JSON</button></footer>`;
+  return `<article class="qcard ts-card${l.status!=="ok"?" is-"+st.tone:""}" data-no="${l.no}" aria-label="第 ${l.no} 行，${esc(st.text)}">${head}${reason}${warns}${msgs}${params}${note}${foot}</article>`;
+}
+function tsMsgHTML(l,m,i,q){
+  const extra=[m.name?`名字 ${m.name}`:"",m.tool_call_id?`回应工具调用 ${m.tool_call_id}`:"",
+    m.tool_calls?`调用工具：${m.tool_calls.join("、")}${m.tool_calls_n>m.tool_calls.length?` 等 ${m.tool_calls_n} 个`:""}`:""].filter(Boolean);
+  let html="",imgs=[];
+  const flush=()=>{if(imgs.length){html+=`<div class="ts-img-row">${imgs.join("")}</div>`;imgs=[]}};
+  (m.parts||[]).forEach((p,j)=>{
+    if(p.t==="img"){imgs.push(tsImgHTML(l,p.i));return}
+    flush();
+    html+=p.t==="text"?tsTextHTML(l,p,`${i}-${j}`,q):`<div class="faint small">（${esc(p.type)} 类型的内容，这里不显示）</div>`;
+  });
+  flush();
+  const role=m.role||"";
+  return `<div class="ts-msg ts-role-${esc(/^[a-z]+$/.test(role)?role:"other")}"><div class="ts-role" title="${esc(role?"role: "+role:"这条消息没写 role")}">${esc(tsRoleName(m.role))}${extra.length?`<span class="ts-role-extra">${esc(extra.join(" · "))}</span>`:""}</div>
+    ${html||(m.tool_calls?"":`<div class="faint small">（没有内容）</div>`)}</div>`;
+}
+function tsTextHTML(l,p,key,q){
+  const cut=!!p.cut;
+  return `<div class="ts-text is-clamp" data-key="${esc(key)}">${tsHighlight(p.text,q)}${cut?`<span class="ts-cut">……</span>`:""}</div>`+
+    `<button type="button" class="ts-more" data-ts-more="${l.no}" data-key="${esc(key)}"${cut?' data-cut="1"':""} aria-expanded="false">展开全文${cut?`（共 ${fmtInt(p.len)} 字）`:""}</button>`;
+}
+function tsImgSrc(no,i){return `/api/task-set-image?id=${encodeURIComponent(TS.cur)}&line=${no}&idx=${i}`}
+function tsImgCap(im){return [im.width&&im.height?`${im.width}×${im.height}`:"",im.format||"",im.bytes?fmtBytes(im.bytes):""].filter(Boolean).join(" · ")}
+function tsImgHTML(l,i){
+  const im=l.images[i]||{};
+  if(im.kind==="url")return `<div class="ts-img is-url" title="网址形式的图片：测试时由模型服务自己去下载，这里不加载">${icon("image")}<span class="ts-img-body"><span class="ts-img-cap">网址图片（这里不加载）</span><span class="ts-url mono">${esc(im.url)}${im.cut?"…":""}</span></span></div>`;
+  if(im.kind!=="data")return `<div class="ts-img is-wrong">${icon("x-circle")}<span class="ts-img-body"><span class="ts-img-cap">第 ${i+1} 张图写得不对</span><span class="ts-img-msg">${esc(im.msg||"")}</span></span></div>`;
+  /* 服务端已经知道这张图解不开(损坏、不是图片): 不去请求, 直接写原因 */
+  if(!im.format)return `<div class="ts-img is-bad" title="${esc(im.msg||"")}"><span class="ts-thumb is-broken">${icon("image")}<span>显示不了</span></span>
+    <span class="ts-img-cap">第 ${i+1} 张图 · ${esc(fmtBytes(im.bytes))}</span><span class="ts-img-msg">${icon("x-circle","icon-sm")}${esc(im.msg||"数据读不出来")}</span></div>`;
+  const cap=tsImgCap(im)||"读不出尺寸";
+  return `<button type="button" class="ts-img${im.ok===false?" is-bad":im.level==="warn"?" is-warn":""}" data-ts-img="${l.no}" data-idx="${i}" title="点一下看大图${im.msg?"："+esc(im.msg):""}" aria-label="第 ${i+1} 张图，${esc(cap)}，点一下看大图">
+    <span class="ts-thumb"><img loading="lazy" decoding="async" alt="" src="${esc(tsImgSrc(l.no,i))}" data-ts-thumb="${esc(im.ok===false&&im.msg?im.msg:"")}"></span>
+    <span class="ts-img-cap">${esc(cap)}</span>${im.msg?`<span class="ts-img-msg">${icon(im.ok===false?"x-circle":"alert","icon-sm")}${esc(im.msg)}</span>`:""}</button>`;
+}
+
+/* ---------- 操作 ---------- */
+async function tsImport(file){
+  if(!file)return;
+  if(TS.importing){toast("正在导入上一个文件，请稍等","warning");return}
+  const chk=tsFileCheck(file.name);
+  const fail=text=>{TS.report={id:"",html:alertBox("bad",`<b>${esc(text)}</b>`)};tsRender();toast(text,"error")};
+  if(!chk.ok){fail(chk.reason);return}
+  if(file.size>15*1024*1024){fail(`${file.name} 有 ${fmtBytes(file.size)}，超过 15 MB 的上限：请拆成几个小文件，或放到服务器上用命令行 --custom-file 引用`);return}
+  TS.importing=true;tsImportBusy(true);
+  try{
+    const body={kind:"tasks",name:file.name,content:await file.text()};
+    if(new Blob([JSON.stringify(body)]).size>UPLOAD_BODY_MAX){fail(`${file.name} 太大：上传时超过服务一次最多收的 16 MB，请拆成几个小文件`);return}
+    const d=await postJSON("/api/scenario-upload",body);
+    TS.report={id:d.ok?d.file_id:"",html:taskReportHtml(d,file.name)};
+    if(!d.ok){tsRender();toast("导入失败："+(d.error||"没有一行能用"),"error");return}
+    await tsLoadList();
+    loadScenarioAssets();  /* 新建面板的下拉也刷新 */
+    TS.flash=d.file_id;
+    if(d.exists){
+      toast(`这个任务集已经导入过（名称：${d.name}），没有重复保存`,"info",8000,{label:"打开它",onClick:()=>tsOpen(d.file_id)});
+      tsRender();
+    }else{
+      toast(`已导入「${d.name}」`,"success",3000);
+      if(TS.cur===d.file_id)tsRender();else tsOpen(d.file_id);
+    }
+  }catch(e){fail("读取文件失败："+e.message)}
+  finally{TS.importing=false;tsImportBusy(false)}
+}
+function tsDownload(id){
+  const a=document.createElement("a");a.href="/api/task-set-download?id="+encodeURIComponent(id);a.download="";
+  document.body.appendChild(a);a.click();a.remove();
+}
+/* 在速度测试里使用: 打开新建速度测试, 勾选「自定义任务集」、选中它, 抽屉滚到这一栏并短暂高亮 */
+async function tsUse(id){
+  const s=tsFind(id);
+  const chip=document.querySelector('#scnChips input[value="custom"]');
+  if(chip&&!chip.checked){chip.checked=true;scnSyncVisibility()}
+  const sel=$("fTaskSel");
+  if(![...sel.options].some(o=>o.value===id))await loadScenarioAssets(null,id);
+  if(![...sel.options].some(o=>o.value===id)){toast("新建面板里找不到这个任务集，请刷新页面再试","error");return}
+  sel.value=id;scnAssetRemember();scnAssetSync();
+  toggleLauncher("launcher",true);
+  launcherSummary();
+  const row=$("scnCustomRow");
+  requestAnimationFrame(()=>{
+    row.scrollIntoView({block:"center",behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});
+    row.classList.remove("is-flash");void row.offsetWidth;row.classList.add("is-flash");
+    setTimeout(()=>row.classList.remove("is-flash"),1800);
+    const trig=sel._cs&&sel._cs.trigger;(trig||sel).focus({preventScroll:true});
+  });
+  toast(`已在新建速度测试里选中「${s?s.name:id}」`,"success",2500);
+}
+/* 改名(列表和「更多」菜单): 弹窗里改, 自动全选; 回车保存, Esc 关闭; 没改动或不合规时保存按钮不能点 */
+function tsRenameDialog(id){
+  const s=tsFind(id);if(!s)return;
+  Modal.open("改名",`<form class="ts-rename" id="tsRenameForm" novalidate>
+      <label class="ts-rename-label" for="tsRenameInput">任务集名称</label>
+      <input class="input" id="tsRenameInput" value="${esc(s.name)}" autocomplete="off" spellcheck="false" aria-describedby="tsRenameHelp">
+      <div class="ts-name-help" id="tsRenameHelp" aria-live="polite">1–${TS_NAME_MAX} 个字；回车保存，Esc 取消</div>
+      <div class="dialog-actions"><button type="button" class="btn btn-secondary" data-ts-dialog-cancel>取消</button>
+        <button type="submit" class="btn btn-primary" id="tsRenameSave" disabled>保存</button></div></form>`,{dialog:true});
+  const inp=$("tsRenameInput"),help=$("tsRenameHelp"),save=$("tsRenameSave");
+  const check=()=>{const c=tsNameCheck(inp.value),same=c.ok&&c.name===s.name;
+    save.disabled=!c.ok||same;inp.setAttribute("aria-invalid",String(!c.ok));
+    help.classList.toggle("is-error",!c.ok);help.textContent=c.ok?(same?"名称没有改动":`${c.n} / ${TS_NAME_MAX} 个字；回车保存，Esc 取消`):c.error;return c};
+  inp.addEventListener("input",check);
+  $("tsRenameForm").addEventListener("submit",async e=>{
+    e.preventDefault();const c=check();if(!c.ok||c.name===s.name)return;
+    setBusy(save,true);
+    const err=await tsDoRename(id,c.name);
+    setBusy(save,false);
+    if(err){help.textContent=err;help.classList.add("is-error");inp.focus();return}
+    Modal.close();tsRefocusRename(id);
+  });
+  $("tsRenameForm").querySelector("[data-ts-dialog-cancel]").addEventListener("click",()=>Modal.close());
+  setTimeout(()=>{inp.focus();inp.select()},0);
+}
+/* 保存新名称; 成功后就地更新列表和详情, 返回错误说明(成功时为空) */
+async function tsDoRename(id,name){
+  const d=await postJSON("/api/task-set-rename",{id,name});
+  if(!d.ok)return d.error||"改名失败";
+  (TS.list||[]).forEach(x=>{if(x.id===id)x.name=d.name});
+  if(TS.data&&TS.data.set&&TS.data.set.id===id)TS.data.set.name=d.name;
+  toast(`已改名为「${d.name}」`,"success",2500);
+  tsRender();
+  loadScenarioAssets();  /* 新建面板的下拉跟着改 */
+  return "";
+}
+/* 改完名后焦点放回原处: 列表里是这一行的「改名」, 详情里是名称旁的笔 */
+function tsRefocusRename(id){
+  const el=TS.cur?document.querySelector("#tsTitle [data-ts-edit]"):document.querySelector(`[data-dt="ts-list-t"] [data-ts-act="rename"][data-id="${CSS.escape(id)}"]`);
+  if(el)el.focus({preventScroll:true});
+}
+/* 详情页头: 点名称旁的笔原地改名; 回车保存, Esc 取消, 空名或超长当场提示 */
+function tsInlineRename(){
+  const s=TS.data&&TS.data.set,box=$("tsTitle");if(!s||!box)return;
+  box.innerHTML=`<form class="ts-rename-inline" id="tsInline" novalidate>
+    <input class="input ts-name-input" id="tsInlineInput" value="${esc(s.name)}" autocomplete="off" spellcheck="false" aria-label="任务集名称" aria-describedby="tsInlineHelp">
+    <button type="submit" class="btn btn-primary btn-sm" id="tsInlineSave" disabled>保存</button>
+    <button type="button" class="btn btn-ghost btn-sm" data-ts-inline-cancel>取消</button>
+    <div class="ts-name-help" id="tsInlineHelp" aria-live="polite">回车保存，Esc 取消</div></form>`;
+  const inp=$("tsInlineInput"),help=$("tsInlineHelp"),save=$("tsInlineSave");
+  const cancel=()=>{box.innerHTML=tsTitleHTML(s);const b=box.querySelector("[data-ts-edit]");if(b)b.focus()};
+  const check=()=>{const c=tsNameCheck(inp.value),same=c.ok&&c.name===s.name;
+    save.disabled=!c.ok||same;inp.setAttribute("aria-invalid",String(!c.ok));
+    help.classList.toggle("is-error",!c.ok);help.textContent=c.ok?(same?"名称没有改动；Esc 取消":`${c.n} / ${TS_NAME_MAX} 个字；回车保存，Esc 取消`):c.error;return c};
+  inp.addEventListener("input",check);
+  inp.addEventListener("keydown",e=>{if(e.key==="Escape"){e.preventDefault();e.stopPropagation();cancel()}});
+  box.querySelector("[data-ts-inline-cancel]").addEventListener("click",cancel);
+  $("tsInline").addEventListener("submit",async e=>{
+    e.preventDefault();const c=check();
+    if(!c.ok){inp.focus();return}
+    if(c.name===s.name){cancel();return}
+    setBusy(save,true);
+    const err=await tsDoRename(s.id,c.name);
+    if(err){setBusy(save,false);help.textContent=err;help.classList.add("is-error");inp.focus();return}
+    tsRefocusRename(s.id);
+  });
+  inp.focus();inp.select();
+}
+async function tsDelete(id){
+  const s=tsFind(id);if(!s)return;
+  if(s.busy){toast("有速度测试正在用这个任务集，等测试结束（或停止它）之后再删除","warning");return}
+  const ok=await confirmDialog({title:"删除任务集",confirmText:"删除",danger:true,
+    message:`删除「${s.name}」？\n\n已经跑完的测试结果不受影响，只是以后新建速度测试时不能再选它。`+
+      (s.uses?`\n这个任务集在速度测试里用过 ${s.uses} 次。`:"")+"\n删除后不能恢复，需要的话先下载原文件留一份。"});
+  if(!ok)return;
+  const d=await postJSON("/api/task-set-delete",{id});
+  if(!d.ok){toast("删除失败："+d.error,"error");return}
+  toast(`已删除「${s.name}」`,"success",3000);
+  const i=(TS.list||[]).findIndex(x=>x.id===id),next=TS.list&&(TS.list[i+1]||TS.list[i-1]);
+  if(TS.list)TS.list=TS.list.filter(x=>x.id!==id);
+  if(TS.report&&TS.report.id===id)TS.report=null;
+  if(TS.cur===id){TS.cur="";TS.dataFor="";TS.data=null;TS.fromList=false;try{history.replaceState(null,"","#tasks")}catch(e){}}
+  TS.focusAfter=next?"row:"+next.id:"";
+  tsRender();  /* 列表就地更新, 不整页刷新 */
+  if(!next){const b=$("tsImportBtn");if(b)b.focus()}
+  loadScenarioAssets();
+}
+/* 复制一行: 取文件里这一行的原文(图片的 base64 也原样带上) */
+async function tsCopyLine(no){
+  try{
+    const d=await tsApi(`/api/task-set-line?id=${encodeURIComponent(TS.cur)}&line=${no}&raw=1`);
+    await tsCopyText(d.text);
+    toast(`已复制第 ${no} 行的 JSON`,"success",2000);
+  }catch(e){toast("复制失败："+e.message+"。可以点「看原始 JSON」手动选中复制","error")}
+}
+function tsCopyText(text){
+  if(navigator.clipboard&&window.isSecureContext)return navigator.clipboard.writeText(text);
+  return new Promise((res,rej)=>{  /* 不是 https 或本机地址时浏览器不给剪贴板接口: 用老办法 */
+    const prev=document.activeElement,t=document.createElement("textarea");
+    t.value=text;t.setAttribute("readonly","");t.style.cssText="position:fixed;left:-9999px;top:0;opacity:0";
+    document.body.appendChild(t);t.select();
+    let ok=false;try{ok=document.execCommand("copy")}catch(e){}
+    t.remove();if(prev&&prev.focus)prev.focus({preventScroll:true});
+    ok?res():rej(new Error("浏览器没有允许复制"));
+  });
+}
+/* 取某一行的全文(「展开全文」「看原始 JSON」共用, 按行缓存) */
+function tsLine(no){
+  const k=TS.cur+"|"+no;
+  if(!TS.full.has(k))TS.full.set(k,tsApi(`/api/task-set-line?id=${encodeURIComponent(TS.cur)}&line=${no}`).catch(e=>{TS.full.delete(k);throw e}));
+  return TS.full.get(k);
+}
+async function tsRawModal(no){
+  Modal.open(`第 ${fmtInt(no)} 行的原始 JSON`,`<div class="qb-loading faint">正在加载…</div>`,{wide:true});
+  const body=$("modalBody"),mark=body.dataset.tsRaw=String(no)+"|"+Date.now();
+  let html;
+  try{
+    const d=await tsLine(no);
+    html=d.pretty!=null?`<div class="ts-raw-bar"><span class="faint">图片的 base64 只显示开头；「复制这一行 JSON」得到的是文件里的原文</span>
+        <button type="button" class="btn btn-secondary btn-sm" data-ts-copy="${no}">${icon("copy")}复制这一行 JSON</button></div><pre class="raw-box ts-raw" tabindex="0">${esc(d.pretty)}</pre>`
+      :`${alertBox("bad",`这一行不是合法的 JSON：${esc(d.line.reason||"")}`)}<pre class="raw-box ts-raw" tabindex="0">${esc(d.line.raw?d.line.raw.text:"")}</pre>`;
+  }catch(e){html=emptyState("没能加载这一行",e.message,{iconName:"alert",inline:true})}
+  if(!$("modal").hidden&&body.dataset.tsRaw===mark)body.innerHTML=html;
+}
+function tsImgModal(no,i){
+  const l=((TS.lines&&TS.lines.lines)||[]).find(x=>x.no===no);const im=l&&l.images[i];if(!im)return;
+  const w=im.width||0,zoom=w&&w<96?Math.min(8,Math.floor(192/w)):1;  /* 很小的图放大几倍看清楚 */
+  Modal.open(`第 ${fmtInt(no)} 行 · 第 ${i+1} 张图`,`<figure class="ts-big"><div class="ts-big-img"><img src="${esc(tsImgSrc(no,i))}" alt="第 ${no} 行的第 ${i+1} 张图"${zoom>1?` style="width:${w*zoom}px" class="is-pixel"`:""}></div>
+    <figcaption>${esc(tsImgCap(im))}${zoom>1?`（放大 ${zoom} 倍显示）`:""}${im.msg?`<div class="${im.ok===false?"bad":"warn"}">${esc(im.msg)}</div>`:""}</figcaption></figure>`,{wide:true});
+}
+/* 展开 / 收起一段文字; 服务端截断过的先取全文 */
+async function tsToggleMore(btn){
+  const text=btn.previousElementSibling,card=btn.closest(".qcard");if(!text)return;
+  if(btn.dataset.cut){
+    btn.disabled=true;btn.textContent="正在加载全文…";
+    try{
+      const d=await tsLine(+btn.dataset.tsMore),k=btn.dataset.key;
+      let full="";
+      if(k==="raw")full=d.line.raw?d.line.raw.text:"";
+      else{const [i,j]=k.split("-").map(Number),p=((d.line.messages||[])[i]||{}).parts;full=p&&p[j]?p[j].text:""}
+      text.innerHTML=tsHighlight(full,TS.q);
+      delete btn.dataset.cut;
+    }catch(e){btn.disabled=false;btn.textContent="展开全文";toast("没能取到全文："+e.message,"error");return}
+    btn.disabled=false;
+  }
+  const open=text.classList.contains("is-clamp");
+  text.classList.toggle("is-clamp",!open);
+  btn.textContent=open?"收起":"展开全文";btn.setAttribute("aria-expanded",String(open));
+  if(card&&card.closest(".qb-list")){  /* 展开的卡片占满一行, 读长文更方便 */
+    const wide=!!card.querySelector('.ts-more[aria-expanded="true"]'),was=card.classList.contains("is-wide");
+    card.classList.toggle("is-wide",wide);if(was!==wide)card.scrollIntoView({block:"nearest"});
+  }
+  btn.focus({preventScroll:true});
+}
+function tsSetPage(p){
+  const k=pagerFocusKey();
+  TS.page=p;tsSaveState();
+  return tsFetch(false).then(()=>{scrollTopIntoView($("tsChipRow"));pagerRefocus($("ts-lines"),k)});
+}
+function tsSetFilter(f){
+  TS.filter=f;TS.page=0;tsSaveState();
+  $("tsChips").querySelectorAll("[data-ts-filter]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.tsFilter===f)));
+  tsFetch(false);
+}
+/* 到速度测试页看某次测试(「用过的测试」里的链接) */
+async function tsOpenRun(id){
+  if(!RUNS[id])await refresh();
+  if(!RUNS[id]){toast("这次测试已经不在了（可能被删除）","warning");return}
+  $("runA").value=id;
+  location.hash="#dash";  /* 切页面时画选中的这次测试; 浏览器后退回到任务集 */
+}
+
+/* ---------- 事件 ---------- */
+$("tsImportBtn").addEventListener("click",()=>{if(!TS.importing)$("tsImportFile").click()});
+$("tsImportFile").addEventListener("change",e=>{const f=e.target.files[0];e.target.value="";tsImport(f)});
+document.addEventListener("click",e=>{
+  if(!e.target.closest)return;
+  if(e.target.closest("[data-ts-tpl]")){downloadTaskTemplate();toast("已下载模板：每种写法都有一两行示例，每行的 meta.note 是说明","success",4000);return}
+  if(e.target.closest("[data-ts-refresh]")){tsRefresh();return}
+  const go=e.target.closest("[data-goto-tasks]");
+  if(go){e.preventDefault();closeDrawers();if(VIEW!=="tasks"||TS.cur)location.hash="#tasks";return}
+  const cp=e.target.closest("[data-ts-copy]");if(cp){tsCopyLine(+cp.dataset.tsCopy);return}
+});
+$("tasksBody").addEventListener("click",e=>{
+  const t=e.target;
+  const imp=t.closest("[data-ts-import]");if(imp){if(!TS.importing)$("tsImportFile").click();return}
+  const act=t.closest("[data-ts-act]");
+  if(act){const id=act.dataset.id,a=act.dataset.tsAct;
+    if(a==="view")tsOpen(id);else if(a==="use")tsUse(id);else if(a==="download")tsDownload(id);
+    else if(a==="rename")tsRenameDialog(id);else if(a==="delete")tsDelete(id);return}
+  if(t.closest("[data-ts-back]")){e.preventDefault();tsBack();return}
+  if(t.closest("[data-ts-edit]")){tsInlineRename();return}
+  if(t.closest("[data-ts-report-close]")){TS.report=null;const r=t.closest(".ts-report");if(r)r.remove();return}
+  const rt=t.closest("[data-ts-retry]");
+  if(rt){const w=rt.dataset.tsRetry;
+    if(w==="list"){TS.listErr="";tsLoadList();tsRenderList()}
+    else if(w==="detail"){TS.dataFor="";tsRenderDetail()}
+    else{TS.linesErr="";TS.lines=null;tsRenderLines();tsFetch(false)}return}
+  const run=t.closest("[data-ts-run]");if(run){e.preventDefault();tsOpenRun(run.dataset.tsRun);return}
+  const gt=t.closest("[data-ts-goto]");
+  if(gt){e.preventDefault();tsSetFilter(gt.dataset.tsGoto);const sec=$("ts-lines");if(sec)sec.scrollIntoView({behavior:"smooth",block:"start"});return}
+  const ch=t.closest("#tsChips [data-ts-filter]");if(ch){tsSetFilter(ch.dataset.tsFilter);return}
+  if(t.closest("[data-ts-clear]")){TS.filter="all";TS.q="";TS.page=0;const s=$("tsSearch");if(s)s.value="";tsSaveState();tsFetch(false);if(s)s.focus();return}
+  const pg=t.closest("[data-ts-page]");if(pg){tsSetPage(+pg.dataset.tsPage);return}
+  const jb=t.closest("[data-ts-jumpbtn]");if(jb){const n=pagerTarget(jb.parentElement.querySelector("[data-ts-jump]"));if(n!=null)tsSetPage(n);return}
+  const more=t.closest("[data-ts-more]");if(more){tsToggleMore(more);return}
+  const im=t.closest("[data-ts-img]");if(im){tsImgModal(+im.dataset.tsImg,+im.dataset.idx);return}
+  if(t.closest('[data-dt="ts-lines-t"] tr.is-expandable'))setTimeout(()=>tsUnclamp($("tsTable")),0);  /* 表格里展开的一行 */
+  const raw=t.closest("[data-ts-raw]");if(raw){tsRawModal(+raw.dataset.tsRaw);return}
+  if(t.closest("a,button,input,select,label,summary,details"))return;
+  const tr=t.closest('[data-dt="ts-list-t"] tr.is-link');if(tr&&tr.dataset.rk)tsOpen(tr.dataset.rk);  /* 点一行打开详情 */
+});
+$("tasksBody").addEventListener("change",e=>{
+  const sz=e.target.closest("[data-ts-size]");
+  if(sz){const first=TS.page*TS.size;TS.size=+sz.value;TS.page=Math.floor(first/TS.size);tsSaveState();
+    tsFetch(false).then(()=>{const s=$("tsPager")&&$("tsPager").querySelector("[data-ts-size]");if(s)s.focus()});return}
+  if(e.target.matches(".is-compact [data-ts-jump]")){const n=pagerTarget(e.target);if(n!=null&&n!==TS.page)tsSetPage(n);else e.target.value=TS.page+1}
+});
+$("tasksBody").addEventListener("keydown",e=>{
+  if(e.key==="Enter"&&e.target.matches("[data-ts-jump]")){e.preventDefault();const n=pagerTarget(e.target);if(n!=null)tsSetPage(n)}
+});
+let tsQT=null;
+$("tasksBody").addEventListener("input",e=>{
+  if(e.target.id!=="tsSearch")return;
+  clearTimeout(tsQT);
+  tsQT=setTimeout(()=>{TS.q=e.target.value.trim().slice(0,200);TS.page=0;tsSaveState();tsFetch(false)},250);
+});
+/* 卡片 / 表格: 记住选的看法; 切回卡片时量一下哪些文字其实不用「展开全文」 */
+$("tasksBody").addEventListener("click",e=>{const b=e.target.closest("#ts-lines [data-pv-set]");if(!b)return;
+  TS_PREF.mode=b.dataset.pvSet;lsSet(TS_LS,TS_PREF);
+  if(b.dataset.pvSet==="chart")requestAnimationFrame(()=>tsUnclamp($("tsList")))});
+/* 缩略图加载失败: 换成占位, 写明原因 */
+$("tasksBody").addEventListener("error",e=>{
+  const img=e.target;if(!img||!img.matches||!img.matches("img[data-ts-thumb]"))return;
+  const box=img.parentElement;box.classList.add("is-broken");
+  box.innerHTML=`${icon("image")}<span>加载失败${img.dataset.tsThumb?"："+esc(img.dataset.tsThumb):"：图片数据读不出来"}</span>`;
+},true);
+/* 键盘 ← → 翻逐行卡片: 逐行区在屏幕上、焦点不在输入框里、没有打开面板或弹窗时才生效 */
+document.addEventListener("keydown",e=>{
+  if(VIEW!=="tasks"||!TS.cur||(e.key!=="ArrowLeft"&&e.key!=="ArrowRight")||e.altKey||e.ctrlKey||e.metaKey||e.shiftKey||e.defaultPrevented)return;
+  if(e.target.closest&&e.target.closest("input,select,textarea,[contenteditable=true],details[open]"))return;
+  if(!$("modal").hidden||document.querySelector(".drawer:not([hidden])"))return;
+  const sec=$("ts-lines");if(!sec||!TS.lines||!TS.lines.total)return;
+  const r=sec.getBoundingClientRect();if(r.bottom<80||r.top>innerHeight-80)return;
+  const pages=Math.max(1,Math.ceil(TS.lines.total/TS.size)),p=TS.page+(e.key==="ArrowLeft"?-1:1);
+  if(p<0||p>=pages)return;
+  e.preventDefault();tsSetPage(p);
+});
+/* 把文件拖到任务集页面上导入: 整页虚线框遮罩「松开即可导入」, 拖走消失; 一看就不支持的文件(图片、多个文件)当场说明 */
+let tsDragN=0,tsDragT=null;
+function tsDragHasFiles(e){return !!(e.dataTransfer&&[...(e.dataTransfer.types||[])].includes("Files"))}
+function tsDropState(e){
+  const items=[...((e.dataTransfer&&e.dataTransfer.items)||[])].filter(x=>x.kind==="file");
+  if(items.length>1)return `一次只能导入一个文件（现在拖了 ${items.length} 个）`;
+  const type=items[0]&&items[0].type||"";
+  if(type&&!/^text\/|^application\/(json|x-ndjson|jsonl|x-jsonlines|ndjson)/.test(type))return `不支持这种文件（${type}）：只能导入 .jsonl、.json 或 .txt`;
+  return "";
+}
+function tsDropShow(e){
+  clearTimeout(tsDragT);tsDragT=setTimeout(tsDropHide,800);  /* 拖出窗口时有的浏览器不发 dragleave */
+  const bad=tsDropState(e),m=$("tsDrop");
+  m.hidden=false;m.classList.toggle("is-bad",!!bad);
+  $("tsDropTitle").textContent=bad?"不能导入":"松开即可导入任务集";
+  $("tsDropSub").textContent=bad||".jsonl / .json / .txt，每行一个 JSON 请求";
+  $("tsDropIcon").setAttribute("href",bad?"#i-ban":"#i-upload");
+  if(e.dataTransfer)e.dataTransfer.dropEffect=bad?"none":"copy";
+}
+function tsDropHide(){clearTimeout(tsDragT);tsDragN=0;const m=$("tsDrop");if(m)m.hidden=true}
+function tsDropOn(e){return VIEW==="tasks"&&!OFF&&tsDragHasFiles(e)}
+document.addEventListener("dragenter",e=>{if(!tsDropOn(e))return;e.preventDefault();tsDragN++;if($("modal").hidden)tsDropShow(e)});
+document.addEventListener("dragover",e=>{if(!tsDropOn(e))return;e.preventDefault();if($("modal").hidden)tsDropShow(e);else e.dataTransfer.dropEffect="none"});
+document.addEventListener("dragleave",e=>{if(!tsDropOn(e))return;tsDragN=Math.max(0,tsDragN-1);if(!tsDragN)tsDropHide()});
+document.addEventListener("drop",e=>{
+  if(!tsDropOn(e))return;
+  e.preventDefault();tsDropHide();  /* 不让浏览器直接打开这个文件 */
+  if(!$("modal").hidden)return;
+  const files=[...(e.dataTransfer.files||[])];
+  if(files.length>1){toast(`一次只能导入一个文件，这次拖了 ${files.length} 个，没有导入`,"warning");return}
+  tsImport(files[0]);
+});
 
 /* ============================================================
    删除

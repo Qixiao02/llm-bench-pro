@@ -1030,6 +1030,9 @@ def phase_scenario(url, headers, model, tpl_id, cfg):
             task["images_skipped"] = len(img_skipped)
     if tpl_id == "custom":
         task["pool_size"] = len(pool)
+        ts = cfg.get("task_set")  # 用的是页面上导入的哪个任务集(任务集页面按它统计「用过几次」)
+        if isinstance(ts, dict) and ts.get("id"):
+            task["task_set"] = {"id": str(ts["id"]), "name": str(ts.get("name") or ts["id"])}
     return {"id": "scn_" + tpl_id, "name": "场景 · " + tpl["label"], "points": points, "task": task}
 
 
@@ -1044,6 +1047,18 @@ _JSON_ERR_ZH = [("Expecting ',' delimiter", "缺少逗号，或者括号没有�
                 ("Unterminated string", "字符串没有结束（缺少英文双引号）"), ("Invalid control character", "字符串里不能直接换行（要写成 \\n）"),
                 ("Extra data", "一行里只能放一个 JSON 对象"), ("Expecting value", "这里缺少值（可能多了逗号，或用了中文引号、单引号）"),
                 ("Unexpected UTF-8 BOM", "文件开头有 BOM，请存为不带 BOM 的 UTF-8")]
+
+
+def task_max_tokens(params, default=TASK_MT_DEFAULT, cap=TASK_MT_CAP):
+    """任务集 / 回放一行实际发送的 max_tokens: 行内 max_tokens 优先, 其次 max_completion_tokens;
+    没写或不是正整数时按默认值(check_task_line 的提醒也是这么说的), 超过上限按上限。"""
+    params = params if isinstance(params, dict) else {}
+    v = params.get("max_tokens") or params.get("max_completion_tokens")
+    try:
+        n = int(v) if v is not None else 0
+    except (TypeError, ValueError):
+        n = 0
+    return min(n if n > 0 else int(default), int(cap))
 
 
 def _json_err_text(e):
@@ -1237,14 +1252,10 @@ class ReplayPool:
 
 
 def _replay_body(model, rec, rp):
-    body = {k: v for k, v in (rec.get("params") or {}).items()
-            if k not in ("model", "stream", "stream_options", "n")}
-    mt = body.pop("max_completion_tokens", None)
-    try:
-        mt = int(body.get("max_tokens") or mt or rp.mt_default)
-    except (TypeError, ValueError):
-        mt = rp.mt_default
-    body["max_tokens"] = min(mt, rp.mt_cap)
+    params = rec.get("params") or {}
+    body = {k: v for k, v in params.items() if k not in ("model", "stream", "stream_options", "n")}
+    body.pop("max_completion_tokens", None)
+    body["max_tokens"] = task_max_tokens(params, rp.mt_default, rp.mt_cap)
     if "enable_thinking" in body:  # 网关把顶层开关映射进 chat template
         body.setdefault("chat_template_kwargs", {}).setdefault("enable_thinking", bool(body.pop("enable_thinking")))
     body.update(model=model, messages=rec["messages"])
@@ -1473,7 +1484,7 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
     cancel: threading.Event, 置位后在下一个请求前停止, 已完成阶段保留, 状态记为 cancelled。
     scenarios: 任务场景配置 {"tasks": ["chat","code","json","rag","vision","custom"], "conc": [...],
               "requests_per_worker": n, "max_tokens": n, "rag_ctx": [...], "vision_dir": 路径(不给则用内置示例图片), "vision_images": n,
-              "custom_file": 路径}; 默认不启用任何场景。
+              "custom_file": 路径, "task_set": {"id", "name"}(可选: 页面上导入的任务集, 记进结果)}; 默认不启用任何场景。
     replay: 真实请求回放配置 dict({"file": 路径, "closed": {...}, "open": {"rates": [...], "duration_s": n}, ...})。
     warmup_shapes: 按 batch shape 预热; retry_*: 场景/矩阵格失败整格重跑(留痕)。"""
     global _REQ_EXTRA, _CANCEL

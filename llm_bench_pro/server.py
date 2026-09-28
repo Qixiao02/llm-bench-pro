@@ -38,6 +38,7 @@ import iq  # noqa: E402
 import report  # noqa: E402
 import sinks  # noqa: E402
 import store  # noqa: E402
+import tasksets  # noqa: E402
 import vision_assets  # noqa: E402
 from version import APP_VERSION  # noqa: E402
 
@@ -138,14 +139,14 @@ JOB_NAMES = {"perf": "性能测试", "iq": "能力评测", "gen": "代码生成"
 
 
 class Job:
-    """一类后台任务(同类同一时刻只运行一个): 状态、日志、取消信号、访问的模型端点。"""
+    """一类后台任务(同类同一时刻只运行一个): 状态、日志、取消信号、访问的模型端点、正在读的素材文件。"""
 
     def __init__(self, kind, log_limit=500):
         self.kind, self.log_limit = kind, log_limit
         self.lock = threading.Lock()
         self.cancel = threading.Event()
         self.state = {"running": False, "log": [], "error": None, "run_id": None, "started_at": None,
-                      "base": None, "title": None, "cancelling": False}
+                      "base": None, "title": None, "cancelling": False, "files": []}
 
     def line(self, msg):
         with self.lock:
@@ -156,13 +157,14 @@ class Job:
         with self.lock:
             return dict(self.state, log=list(self.state["log"]))
 
-    def try_start(self, base, title, run_id=None):
+    def try_start(self, base, title, run_id=None, files=None):
+        """files: 这次要读的素材文件(任务集、回放文件), 运行期间不允许删除。"""
         with self.lock:
             if self.state["running"]:
                 return False
             self.cancel.clear()
             self.state.update({"running": True, "log": [], "error": None, "run_id": run_id, "base": base,
-                               "title": title, "cancelling": False,
+                               "title": title, "cancelling": False, "files": [os.path.realpath(f) for f in files or []],
                                "started_at": datetime.now(timezone.utc).isoformat()})
             return True
 
@@ -587,8 +589,9 @@ def _img_reject(name, msg, code="unsupported"):
 # 打开素材列表时不用每次把所有文件重读、重查一遍(任务集最大 15 MB)。文件被手动改过时键会变, 自动重查
 @functools.lru_cache(maxsize=256)
 def _task_file_check(path, size, mtime_ns):
-    with open(path, encoding="utf-8-sig", errors="replace") as f:
-        return bench.check_task_text(f.read(), limit=0)
+    """任务集的汇总: 共几行、可用几行、要求 JSON / 带图片的条数、输入长度、max_tokens 分布(与上传检查同一套判断)。
+    逐行索引另有一个只留最近两个文件的缓存(tasksets.scan), 这里只留汇总, 文件再多也不占多少内存。"""
+    return dict(tasksets.scan(path, size, mtime_ns)["summary"])
 
 
 @functools.lru_cache(maxsize=256)
@@ -661,12 +664,14 @@ def _parse_scenarios(body):
     if "custom" in tasks:
         fid = (scen.get("custom_file_id") or "").strip()
         if fid:
-            if not re.match(r"^scn-[0-9a-f]{12}$", fid):
+            if not tasksets.ID_RE.match(fid):
                 raise ValueError("非法 custom_file_id")
-            full = os.path.join(SCN_TASKS_DIR, fid + ".jsonl")
+            full = tasksets.file_path(SCN_TASKS_DIR, fid)
             if not os.path.isfile(full):
-                raise ValueError("任务集不存在: %s (可能已被删除, 请重新上传)" % fid)
+                raise ValueError("任务集不存在: %s (可能已被删除, 请重新导入)" % fid)
             out["custom_file"] = full
+            # 记进结果: 任务集页面按它统计「用过几次」, 速度测试结果页显示「任务集：名称」
+            out["task_set"] = {"id": fid, "name": tasksets.read_meta(SCN_TASKS_DIR, fid)["name"]}
         elif (scen.get("custom_file") or "").strip():
             out["custom_file"] = scen["custom_file"].strip()
             if not os.path.isfile(out["custom_file"]):
@@ -721,6 +726,122 @@ def _parse_replay(body):
         replay["open"] = {"rates": rates,
                           "duration_s": max(5, min(3600, int(o.get("duration_s") or 60)))}
     return replay
+
+
+# ---------------------------------------------------------------- 任务集页面
+# 列表 / 详情(逐行分页、筛选、搜索) / 某行全文 / 图片 / 改名 / 删除 / 下载。函数返回 (状态码, 数据), 由 Handler 输出
+
+def _busy_task_files():
+    """正在跑的速度测试要读的文件(真实路径): 这些任务集不能删。"""
+    st = JOBS["perf"].snapshot()
+    return set(st.get("files") or []) if st["running"] else set()
+
+
+def _task_set_path(fid):
+    """(路径, 状态码, 错误说明): id 必须是 scn- 加 12 位十六进制数字, 文件要存在。"""
+    if not isinstance(fid, str) or not tasksets.ID_RE.match(fid):
+        return None, 400, "任务集 id 不对（应为 scn- 加 12 位十六进制数字）"
+    path = tasksets.file_path(SCN_TASKS_DIR, fid)
+    if not os.path.isfile(path):
+        return None, 404, "任务集不存在（可能已被删除）"
+    return path, 200, ""
+
+
+def _task_set_item(fid, uses, busy):
+    path = tasksets.file_path(SCN_TASKS_DIR, fid)
+    st = os.stat(path)
+    s = _task_file_check(path, st.st_size, st.st_mtime_ns)
+    meta = tasksets.read_meta(SCN_TASKS_DIR, fid)
+    used = uses.get(fid) or []
+    return {"id": fid, "name": meta["name"], "named": meta["named"], "imported_utc": meta["imported_utc"],
+            "size": st.st_size, "total": s["total"], "valid": s["valid"], "bad": s["bad"], "skipped": s["skipped"],
+            "json": s["json"], "image": s["image"], "warnings": s["warning_count"], "chars_avg": s["chars_avg"],
+            "chars_max": s["chars_max"], "mt_top": s["mt_dist"][0] if s["mt_dist"] else None, "mt_unset": s["mt_unset"],
+            "uses": len(used), "last_used": used[0]["started_utc"] if used else None,
+            "busy": os.path.realpath(path) in busy}
+
+
+def task_set_list():
+    """每个任务集的名称、行数统计、输入长度、大小、导入时间、用过几次; 新导入的在前。"""
+    uses, busy, sets = store.task_set_uses(), _busy_task_files(), []
+    for fid in tasksets.list_ids(SCN_TASKS_DIR):
+        try:
+            sets.append(_task_set_item(fid, uses, busy))
+        except OSError:  # 列目录之后刚被删掉
+            continue
+    sets.sort(key=lambda x: (x["imported_utc"] or "", x["id"]), reverse=True)
+    return 200, {"ok": True, "sets": sets}
+
+
+def task_set_detail(fid, offset="", limit="", status="", q="", head=True):
+    """一个任务集: 概况(head=True 时带上; 翻页、筛选时不用再传) + 按筛选条件和关键词取的一页逐行数据。"""
+    path, code, err = _task_set_path(fid)
+    if not path:
+        return code, {"ok": False, "error": err}
+    try:
+        offset, limit = int(offset or 0), int(limit or 12)
+    except (TypeError, ValueError):
+        return 400, {"ok": False, "error": "offset / limit 应为整数"}
+    if offset < 0 or not 1 <= limit <= tasksets.PAGE_MAX:
+        return 400, {"ok": False, "error": "offset 不能小于 0，limit 应为 1–%d" % tasksets.PAGE_MAX}
+    status = status or "all"
+    if status not in tasksets.FILTERS:
+        return 400, {"ok": False, "error": "status 应为 %s 之一" % " / ".join(tasksets.FILTERS)}
+    q = str(q or "")[:200]
+    s = tasksets.scan(*tasksets.stat_key(path))
+    counts, total, page = tasksets.query(s, status, q, offset, limit)
+    texts = tasksets.read_texts(path, page)
+    out = {"ok": True, "id": fid, "status": status, "q": q, "offset": offset, "limit": limit, "total": total,
+           "counts": counts, "lines": [tasksets.line_view(r, t) for r, t in zip(page, texts)]}
+    if head:
+        uses = store.task_set_uses().get(fid) or []
+        item = _task_set_item(fid, {fid: uses}, _busy_task_files())
+        summ = s["summary"]
+        item.update(chars=[r[tasksets.CHARS] for r in s["rows"] if r[tasksets.ST] == "ok"], mt_dist=summ["mt_dist"],
+                    chars_min=summ["chars_min"], chars_med=summ["chars_med"])
+        out.update(set=item, uses=uses[:50])
+    return 200, out
+
+
+def task_set_line(fid, line, raw=False):
+    """某一行的全文(「展开全文」「看原始 JSON」); raw=True 时给文件里这一行的原文(「复制这一行 JSON」)。"""
+    path, code, err = _task_set_path(fid)
+    if not path:
+        return code, {"ok": False, "error": err}
+    try:
+        no = int(line)
+    except (TypeError, ValueError):
+        return 400, {"ok": False, "error": "line 应为行号"}
+    row = tasksets.find(tasksets.scan(*tasksets.stat_key(path)), no)
+    if row is None:
+        return 404, {"ok": False, "error": "没有第 %d 行（或者这一行是空行）" % no}
+    text = tasksets.read_texts(path, [row])[0]
+    if raw:
+        return 200, {"ok": True, "no": no, "text": text}
+    return 200, {"ok": True, "line": tasksets.line_view(row, text, full=True), "pretty": tasksets.pretty(text)}
+
+
+def task_set_image(fid, line, idx):
+    """某行第 idx 张图(从 0 数)的字节: 返回 (状态码, 字节或错误数据, MIME)。只给 data URL 里的图片, 网址不去下载。"""
+    path, code, err = _task_set_path(fid)
+    if not path:
+        return code, {"ok": False, "error": err}, None
+    try:
+        no, k = int(line), int(idx)
+    except (TypeError, ValueError):
+        return 400, {"ok": False, "error": "line / idx 应为整数"}, None
+    row = tasksets.find(tasksets.scan(*tasksets.stat_key(path)), no)
+    if row is None:
+        return 404, {"ok": False, "error": "没有第 %d 行（或者这一行是空行）" % no}, None
+    try:
+        data, ctype = tasksets.image_bytes(tasksets.read_texts(path, [row])[0], k)
+    except LookupError as e:
+        return 404, {"ok": False, "error": str(e)}, None
+    except tasksets.RemoteImage as e:
+        return 400, {"ok": False, "error": str(e)}, None
+    except ValueError as e:
+        return 422, {"ok": False, "error": str(e)}, None
+    return 200, data, ctype
 
 
 # ---------------------------------------------------------------- HTTP
@@ -802,6 +923,13 @@ class Handler(BaseHTTPRequestHandler):
             "/api/replay-list": lambda: self._json(self.replay_list()),
             "/api/scenario-list": lambda: self._json(self.scenario_list()),
             "/api/endpoints": lambda: self._json(store.list_endpoints()),
+            # 任务集页面
+            "/api/task-sets": lambda: self._reply(task_set_list()),
+            "/api/task-set": lambda: self._reply(task_set_detail(q("id"), q("offset"), q("limit"), q("status"), q("q"),
+                                                                 head=q("head") != "0")),
+            "/api/task-set-line": lambda: self._reply(task_set_line(q("id"), q("line"), raw=q("raw") == "1")),
+            "/api/task-set-image": lambda: self.task_set_image(q("id"), q("line"), q("idx")),
+            "/api/task-set-download": lambda: self.task_set_download(q("id")),
         }
         if path in routes:
             return routes[path]()
@@ -858,6 +986,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/replay-upload": self.api_replay_upload,
             "/api/export-html": self.api_export_html,
             "/api/scenario-upload": self.api_scenario_upload,
+            "/api/task-set-rename": self.api_task_set_rename,
+            "/api/task-set-delete": self.api_task_set_delete,
         }.get(parts.path)
         if handler is None:
             return self._json({"ok": False, "error": "not found"}, 404)
@@ -949,16 +1079,18 @@ class Handler(BaseHTTPRequestHandler):
     _MAX_UPLOAD_IMAGES = 64
 
     def scenario_list(self):
-        """任务集(每个带可用行数)与图片包(张数、尺寸范围、有几张不能用), 新的在前; 另给内置示例图片的概况。"""
+        """任务集(每个带名称和可用行数)与图片包(张数、尺寸范围、有几张不能用), 新的在前; 另给内置示例图片的概况。"""
         tasks = []
-        if os.path.isdir(SCN_TASKS_DIR):
-            for fn in os.listdir(SCN_TASKS_DIR):
-                if re.match(r"^scn-[0-9a-f]{12}\.jsonl$", fn):
-                    p = os.path.join(SCN_TASKS_DIR, fn)
-                    st = os.stat(p)
-                    chk = _task_file_check(p, st.st_size, st.st_mtime_ns)
-                    tasks.append({"file_id": fn[:-6], "size": st.st_size, "mtime": _mtime_iso(p),
-                                  "lines": chk["valid"], "total": chk["total"], "json": chk["json"], "image": chk["image"]})
+        for fid in tasksets.list_ids(SCN_TASKS_DIR):
+            p = tasksets.file_path(SCN_TASKS_DIR, fid)
+            try:
+                st = os.stat(p)
+                chk = _task_file_check(p, st.st_size, st.st_mtime_ns)
+            except OSError:  # 列目录之后刚被删掉
+                continue
+            meta = tasksets.read_meta(SCN_TASKS_DIR, fid)
+            tasks.append({"file_id": fid, "name": meta["name"], "size": st.st_size, "mtime": meta["imported_utc"] or _mtime_iso(p),
+                          "lines": chk["valid"], "total": chk["total"], "json": chk["json"], "image": chk["image"]})
         images = []
         if os.path.isdir(SCN_IMAGES_DIR):
             for dn in os.listdir(SCN_IMAGES_DIR):
@@ -980,6 +1112,7 @@ class Handler(BaseHTTPRequestHandler):
     def api_scenario_upload(self, body):
         """上传任务场景资产, 均内容寻址幂等; 总量受 16MB 请求体上限约束。
         kind=tasks: 任务集 JSONL {name, content}, 逐行检查(与测试时实际发送的判断相同), 返回 check 报告;
+          name(文件名, 去掉扩展名)存为任务集名称; 内容完全相同的已经导入过时不重复保存(exists=true), 旧的没有名称就补上。
         kind=images: 图片包 {files:[{name, data(base64)}]}, 逐张检查, 损坏/太小/太大的不收, 返回每张的结果 files。"""
         kind = body.get("kind")
         if kind == "tasks":
@@ -996,14 +1129,17 @@ class Handler(BaseHTTPRequestHandler):
             data = content.encode("utf-8")
             fid = "scn-" + hashlib.sha256(data).hexdigest()[:12]
             os.makedirs(SCN_TASKS_DIR, exist_ok=True)
-            path = os.path.join(SCN_TASKS_DIR, fid + ".jsonl")
-            if not os.path.isfile(path):
+            path = tasksets.file_path(SCN_TASKS_DIR, fid)
+            existed = os.path.isfile(path)
+            if not existed:
                 tmp = path + ".tmp"
                 with open(tmp, "wb") as f:
                     f.write(data)
                 os.replace(tmp, path)
-            return self._json({"ok": True, "file_id": fid, "name": (body.get("name") or "")[:80],
-                               "lines": check["valid"], "bad_lines": check["total"] - check["valid"], "check": check})
+            meta = tasksets.on_import(SCN_TASKS_DIR, fid, body.get("name"), existed)
+            return self._json({"ok": True, "file_id": fid, "name": meta["name"], "exists": existed,
+                               "imported_utc": meta["imported_utc"], "lines": check["valid"],
+                               "bad_lines": check["total"] - check["valid"], "check": check})
         if kind == "images":
             files = body.get("files")
             if not isinstance(files, list) or not files:
@@ -1045,6 +1181,52 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "image_id": iid, "count": len(keep), "size": sum(len(r) for _, r in keep),
                                "dims": _dims_text([c for c, _ in keep]), "files": report, "rejected": rejected})
         return self._json({"ok": False, "error": "kind 应为 tasks 或 images"}, 400)
+
+    # ---- 任务集页面: 图片 / 下载 / 改名 / 删除(列表、详情、某行全文见 task_set_* 函数)
+    def task_set_image(self, fid, line, idx):
+        code, data, ctype = task_set_image(fid, line, idx)
+        if code != 200:
+            return self._json(data, code)
+        # 内容寻址的文件写入后不再改, 同一张图不用每次翻页都重新下载
+        return self._body(data, ctype, cache="private, max-age=86400")
+
+    def task_set_download(self, fid):
+        """原文件; 下载的文件名用任务集名称(非 ASCII 名称按 RFC 5987 写在 filename* 里)。"""
+        path, code, err = _task_set_path(fid)
+        if not path:
+            return self._json({"ok": False, "error": err}, code)
+        name = tasksets.download_name(tasksets.read_meta(SCN_TASKS_DIR, fid)["name"], fid)
+        plain = name if re.match(r"^[A-Za-z0-9 ._()\[\]-]+$", name) else fid + ".jsonl"
+        with open(path, "rb") as f:
+            data = f.read()
+        disp = "attachment; filename=\"%s\"; filename*=UTF-8''%s" % (plain, urllib.parse.quote(name, safe=""))
+        return self._body(data, "application/x-ndjson; charset=utf-8", headers={"Content-Disposition": disp})
+
+    def api_task_set_rename(self, body):
+        path, code, err = _task_set_path(body.get("id"))
+        if not path:
+            return self._json({"ok": False, "error": err}, code)
+        if not isinstance(body.get("name"), str):
+            return self._json({"ok": False, "error": "name 应为文字"}, 400)
+        name, err = tasksets.clean_name(body["name"])
+        if err:
+            return self._json({"ok": False, "error": err}, 400)
+        fid = body["id"]
+        meta = tasksets.read_meta(SCN_TASKS_DIR, fid)
+        tasksets.write_meta(SCN_TASKS_DIR, fid, name=name, imported_utc=meta["imported_utc"])
+        return self._json({"ok": True, "id": fid, "name": name})
+
+    def api_task_set_delete(self, body):
+        """删除任务集(连同元数据)。已经跑完的测试结果不受影响; 有速度测试正在用它时拒绝。"""
+        path, code, err = _task_set_path(body.get("id"))
+        if not path:
+            return self._json({"ok": False, "error": err}, code)
+        if os.path.realpath(path) in _busy_task_files():
+            return self._json({"ok": False, "error": "有速度测试正在用这个任务集，等测试结束（或停止它）之后再删除"}, 409)
+        fid = body["id"]
+        uses = len(store.task_set_uses().get(fid) or [])
+        tasksets.remove(SCN_TASKS_DIR, fid)
+        return self._json({"ok": True, "id": fid, "uses": uses})
 
     # ---- 真实请求回放池
     def replay_list(self):
@@ -1170,7 +1352,8 @@ class Handler(BaseHTTPRequestHandler):
         if self._busy_or_conflict("perf", base, body):
             return
         job = JOBS["perf"]
-        if not job.try_start(base, model):
+        files = [x for x in ((scen_cfg or {}).get("custom_file"), (replay_cfg or {}).get("file")) if x]
+        if not job.try_start(base, model, files=files):  # 测试期间这些文件不能删(任务集页面的删除会检查)
             return self._json({"ok": False, "error": "已有性能测试在运行"}, 409)
         framework = (body.get("framework") or "").strip()[:60]
         fw_version = (body.get("fw_version") or "").strip()[:60]
@@ -1360,6 +1543,11 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, obj, code=200):
         self._body(json.dumps(obj, ensure_ascii=False).encode(), "application/json", code)
 
+    def _reply(self, res):
+        """(状态码, 数据) → JSON 响应。"""
+        code, obj = res
+        self._json(obj, code)
+
     def _serve_file(self, path, ctype):
         with open(path, "rb") as f:
             self._body(f.read(), ctype)
@@ -1372,11 +1560,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def _body(self, data, ctype, code=200, headers=None):
+    def _body(self, data, ctype, code=200, headers=None, cache="no-store"):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache)
         self.send_header("X-Content-Type-Options", "nosniff")
         for k, v in (headers or {}).items():
             self.send_header(k, v)

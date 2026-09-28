@@ -70,6 +70,11 @@
   <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/></symbol>
   <symbol id="i-contrast" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M12 3a9 9 0 0 1 0 18" fill="currentColor"/></symbol>
   <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></symbol>
+  <symbol id="i-file-json" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 12a1 1 0 0 0-1 1v1a1 1 0 0 1-1 1 1 1 0 0 1 1 1v1a1 1 0 0 0 1 1"/><path d="M14 18a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1 1 1 0 0 1-1-1v-1a1 1 0 0 0-1-1"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M21.17 6.81a1 1 0 0 0-3.99-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5z"/><path d="m15 5 4 4"/></symbol>
+  <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></symbol>
+  <symbol id="i-braces" viewBox="0 0 24 24"><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/></symbol>
 </svg>
 
 <div class="app">
@@ -85,6 +90,7 @@
     <button class="nav-item" data-view="iq" title="能力测试"><svg class="icon"><use href="#i-list-checks"/></svg><span class="nav-text">能力测试</span><span class="nav-short">能力</span><span class="nav-dot" data-running="iq" hidden></span></button>
     <button class="nav-item" data-view="gen" title="代码生成"><svg class="icon"><use href="#i-code"/></svg><span class="nav-text">代码生成</span><span class="nav-short">生成</span><span class="nav-dot" data-running="gen" hidden></span></button>
     <div class="nav-label">设置</div>
+    <button class="nav-item" data-view="tasks" data-online-only title="任务集：速度测试「自定义任务集」用的请求文件，在这里导入、逐行查看、下载模板"><svg class="icon"><use href="#i-file-json"/></svg><span class="nav-text">任务集</span><span class="nav-short">任务集</span></button>
     <button class="nav-item" data-online-only onclick="manageEndpoints()" title="模型管理：保存常用的服务地址、Key 和模型，三个新建面板一键填入"><svg class="icon"><use href="#i-sliders"/></svg><span class="nav-text">模型管理</span><span class="nav-short">模型</span></button>
     <button class="nav-item" onclick="showGlossary()" title="名词解释：页面上出现的名词都是什么意思"><svg class="icon"><use href="#i-help"/></svg><span class="nav-text">名词解释</span><span class="nav-short">名词</span></button>
   </nav>
@@ -236,6 +242,34 @@
   <div id="genResult"></div>
 </section>
 
+<!-- ======================== 任务集(地址 #tasks, 看某一个是 #tasks/<id>) ======================== -->
+<section class="page" id="viewTasks">
+  <div class="pagehead">
+    <header class="bar">
+      <h1 class="bar-title" title="速度测试「自定义任务集」用的请求文件：每行一个请求（JSONL）">任务集</h1>
+      <span class="bar-desc ts-bar-desc">速度测试里「自定义任务集」用的请求，每行一个；导入后可以逐行查看</span>
+      <div class="bar-tools">
+        <button class="btn btn-secondary btn-sm ts-bar-tpl" type="button" data-ts-tpl title="下载 JSONL 模板：每种写法都有一两行示例，每行的 meta.note 是说明"><svg class="icon"><use href="#i-download"/></svg><span>下载模板</span></button>
+        <details class="dropdown more">
+          <summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作" title="更多操作"><svg class="icon"><use href="#i-more"/></svg></summary>
+          <div class="dropdown-panel menu is-right" role="menu">
+            <button class="menu-item" type="button" data-ts-refresh><svg class="icon"><use href="#i-refresh"/></svg>刷新</button>
+            <button class="menu-item ts-menu-tpl" type="button" data-ts-tpl><svg class="icon"><use href="#i-download"/></svg>下载模板</button>
+            <button class="menu-item" type="button" onclick="exportPageTables('tasks')"><svg class="icon"><use href="#i-download"/></svg>导出本页全部表格（CSV）</button>
+            <div class="menu-sep"></div>
+            <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
+            <button class="menu-item" type="button" data-theme-toggle><svg class="icon"><use href="#i-contrast"/></svg>切换亮色 / 暗色</button>
+          </div>
+        </details>
+        <button class="btn btn-primary btn-sm bar-new" type="button" id="tsImportBtn" data-ts-import aria-label="导入任务集" title="导入任务集：选一个 .jsonl / .json / .txt 文件，也可以直接把文件拖到这一页上"><svg class="icon"><use href="#i-upload"/></svg><span>导入任务集</span></button>
+        <input type="file" id="tsImportFile" accept=".jsonl,.json,.txt" hidden>
+      </div>
+    </header>
+    <nav class="secnav" id="tasksJump" aria-label="跳转到"></nav>
+  </div>
+  <div id="tasksBody"></div>
+</section>
+
 <!-- ======================== 样式自检(地址 #styleguide, 不在导航里) ======================== -->
 <section class="page" id="viewSg">
   <div class="pagehead">
@@ -306,41 +340,14 @@
         <div class="field"><label for="fImgN">每次请求带几张图</label><input class="input" id="fImgN" type="number" min="1" max="4" value="1"></div>
       </div>
       <div class="form-grid" id="scnCustomRow" hidden style="margin-top:12px">
-        <div class="field span-2"><label for="fTaskSel">自定义任务集</label>
+        <div class="field span-2"><label for="fTaskSel">选择任务集</label>
           <div class="file-row">
             <select class="select" id="fTaskSel"><option value="">未选择</option></select>
-            <label class="btn btn-secondary" title="上传任务集：JSONL 文件，每行一个请求，不超过 12 MB">
-              <svg class="icon"><use href="#i-inbox"/></svg>上传<input type="file" id="fTaskUpload" accept=".jsonl,.json,.txt" hidden>
-            </label>
-            <button class="btn btn-secondary" type="button" id="btnTaskTpl" title="下载 JSONL 模板：每种写法都有一两行示例，每行的 meta.note 是说明"><svg class="icon"><use href="#i-download"/></svg>下载模板</button>
+            <button class="btn btn-secondary" type="button" id="btnTaskImport" title="导入任务集：JSONL 文件，每行一个请求；导入后自动选中"><svg class="icon"><use href="#i-upload"/></svg>导入</button>
+            <input type="file" id="fTaskUpload" accept=".jsonl,.json,.txt" hidden>
           </div>
-          <span class="help">完全用你自己的请求，每行一个（JSONL）。带 response_format 的请求会统计 JSON 是否合法；每行自己写的 max_tokens 优先，不写按 4096（上面的「每次最多生成」只管内置场景）</span>
+          <span class="help">任务集是你自己的一批请求（JSONL，每行一个），轮流发给模型；每行写的 max_tokens 优先，不写按 4096（上面的「每次最多生成」只管内置场景）。<a href="#tasks" class="help-link" data-goto-tasks>到任务集页面管理、查看、下载模板</a></span>
           <div class="upcheck" id="fTaskCheck" hidden></div></div>
-        <div class="field span-2">
-          <details class="fmt-help">
-            <summary><svg class="icon"><use href="#i-chevron-down"/></svg>文件格式说明</summary>
-            <div class="fmt-body">
-              <p>每行一个 JSON 对象，空行会被忽略，不能写注释。模型名用上面填的，请求一律按流式发送，所以不用写 <code>model</code>、<code>stream</code>。
-                测试时各行按固定顺序打乱后轮流发送，行数少于「同时请求数 × 每个并发发几次」时会重复使用（结果里标「已循环」，重复的请求可能因为命中缓存而偏快）。</p>
-              <div class="table-wrap"><table class="table fmt-table">
-                <thead><tr><th>字段</th><th>必填</th><th>含义</th><th>示例</th></tr></thead>
-                <tbody>
-                  <tr><td><code>messages</code></td><td>是</td><td>按顺序发给模型的消息列表，每条有 role 和 content</td><td><code>[{"role":"user","content":"你好"}]</code></td></tr>
-                  <tr><td><code>role</code></td><td>是</td><td>谁说的：system 系统提示、user 用户、assistant 模型之前的回答、tool 工具结果</td><td><code>"system"</code></td></tr>
-                  <tr><td><code>content</code></td><td>是</td><td>一段文字；带图片时写成列表，里面放文字项和图片项</td><td><code>"用一句话介绍你自己"</code></td></tr>
-                  <tr><td>content 里的文字</td><td>—</td><td>列表里的文字项</td><td><code>{"type":"text","text":"图里有什么？"}</code></td></tr>
-                  <tr><td>content 里的图片</td><td>—</td><td>url 用 <code>data:image/png;base64,…</code>，或模型服务能访问到的图片网址；每张至少 28×28 像素</td><td><code>{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBOR…"}}</code></td></tr>
-                  <tr><td><code>params</code></td><td>否</td><td>这一行额外带的请求参数，原样发给模型服务（model、stream、stream_options、n 由测试程序决定，写了也不用）</td><td><code>{"max_tokens":512,"temperature":0.3}</code></td></tr>
-                  <tr><td><code>params.<wbr>max_tokens</code></td><td>否</td><td>最多生成多少 token；不写按 4096，超过 8192 按 8192；也可以写 max_completion_tokens</td><td><code>512</code></td></tr>
-                  <tr><td><code>params.<wbr>temperature</code></td><td>否</td><td>随机性，0 最稳定，不小于 0</td><td><code>0.3</code></td></tr>
-                  <tr><td><code>params.<wbr>response_format</code></td><td>否</td><td>要求输出 JSON，带了它的行会统计 JSON 合法率；json_schema 要写 name 和 schema</td><td><code>{"type":"json_object"}</code></td></tr>
-                  <tr><td><code>params.<wbr>enable_thinking</code></td><td>否</td><td>思考开关（Qwen3 等），会转成 chat_template_kwargs.enable_thinking</td><td><code>false</code></td></tr>
-                  <tr><td><code>meta</code></td><td>否</td><td>备注，不会发给模型；meta.prompt_tokens 超过 60000 的行会被跳过</td><td><code>{"note":"写给自己看的说明"}</code></td></tr>
-                </tbody>
-              </table></div>
-            </div>
-          </details>
-        </div>
       </div>
     </div>
     <div class="form-section">
@@ -518,6 +525,9 @@
 <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
 
 <div class="toasts" id="toasts" aria-live="polite"></div>
+<!-- 任务集页面: 把文件拖到页面上导入 -->
+<div class="drop-mask" id="tsDrop" hidden><div class="drop-box"><svg class="icon"><use href="#i-upload" id="tsDropIcon"/></svg>
+  <div class="drop-title" id="tsDropTitle">松开即可导入</div><div class="drop-sub" id="tsDropSub">.jsonl / .json / .txt，每行一个 JSON 请求</div></div></div>
 <div class="modal-backdrop" id="modal" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
     <div class="modal-head">

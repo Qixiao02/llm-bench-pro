@@ -503,6 +503,33 @@ def get_run(run_id, items=True, db_path=None, conn=None):
             conn.close()
 
 
+def task_set_uses(db_path=None):
+    """速度测试用过的任务集: {任务集 id: [{run_id, model, tag, framework, fw_version, started_utc, status, name}]},
+    每个 id 下新的在前。只看「自定义任务集」阶段(phase_id = scn_custom)里记了 task_set 的行: SQL 先按阶段和
+    LIKE 筛, 只解析筛出来的几行, 不把整张表反序列化。3.6.0 之前的测试没有这条记录, 不计入。"""
+    out = {}
+    with session(db_path) as conn:
+        rows = conn.execute(
+            "SELECT p.run_id, p.data_json, r.model, r.tag, r.framework, r.fw_version, r.started_utc, r.status, r.heartbeat_ts "
+            "FROM perf_phases p JOIN runs r ON r.run_id = p.run_id "
+            "WHERE p.phase_id = 'scn_custom' AND p.data_json LIKE '%\"task_set\"%' "
+            "ORDER BY r.started_utc DESC, p.run_id DESC").fetchall()
+    for r in rows:
+        try:
+            ts = (json.loads(r["data_json"]).get("task") or {}).get("task_set")
+        except (ValueError, AttributeError):
+            continue
+        if not isinstance(ts, dict) or not isinstance(ts.get("id"), str):
+            continue
+        lst = out.setdefault(ts["id"], [])
+        if any(x["run_id"] == r["run_id"] for x in lst):
+            continue
+        lst.append({"run_id": r["run_id"], "model": r["model"], "tag": r["tag"], "framework": r["framework"],
+                    "fw_version": r["fw_version"], "started_utc": r["started_utc"], "status": _row_status(r),
+                    "name": str(ts.get("name") or "")[:120]})
+    return out
+
+
 def get_iq_records(run_id, sid, idx, db_path=None):
     """某次能力评测某道题的作答记录(按写入顺序), 走 (run_id, sid, idx) 索引, 不加载整次运行。"""
     with session(db_path) as conn:
