@@ -1755,6 +1755,12 @@ function perfAnomalies(r){
   }
   const rg=(r._len&&r._len.rag)||[];
   if(rg.length)out.splice(mv.length?1:0,0,`「看资料回答」的资料也是用旧方法估算长度的，例如标 ${rg[rg.length-1].from} 的实际约 ${rg[rg.length-1].to}；下面同样按实际长度显示`);
+  const sk=r.length_skips||[];
+  if(sk.length){
+    const name={prefill:"输入长度",prefill_conc:"长输入并发",longctx:"超长输入"};
+    const by=[...new Set(sk.map(x=>x.phase))].map(ph=>`${name[ph]||ph} ${[...new Set(sk.filter(x=>x.phase===ph).map(x=>x.label))].join("、")}`);
+    out.push(`这些档位没有测：${by.join("；")}。原因：${sk[0].reason}`);
+  }
   const cal=r.prompt_calibration;
   if(cal&&cal.method==="guess")out.push(`没能按这个模型的实际 token 数校准输入长度（${cal.error||"原因不明"}），各档长度按旧的估算拼，可能和标签差得多，以表格里的「实际 token 数」为准`);
   const ov=r.overrides||{},cp=phase(r,"concurrency");
