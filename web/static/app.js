@@ -1,6 +1,6 @@
 "use strict";
 /* LLM Bench Pro 前端逻辑 (零依赖经典脚本; 图表用本地内置的 ECharts) */
-const UI_VERSION="3.3.0";  /* 与 llm_bench_pro/version.py 保持一致 */
+const UI_VERSION="3.4.0";  /* 与 llm_bench_pro/version.py 保持一致 */
 /* ============================================================
    基础工具
    ============================================================ */
@@ -597,7 +597,8 @@ function LogBox(id,job){
   const stop=el.querySelector(".runlog-stop");
   let stopping=false;
   stop.onclick=async()=>{
-    const ok=await confirmDialog({title:"停止测试",confirmText:"停止",danger:true,
+    const ok=await confirmDialog(job==="bank"?{title:"停止更新题集",confirmText:"停止",danger:true,message:"不再继续下载，已经下载好的题集数据会留在本地，下次不用重新下载。"}:
+      {title:"停止测试",confirmText:"停止",danger:true,
       message:"不再发新的请求，已经完成的结果会保留。"+(job==="iq"?"\n停止后可以在能力测试页接着跑。":"")+"\n正在进行的请求会被放弃。"});
     if(!ok)return;
     const d=await postJSON("/api/cancel",{job});
@@ -2200,7 +2201,8 @@ function drawDiffChart(id,rows){
 let IQ_RUNS={},IQ_BANKS=[],IQ_LOADED=false,iqPoll=null;
 const IQ_CMP=new Set();
 const iqLog=LogBox("iqLog","iq");
-bindFormMemory("llm-bench-pro-iq-form",["iqBase","iqModel","iqConc","iqTag","iqTier","iqProxy","iqSampling","iqTemp","iqTopP","iqTopK",
+const bankLog=LogBox("bankLog","bank");
+bindFormMemory("llm-bench-pro-iq-form",["iqBase","iqModel","iqConc","iqTag","iqTier","iqProxy","iqBankSrc","iqSampling","iqTemp","iqTopP","iqTopK",
   "iqBudMcq","iqBudMath","iqBudMath500","iqBudInstruct"]);
 function samplingFields(){document.querySelectorAll("[data-custom-sampling]").forEach(f=>f.hidden=$("iqSampling").value!=="custom")}
 $("iqSampling").addEventListener("change",samplingFields);
@@ -2236,21 +2238,39 @@ async function loadBanks(){
     sel.innerHTML=IQ_BANKS.map(b=>`<option value="${esc(b.bank_id)}">${esc(b.bank_id)} · ${b.total} 题 · ${esc((b.created_utc||"").slice(0,10))}</option>`).join("");
     if(keep&&IQ_BANKS.find(b=>b.bank_id===keep))sel.value=keep;
     bankInfo();
+    loadDataStatus();
   }catch(e){$("iqBankInfo").textContent="题集列表加载失败："+e.message}
 }
 function bankInfo(){
   const b=IQ_BANKS.find(x=>x.bank_id===$("iqBank").value);
   $("iqBankInfo").textContent=b?`共 ${b.total} 题：`+(b.subjects||[]).map(s=>`${s.name} ${s.n}`).join("、"):"还没有题集，请在「更多设置」里点「更新题集」";
 }
+/* 更新题集(后台任务): 缺少的题集数据先下载到本地, 再只用本地数据生成题库; 本地数据齐全时不联网 */
 async function bankUpdate(){
+  const d=await postJSON("/api/bank-update",{proxy:$("iqProxy").value||"",source:$("iqBankSrc").value});
+  if(!d.ok){msg("iqMsg","error","题集更新没有开始："+d.error);return}
+  watchBank("更新题集");
+}
+let bankPoll=null;
+function watchBank(title){
   const btn=$("iqBtnBank");setBusy(btn,true);
-  msg("iqMsg","info","正在下载题集（MMLU、GSM8K、MATH-500、ARC、HellaSwag、C-Eval、指令遵循），大约 3–5 分钟，请不要关闭页面");
+  bankLog.start(title);clearInterval(bankPoll);
+  bankPoll=pollStatus("/api/bank-status",bankLog,{interval:1000,onDone:async s=>{
+    setBusy(btn,false);
+    await loadBanks();
+    if(s.run_id&&IQ_BANKS.find(b=>b.bank_id===s.run_id)){$("iqBank").value=s.run_id;bankInfo();iqLauncherSummary()}
+  }});
+}
+/* 本地题集数据: 齐全时可以完全离线生成题库 */
+async function loadDataStatus(){
+  const el=$("iqDataInfo");if(!el||OFF)return;
   try{
-    const d=await postJSON("/api/bank-update",{proxy:$("iqProxy").value||""});
-    if(!d.ok){msg("iqMsg","error","题集更新失败："+d.error+(d.hint?"\n"+d.hint:""));return}
-    msg("iqMsg","success",`题集已更新：${d.bank_id} · ${d.total} 题`);
-    await loadBanks();$("iqBank").value=d.bank_id;bankInfo();
-  }finally{setBusy(btn,false)}
+    const s=await getJSON("/api/datasets");
+    const miss=s.datasets.filter(x=>!x.ready).map(x=>x.name);
+    el.textContent=!miss.length?"本地已有全部题集数据，更新题集不需要联网":
+      miss.length===s.datasets.length?"本地还没有题集数据，第一次更新会先下载（约 23 MB）":`本地还缺 ${miss.join("、")} 的数据，更新时会先下载`;
+    el.title="本地数据目录："+s.dir;
+  }catch(e){el.textContent=""}
 }
 async function iqStart(){
   const model=$("iqModel").value.trim();
@@ -3805,6 +3825,7 @@ async function resumeRunning(){
     ["/api/status","perf",()=>watchPerf("进行中（刷新页面后继续跟踪）")],
     ["/api/iq-status","iq",()=>watchIq("进行中（刷新页面后继续跟踪）")],
     ["/api/gen-status","gen",()=>watchGen("进行中（刷新页面后继续跟踪）")],
+    ["/api/bank-status","bank",()=>watchBank("更新题集（刷新页面后继续跟踪）")],
   ];
   for(const [url,,watch] of jobs){
     try{const s=await getJSON(url);if(s.running)watch()}catch(e){}

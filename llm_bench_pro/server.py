@@ -132,7 +132,7 @@ COMMIT_AT_START = _git_head()
 
 # ---------------------------------------------------------------- 后台任务
 
-JOB_NAMES = {"perf": "性能测试", "iq": "能力评测", "gen": "代码生成"}
+JOB_NAMES = {"perf": "性能测试", "iq": "能力评测", "gen": "代码生成", "bank": "题集更新"}
 
 
 class Job:
@@ -187,7 +187,6 @@ class Job:
 
 
 JOBS = {k: Job(k) for k in JOB_NAMES}
-_bank_building = threading.Lock()
 
 
 def endpoint_key(base):
@@ -749,6 +748,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/iq-answer": lambda: self._json(iq_answer(q("ids"), q("sid"), q("idx"))),
             "/api/iq-compare": lambda: self._json(iq_compare(q("a"), q("b"))),
             "/api/banks": lambda: self._json(bankman.list_banks()),
+            "/api/bank-status": lambda: self._json(JOBS["bank"].snapshot()),
+            "/api/datasets": lambda: self._json(bankman.local_status()),
             "/api/status": lambda: self._json(JOBS["perf"].snapshot()),
             "/api/iq-status": lambda: self._json(JOBS["iq"].snapshot()),
             "/api/gen-status": lambda: self._json(JOBS["gen"].snapshot()),
@@ -854,7 +855,7 @@ class Handler(BaseHTTPRequestHandler):
     def api_cancel(self, body):
         kind = body.get("job")
         if kind not in JOBS:
-            return self._json({"ok": False, "error": "job 应为 perf / iq / gen"}, 400)
+            return self._json({"ok": False, "error": "job 应为 perf / iq / gen / bank"}, 400)
         job = JOBS[kind]
         if not job.snapshot()["running"]:
             return self._json({"ok": False, "error": "没有运行中的%s" % JOB_NAMES[kind]}, 409)
@@ -1139,18 +1140,28 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- 能力评测
     def api_bank_update(self, body):
-        if not _bank_building.acquire(blocking=False):
-            return self._json({"ok": False, "error": "题集正在更新中"}, 409)
+        """更新题集(后台任务): 本地缺少的题集数据先下载到 data/datasets/(默认魔搭, 国内), 再只用本地数据生成题库。
+        进度看 /api/bank-status, 可用 /api/cancel {job: bank} 停止。offline=true 时不联网。"""
+        job = JOBS["bank"]
         proxy = (body.get("proxy") or "").strip() or None
-        try:
-            bank, path = bankman.build(proxy=proxy)
-            return self._json({"ok": True, "bank_id": bank["bank_id"], "total": bank["total"],
-                               "subjects": [{"id": s["id"], "name": s["name"], "n": len(s["items"])} for s in bank["subjects"]]})
-        except Exception as e:
-            return self._json({"ok": False, "error": "%s: %s" % (type(e).__name__, str(e)[:200]),
-                               "hint": "题源需可达 datasets-server.huggingface.co 与 raw.githubusercontent.com；网络不通时在“HTTP 代理”中填写 http://127.0.0.1:端口 后重试"})
-        finally:
-            _bank_building.release()
+        source = body.get("source") if body.get("source") in bankman.SOURCE_MODES else "modelscope"
+        offline = _truthy(body.get("offline"))
+        if not job.try_start(None, "更新题集"):
+            return self._json({"ok": False, "error": "题集正在更新中"}, 409)
+
+        def work(j):
+            try:
+                bank, _ = bankman.build(proxy=proxy, mode=source, log=j.line, cancel=j.cancel, offline=offline)
+            except bankman.Cancelled:
+                j.line("已停止：已经下载好的题集数据留在本地，下次不用重新下载")
+                return
+            except Exception:
+                j.line("提示：可以换一个「题集下载源」或填「下载用的代理」再试；没有网的机器，"
+                       "把能联网机器上的 data/datasets/ 拷贝过来即可离线生成")
+                raise
+            j.set(run_id=bank["bank_id"])
+        job.run(work)
+        return self._json({"ok": True, "started": True, "source": source})
 
     def api_iq_start(self, body):
         base = bench.normalize_base(body.get("base", ""))

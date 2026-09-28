@@ -41,6 +41,8 @@ class TestAnswerExtraction(unittest.TestCase):
     def test_bank_gold_answers_self_consistent(self):
         """题库中每道题的标准答案放进 \\boxed{} / #### / 字母后必须判为正确(判分器与题库口径一致)。"""
         for fn in os.listdir(os.path.join(ROOT, "banks")):
+            if not (fn.startswith("iq-") and fn.endswith(".json")):  # banks/README.md 等说明文件
+                continue
             bank = bankman.load_bank(fn[:-5])
             for sub in bank["subjects"]:
                 if sub["type"] == "instruct":

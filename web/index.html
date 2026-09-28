@@ -260,7 +260,7 @@
         <select class="select" id="fEpSel" aria-label="选择已保存的模型"><option value="">选择后自动填入 地址 / Key / 模型</option></select>
         <span class="help">在左侧「模型管理」里保存常用的模型</span></div>
       <div class="field span-2"><label for="fBase">服务地址</label>
-        <input class="input" id="fBase" placeholder="http://127.0.0.1:8000" value="http://192.168.0.51:8011">
+        <input class="input" id="fBase" placeholder="http://127.0.0.1:8000">
         <span class="help">OpenAI 兼容接口的地址，填到端口或 /v1 都可以</span></div>
       <div class="field"><label for="fKey">API Key（可选）</label><input class="input" id="fKey" type="password" placeholder="没有可不填" autocomplete="off"></div>
       <div class="field"><label for="fModel">模型名称</label>
@@ -365,7 +365,7 @@
     <div class="form-grid">
       <div class="field span-2"><label for="iqEpSel">从已保存的模型填入</label>
         <select class="select" id="iqEpSel" aria-label="选择已保存的模型"><option value="">选择后自动填入 地址 / Key / 模型</option></select></div>
-      <div class="field span-2"><label for="iqBase">服务地址</label><input class="input" id="iqBase" value="http://192.168.0.51:8011" placeholder="http://127.0.0.1:8000"></div>
+      <div class="field span-2"><label for="iqBase">服务地址</label><input class="input" id="iqBase" placeholder="http://127.0.0.1:8000"></div>
       <div class="field"><label for="iqKey">API Key（可选）</label><input class="input" id="iqKey" type="password" placeholder="没有可不填" autocomplete="off"></div>
       <div class="field"><label for="iqModel">模型名称</label><input class="input" id="iqModel" placeholder="模型名称"></div>
     </div>
@@ -405,8 +405,13 @@
             <label>按要求作答<input class="input" id="iqBudInstruct" type="number" min="8" max="32768" value="320"></label>
           </div>
           <span class="help">只决定"能不能写完"，不影响判分规则。思考模式统一 32K，这里的设置不生效</span></div>
-        <div class="field"><label for="iqProxy">下载题集用的代理</label><input class="input" id="iqProxy" placeholder="如 http://127.0.0.1:7890"><span class="help">只用于下载题集，留空直连</span></div>
-        <div class="field" style="justify-content:flex-end"><button class="btn btn-secondary" id="iqBtnBank" onclick="bankUpdate()"><svg class="icon"><use href="#i-download"/></svg>更新题集</button></div>
+        <div class="field"><label for="iqBankSrc">题集下载源</label><select class="select" id="iqBankSrc">
+          <option value="modelscope">魔搭（国内，推荐）</option><option value="global">GitHub / HuggingFace（海外）</option></select>
+          <span class="help">数据先下载到本地，再生成题库；这个源不通会自动换别的</span></div>
+        <div class="field"><label for="iqProxy">下载用的代理</label><input class="input" id="iqProxy" placeholder="如 http://127.0.0.1:7890"><span class="help">只用于下载题集数据，留空直连</span></div>
+        <div class="field span-all bank-row"><span class="help" id="iqDataInfo"></span>
+          <button class="btn btn-secondary" id="iqBtnBank" onclick="bankUpdate()"><svg class="icon"><use href="#i-download"/></svg>更新题集</button></div>
+        <div class="runlog span-all" id="bankLog" hidden></div>
       </div>
     </details>
   </div>
@@ -430,7 +435,7 @@
     <div class="form-grid">
       <div class="field span-2"><label for="genEpSel">从已保存的模型填入</label>
         <select class="select" id="genEpSel" aria-label="选择已保存的模型"><option value="">选择后自动填入 地址 / Key / 模型</option></select></div>
-      <div class="field span-2"><label for="genBase">服务地址</label><input class="input" id="genBase" value="http://192.168.0.51:8011" placeholder="http://127.0.0.1:8000"></div>
+      <div class="field span-2"><label for="genBase">服务地址</label><input class="input" id="genBase" placeholder="http://127.0.0.1:8000"></div>
       <div class="field"><label for="genKey">API Key（可选）</label><input class="input" id="genKey" type="password" placeholder="没有可不填" autocomplete="off"></div>
       <div class="field"><label for="genModel">模型名称</label><input class="input" id="genModel" placeholder="模型名称"></div>
     </div>

@@ -5,6 +5,7 @@ import os
 import socket
 import sys
 import threading
+import time
 import unittest
 
 from _util import ROOT, temp_dir
@@ -202,6 +203,53 @@ class TestServer(ServerCase):
             except ValueError:
                 self.httpd.handle_error(None, ("127.0.0.1", 1))
         self.assertIn("ValueError: boom", out.getvalue())
+
+    def test_bank_update_runs_in_background(self):
+        """更新题集是后台任务: 立即返回, 进度在 /api/bank-status, 可以停止; 同时只能跑一个; 选的下载源和离线参数传到位。"""
+        import bankman
+        started, release, calls = threading.Event(), threading.Event(), []
+
+        def fake_build(proxy=None, mode="modelscope", log=None, cancel=None, offline=False, **kw):
+            calls.append((mode, offline, proxy))
+            log("进度 0 / 6 · GSM8K")
+            started.set()
+            while not release.is_set():
+                if cancel.is_set():
+                    raise bankman.Cancelled("已停止")
+                time.sleep(0.02)
+            return {"bank_id": "iq-fake", "total": 1, "subjects": []}, "x"
+
+        def wait_idle():
+            for _ in range(200):
+                s = self.request("GET", "/api/bank-status")[2]
+                if not s["running"]:
+                    return s
+                time.sleep(0.05)
+            self.fail("题集更新没有结束")
+        orig = bankman.build
+        bankman.build = fake_build
+        try:
+            st, _, d = self.request("POST", "/api/bank-update", {"source": "modelscope", "proxy": "http://127.0.0.1:7890"})
+            self.assertTrue(d["ok"] and d["started"])
+            self.assertTrue(started.wait(5))
+            self.assertEqual(self.request("POST", "/api/bank-update", {})[0], 409)       # 同时只能跑一个
+            s = self.request("GET", "/api/bank-status")[2]
+            self.assertTrue(s["running"])
+            self.assertIn("进度 0 / 6", s["log"][0]["msg"])
+            self.assertTrue(self.request("POST", "/api/cancel", {"job": "bank"})[2]["ok"])
+            s = wait_idle()
+            self.assertIsNone(s["error"])                                                 # 停止不算出错
+            self.assertTrue(any("已停止" in x["msg"] for x in s["log"]))
+            release.set()
+            self.request("POST", "/api/bank-update", {"source": "global", "offline": True})
+            s = wait_idle()
+            self.assertEqual(s["run_id"], "iq-fake")
+            self.assertEqual(calls, [("modelscope", False, "http://127.0.0.1:7890"), ("global", True, None)])
+        finally:
+            bankman.build = orig
+        d = self.request("GET", "/api/datasets")[2]
+        self.assertEqual(len(d["datasets"]), 6)
+        self.assertIn("ready", d)
 
     def test_works_open_mode(self):
         """新标签页打开(?open=1): 仍是沙箱(不同源, 碰不到接口), 但像普通网页一样可以加载外部字体和脚本。"""

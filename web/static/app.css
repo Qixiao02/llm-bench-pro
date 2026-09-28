@@ -954,3 +954,7 @@ details.advanced.is-step{margin-top:0;border-top:0;padding-top:0}
 /* 不支持 View Transitions 的浏览器: 颜色渐变 */
 .theme-fade,.theme-fade *,.theme-fade *::before,.theme-fade *::after{
   transition:background-color .35s ease,color .35s ease,border-color .35s ease,fill .35s ease,stroke .35s ease,box-shadow .35s ease!important}
+/* 能力测试「更多设置」: 本地题集数据说明 + 更新按钮同一行 */
+.bank-row{flex-direction:row;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap}
+.bank-row .help{flex:1 1 240px;margin:0}
+#bankLog{margin-top:0}
