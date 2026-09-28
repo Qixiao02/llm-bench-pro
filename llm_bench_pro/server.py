@@ -37,6 +37,7 @@ import iq  # noqa: E402
 import report  # noqa: E402
 import sinks  # noqa: E402
 import store  # noqa: E402
+import vision_assets  # noqa: E402
 from version import APP_VERSION  # noqa: E402
 
 DATA = os.path.join(ROOT, "data")        # 运行数据(不入库): 数据库 / 结果 JSON / 生成作品 / 回放与场景文件
@@ -563,6 +564,24 @@ def _ints(raw, name, lo, hi):
     return out
 
 
+def _mtime_iso(p):
+    return datetime.fromtimestamp(os.path.getmtime(p), timezone.utc).isoformat()[:19]
+
+
+def _dims_text(checks):
+    """图片尺寸范围: 全部一样时 "448×448", 否则 "最小 – 最大"(按像素数); 都读不出尺寸时为空。"""
+    dims = sorted({(c["width"], c["height"]) for c in checks if c.get("width")}, key=lambda d: (d[0] * d[1], d))
+    if not dims:
+        return ""
+    return "%d×%d" % dims[0] if len(dims) == 1 else "%d×%d – %d×%d" % (dims[0] + dims[-1])
+
+
+def _img_reject(name, msg, code="unsupported"):
+    """上传时没进到格式检查就被拒的图片, 结果字段与 vision_assets.check_image 一致。"""
+    return {"name": name, "bytes": 0, "format": None, "width": None, "height": None, "ext": None,
+            "ok": False, "level": "bad", "code": code, "msg": msg}
+
+
 def _parse_scenarios(body):
     """任务场景配置: scenarios.tasks(模板多选) + 共用参数 + 各模板专属参数。
     返回可直接传给 bench.run_suite 的 dict(无任务时返回 None); 非法抛 ValueError。"""
@@ -591,23 +610,31 @@ def _parse_scenarios(body):
     if "rag" in tasks:
         out["rag_ctx"] = _ints(scen.get("rag_ctx") or [4000], "scenarios.rag_ctx", 512, 65536)
     if "vision" in tasks:
+        # 图片来源: image_id(上传的图片包) > dir(服务器上的文件夹) > 内置示例图片(默认, builtin 或什么都不给)
         src = scen.get("vision_src") or {}
         if not isinstance(src, dict):
             raise ValueError("vision_src 应为对象")
-        img_dir = ""
-        if src.get("image_id"):
-            iid = str(src["image_id"]).strip()
+        img_dir, what = "", ""
+        iid = str(src.get("image_id") or "").strip()
+        if iid and iid != "builtin":
             if not re.match(r"^img-[0-9a-f]{12}$", iid):
                 raise ValueError("非法 image_id")
-            img_dir = os.path.join(SCN_IMAGES_DIR, iid)
-        elif (src.get("dir") or "").strip():
-            img_dir = (src["dir"] or "").strip()
-        if not img_dir or not os.path.isdir(img_dir):
-            raise ValueError("图片理解场景需要已上传的图片包或存在的服务器图片目录")
-        if not any(os.path.splitext(n)[1].lower() in (".jpg", ".jpeg", ".png", ".webp")
-                   for n in os.listdir(img_dir)):
-            raise ValueError("图片目录中没有可用图片(jpg/png/webp): %s" % img_dir)
-        out["vision_dir"] = img_dir
+            img_dir, what = os.path.join(SCN_IMAGES_DIR, iid), "图片包 %s" % iid
+            if not os.path.isdir(img_dir):
+                raise ValueError("%s 不存在（可能已被删除），请重新上传或改用内置示例图片" % what)
+        elif not iid and not src.get("builtin") and str(src.get("dir") or "").strip():
+            img_dir = str(src["dir"]).strip()
+            what = "图片文件夹 %s" % img_dir
+            if not os.path.isdir(img_dir):
+                raise ValueError("服务器上没有这个图片文件夹: %s" % img_dir)
+        if img_dir:  # 发送前逐张检查: 一张能用的都没有就不开始(否则要等前面几个阶段跑完才失败)
+            good, checks = vision_assets.scan_dir(img_dir, keep_data=False)
+            if not checks:
+                raise ValueError("%s 里没有图片（支持 jpg / png / webp / gif）" % what)
+            if not good:
+                raise ValueError("%s 里没有能用的图片：%s。请重新上传，或改用内置示例图片" % (
+                    what, "；".join("%s %s" % (c["name"], c["msg"]) for c in checks[:3])))
+            out["vision_dir"] = img_dir
         try:
             out["vision_images"] = max(1, min(4, int(src.get("images") or 1)))
         except (TypeError, ValueError):
@@ -900,47 +927,53 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"ok": True} if ok else {"ok": False, "error": "配置不存在"}, 200 if ok else 404)
 
     # ---- 任务场景: 自定义任务集 / 图片包
-    _IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+    _MAX_UPLOAD_IMAGES = 64
 
     def scenario_list(self):
+        """任务集(每个带可用行数)与图片包(张数、尺寸范围、有几张不能用), 新的在前; 另给内置示例图片的概况。"""
         tasks = []
         if os.path.isdir(SCN_TASKS_DIR):
-            for fn in sorted(os.listdir(SCN_TASKS_DIR)):
+            for fn in os.listdir(SCN_TASKS_DIR):
                 if re.match(r"^scn-[0-9a-f]{12}\.jsonl$", fn):
                     p = os.path.join(SCN_TASKS_DIR, fn)
-                    tasks.append({"file_id": fn[:-6], "size": os.path.getsize(p),
-                                  "mtime": datetime.fromtimestamp(os.path.getmtime(p), timezone.utc).isoformat()[:19]})
+                    with open(p, encoding="utf-8-sig", errors="replace") as f:
+                        chk = bench.check_task_text(f.read(), limit=0)
+                    tasks.append({"file_id": fn[:-6], "size": os.path.getsize(p), "mtime": _mtime_iso(p),
+                                  "lines": chk["valid"], "total": chk["total"], "json": chk["json"], "image": chk["image"]})
         images = []
         if os.path.isdir(SCN_IMAGES_DIR):
-            for dn in sorted(os.listdir(SCN_IMAGES_DIR)):
+            for dn in os.listdir(SCN_IMAGES_DIR):
                 d = os.path.join(SCN_IMAGES_DIR, dn)
-                if re.match(r"^img-[0-9a-f]{12}$", dn) and os.path.isdir(d):
-                    files = [n for n in os.listdir(d) if os.path.splitext(n)[1].lower() in self._IMG_EXTS]
-                    if files:
-                        images.append({"image_id": dn, "count": len(files),
-                                       "size": sum(os.path.getsize(os.path.join(d, n)) for n in files)})
-        return {"ok": True, "tasks": tasks, "images": images}
+                if not (re.match(r"^img-[0-9a-f]{12}$", dn) and os.path.isdir(d)):
+                    continue
+                good, checks = vision_assets.scan_dir(d, keep_data=False)
+                if not checks:
+                    continue
+                small = sum(1 for c in checks if c["code"] == "too_small")
+                images.append({"image_id": dn, "count": len(checks), "usable": len(good), "too_small": small,
+                               "broken": len(checks) - len(good) - small, "size": sum(c["bytes"] for c in checks),
+                               "dims": _dims_text(checks), "mtime": _mtime_iso(d),
+                               "problems": ["%s %s" % (c["name"], c["msg"]) for c in checks if not c["ok"]][:3]})
+        tasks.sort(key=lambda x: x["mtime"], reverse=True)
+        images.sort(key=lambda x: x["mtime"], reverse=True)
+        return {"ok": True, "tasks": tasks, "images": images, "builtin_images": vision_assets.sample_summary()}
 
     def api_scenario_upload(self, body):
-        """上传任务场景资产: kind=tasks 任务集 JSONL {name, content}; kind=images 图片包 {files:[{name, data}]}。
-        均内容寻址幂等; 总量受 16MB 请求体上限约束。"""
+        """上传任务场景资产, 均内容寻址幂等; 总量受 16MB 请求体上限约束。
+        kind=tasks: 任务集 JSONL {name, content}, 逐行检查(与测试时实际发送的判断相同), 返回 check 报告;
+        kind=images: 图片包 {files:[{name, data(base64)}]}, 逐张检查, 损坏/太小/太大的不收, 返回每张的结果 files。"""
         kind = body.get("kind")
         if kind == "tasks":
             content = body.get("content")
             if not isinstance(content, str) or not content.strip():
                 return self._json({"ok": False, "error": "缺少文件内容 (content 应为 JSONL 文本)"}, 400)
-            lines, bad = 0, 0
-            for ln in content.splitlines():
-                if not ln.strip():
-                    continue
-                try:
-                    r = json.loads(ln)
-                    lines += 1 if isinstance(r.get("messages"), list) else 0
-                    bad += 0 if isinstance(r.get("messages"), list) else 1
-                except Exception:
-                    bad += 1
-            if not lines:
-                return self._json({"ok": False, "error": "没有可用行: 每行应为 {\"messages\": [...], \"params\": {...}}"}, 400)
+            if len(content.encode("utf-8", "ignore")) > 15 * 1024 * 1024:
+                return self._json({"ok": False, "error": "文件超过 15MB 上限; 大文件请放到服务器后用路径引用"}, 400)
+            check = bench.check_task_text(content)
+            if not check["valid"]:
+                first = check["hint"] or ("第 %(line)d 行：%(reason)s" % check["problems"][0] if check["problems"] else "")
+                return self._json({"ok": False, "error": "没有一行能用" + ("（%s）" % first if first else ""),
+                                   "check": check}, 400)
             data = content.encode("utf-8")
             fid = "scn-" + hashlib.sha256(data).hexdigest()[:12]
             os.makedirs(SCN_TASKS_DIR, exist_ok=True)
@@ -951,37 +984,47 @@ class Handler(BaseHTTPRequestHandler):
                     f.write(data)
                 os.replace(tmp, path)
             return self._json({"ok": True, "file_id": fid, "name": (body.get("name") or "")[:80],
-                               "lines": lines, "bad_lines": bad})
+                               "lines": check["valid"], "bad_lines": check["total"] - check["valid"], "check": check})
         if kind == "images":
             files = body.get("files")
             if not isinstance(files, list) or not files:
                 return self._json({"ok": False, "error": "缺少 files: [{name, data(base64)}]"}, 400)
-            decoded = []
-            total = 0
-            for f in files[:64]:
-                name = str((f or {}).get("name") or "")
-                ext = os.path.splitext(name)[1].lower()
-                if ext not in self._IMG_EXTS:
-                    return self._json({"ok": False, "error": "不支持的图片类型 %r (仅 jpg/png/webp)" % name}, 400)
+            report, keep = [], []
+            for i, f in enumerate(files):
+                f = f if isinstance(f, dict) else {}
+                name = os.path.basename(str(f.get("name") or "第 %d 张" % (i + 1)))[:120]
+                if i >= self._MAX_UPLOAD_IMAGES:
+                    report.append(_img_reject(name, "一次最多上传 %d 张，这张没有收" % self._MAX_UPLOAD_IMAGES))
+                    continue
+                if os.path.splitext(name)[1].lower() not in vision_assets.EXT_FORMAT:
+                    report.append(_img_reject(name, "不是支持的图片类型（只收 jpg / png / webp / gif）"))
+                    continue
                 try:
-                    raw = base64.b64decode((f.get("data") or ""), validate=False)
-                except Exception:
-                    return self._json({"ok": False, "error": "%s 的 data 不是合法 base64" % name}, 400)
-                if not raw.startswith((b"\xff\xd8", b"\x89PNG", b"RIFF")):  # jpg/png/webp 魔数
-                    return self._json({"ok": False, "error": "%s 不是有效的图片文件" % name}, 400)
-                decoded.append((ext, raw))
-                total += len(raw)
+                    raw = base64.b64decode(f.get("data") or "", validate=False)
+                except (ValueError, TypeError):
+                    report.append(_img_reject(name, "上传的数据不是合法的 base64", "broken"))
+                    continue
+                c = vision_assets.check_image(raw, name=name)
+                report.append(c)
+                if c["ok"]:
+                    keep.append((c, raw))
+            rejected = sum(1 for c in report if not c["ok"])
+            if not keep:
+                return self._json({"ok": False, "files": report, "rejected": rejected,
+                                   "error": "没有能用的图片：" + "；".join("%s %s" % (c["name"], c["msg"]) for c in report[:3])},
+                                  400)
             digest = hashlib.sha256()
-            for _, raw in decoded:
+            for _, raw in keep:
                 digest.update(raw)
             iid = "img-" + digest.hexdigest()[:12]
             d = os.path.join(SCN_IMAGES_DIR, iid)
             os.makedirs(d, exist_ok=True)
-            if not os.listdir(d):  # 内容寻址幂等
-                for i, (ext, raw) in enumerate(decoded):
-                    with open(os.path.join(d, "%02d%s" % (i, ext)), "wb") as f:
+            if not os.listdir(d):  # 内容寻址幂等; 按真实格式定扩展名(扩展名写错的也能按正确类型发送)
+                for i, (c, raw) in enumerate(keep):
+                    with open(os.path.join(d, "%02d%s" % (i, c["ext"])), "wb") as f:
                         f.write(raw)
-            return self._json({"ok": True, "image_id": iid, "count": len(decoded), "size": total})
+            return self._json({"ok": True, "image_id": iid, "count": len(keep), "size": sum(len(r) for _, r in keep),
+                               "dims": _dims_text([c for c, _ in keep]), "files": report, "rejected": rejected})
         return self._json({"ok": False, "error": "kind 应为 tasks 或 images"}, 400)
 
     # ---- 真实请求回放池
@@ -991,30 +1034,22 @@ class Handler(BaseHTTPRequestHandler):
             for fn in sorted(os.listdir(REPLAY_DIR)):
                 if re.match(r"^replay-[0-9a-f]{12}\.jsonl$", fn):
                     p = os.path.join(REPLAY_DIR, fn)
-                    files.append({"file_id": fn[:-6], "size": os.path.getsize(p),
-                                  "mtime": datetime.fromtimestamp(os.path.getmtime(p), timezone.utc).isoformat()[:19]})
+                    files.append({"file_id": fn[:-6], "size": os.path.getsize(p), "mtime": _mtime_iso(p)})
         return {"ok": True, "files": files}
 
     def api_replay_upload(self, body):
-        """上传回放文件: {name, content}; 内容寻址存 data/replay/replay-<sha12>.jsonl, 幂等。"""
+        """上传回放文件: {name, content}; 内容寻址存 data/replay/replay-<sha12>.jsonl, 幂等。
+        逐行检查与回放时实际发送的判断相同(bench.check_task_text)。"""
         name = (body.get("name") or "").strip()
         content = body.get("content")
         if not isinstance(content, str) or not content.strip():
             return self._json({"ok": False, "error": "缺少文件内容 (content 应为 JSONL 文本)"}, 400)
         if len(content.encode("utf-8", "ignore")) > 15 * 1024 * 1024:
             return self._json({"ok": False, "error": "文件超过 15MB 上限; 大文件请放到服务器后用路径引用"}, 400)
-        lines, bad = 0, 0
-        for ln in content.splitlines():
-            if not ln.strip():
-                continue
-            try:
-                r = json.loads(ln)
-                lines += 1 if isinstance(r.get("messages"), list) else 0
-                bad += 0 if isinstance(r.get("messages"), list) else 1
-            except Exception:
-                bad += 1
-        if not lines:
-            return self._json({"ok": False, "error": "没有可用行: 每行应为 {\"messages\": [...], \"params\": {...}}"}, 400)
+        check = bench.check_task_text(content)
+        if not check["valid"]:
+            return self._json({"ok": False, "error": "没有可用行: 每行应为 {\"messages\": [...], \"params\": {...}}",
+                               "check": check}, 400)
         data = content.encode("utf-8")
         fid = "replay-" + hashlib.sha256(data).hexdigest()[:12]
         os.makedirs(REPLAY_DIR, exist_ok=True)
@@ -1024,7 +1059,8 @@ class Handler(BaseHTTPRequestHandler):
             with open(tmp, "wb") as f:
                 f.write(data)
             os.replace(tmp, path)
-        return self._json({"ok": True, "file_id": fid, "name": name[:80], "lines": lines, "bad_lines": bad})
+        return self._json({"ok": True, "file_id": fid, "name": name[:80], "lines": check["valid"],
+                           "bad_lines": check["total"] - check["valid"], "check": check})
 
     def report_html(self, run_id, cmp_id=None):
         """离线自包含 HTML 报告 (?id=run_a&cmp=run_b 做 A/B); 浏览器直接打开, 无需服务。"""
