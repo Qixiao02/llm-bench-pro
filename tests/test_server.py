@@ -3,6 +3,7 @@ import http.client
 import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -586,6 +587,21 @@ class TestServerToken(ServerCase):
         cookie = h["Set-Cookie"].split(";")[0]
         self.assertEqual(self.request("GET", "/api/version", headers={"Cookie": cookie})[0], 200)
         self.assertEqual(self.request("GET", "/api/version", headers={"X-Bench-Token": "wrong"})[0], 401)
+
+
+class TestConsoleEncoding(unittest.TestCase):
+    def test_print_survives_non_utf8_stdout(self):
+        """输出被重定向、编码不是 UTF-8 时 (英文 Windows 为 cp1252, 中文 Windows 为 GBK),
+        打印 ⚠ 和中文不能抛错中断任务, 编不了的字符换成 ?"""
+        code = "import llm_bench_pro; print('\\u26a0 \\u4e2d\\u6587 ok')"
+        # cp1252 = 指定编码时的默认 (strict); cp1252:surrogateescape = Windows 重定向输出时的默认
+        for io_enc in ("cp1252", "cp1252:surrogateescape"):
+            env = dict(os.environ, PYTHONIOENCODING=io_enc)
+            env.pop("PYTHONUTF8", None)
+            r = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+            self.assertEqual(r.returncode, 0, io_enc + ": " + r.stderr.decode("utf-8", "replace"))
+            self.assertEqual(r.stdout.strip(), b"? ?? ok", io_enc)
 
 
 if __name__ == "__main__":

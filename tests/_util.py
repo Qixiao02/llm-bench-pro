@@ -11,6 +11,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PKG = os.path.join(ROOT, "llm_bench_pro")
 if PKG not in sys.path:
     sys.path.insert(0, PKG)
+# 和正式运行一样先执行包的 __init__ (输出编码容错), 否则 CI 的 Windows (cp1252) 上打印中文会报错
+if ROOT not in sys.path:
+    sys.path.append(ROOT)
+import llm_bench_pro  # noqa: E402,F401
 
 # 所有测试使用临时数据库, 绝不触碰 data/llm_bench.db
 _TMP = tempfile.mkdtemp(prefix="llmbench-test-")
