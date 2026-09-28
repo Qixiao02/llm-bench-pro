@@ -1,0 +1,43 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            python: "3.8"
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: windows-latest
+            python: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: 单元测试(含前端逻辑断言, 不联网)
+        run: python -m unittest discover -s tests -v
+
+  # 分支保护里只需要勾这一项: 上面所有组合都通过才算通过
+  all-tests-passed:
+    name: all-tests-passed
+    needs: test
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - run: test "${{ needs.test.result }}" = "success"
