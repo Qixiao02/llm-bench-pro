@@ -336,7 +336,7 @@ class TestScenarioUploadAPI(ServerCase):
                                                                  "content": '{"messages": 1}\n{"messages":[{"role":"x","content":"a"}]}'})
         self.assertEqual((st, d["ok"], d["check"]["valid"]), (400, False, 0))
         self.assertIn("第 1 行", d["error"])
-        self.assertEqual(len(os.listdir(server.SCN_TASKS_DIR)), 1)           # 一行都不能用的不保存
+        self.assertEqual(len([f for f in os.listdir(server.SCN_TASKS_DIR) if f.endswith(".jsonl")]), 1)  # 一行都不能用的不保存
 
     def test_image_upload_checks_each_file(self):
         good = va.sample_images()[1][2]

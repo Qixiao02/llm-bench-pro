@@ -351,6 +351,122 @@ T("任务集模板: 每行都是带 messages 的对象, 覆盖 system / 多轮 /
   assert.ok(has(x => x.params && x.params.max_tokens) && has(x => x.params && x.params.temperature != null));
   assert.ok(TASK_TEMPLATE.every(x => x.meta && x.meta.note));  /* 每行都有说明 */
 });
+/* ---------- 任务集页面 ---------- */
+T("任务集: 地址 #tasks/<id> 拆成页面和任务集 id; id 只认 scn- 加 12 位十六进制", () => {
+  assert.deepEqual(parseRoute("#tasks/scn-0123456789ab"), {view: "tasks", sub: "scn-0123456789ab"});
+  assert.deepEqual(parseRoute("#tasks"), {view: "tasks", sub: ""});
+  assert.deepEqual(parseRoute("dash"), {view: "dash", sub: ""});
+  assert.ok(TS_ID_RE.test("scn-0123456789ab"));
+  for (const bad of ["scn-0123456789AB", "scn-0123456789abc", "../x", "scn-", ""]) assert.ok(!TS_ID_RE.test(bad), bad);
+  assert.ok(VIEWS.tasks === "viewTasks");
+});
+T("任务集名称: 去掉控制字符和首尾空白, 1–80 个字(按字数不按字节), 与服务端同一套规则", () => {
+  assert.deepEqual(tsNameCheck("  客服\u0000问答‮ \n"), {ok: true, name: "客服问答", n: 4, error: ""});
+  assert.equal(tsNameCheck("").error, "名称不能为空");
+  assert.equal(tsNameCheck(" \t﻿ ").error, "名称不能为空");
+  assert.ok(tsNameCheck(null).error.includes("不能为空"));
+  assert.ok(tsNameCheck("字".repeat(80)).ok);
+  const long = tsNameCheck("字".repeat(81));
+  assert.ok(!long.ok && long.error.includes("80") && long.error.includes("81"));
+  assert.ok(tsNameCheck("😀".repeat(80)).ok);          /* 表情算 1 个字 */
+  assert.equal(tsNameCheck("😀".repeat(81)).n, 81);
+});
+T("任务集逐行状态: 文字 + 图标 + 颜色, 不只靠颜色区分; 不认识的按有问题处理", () => {
+  assert.deepEqual([tsStatusOf("ok").text, tsStatusOf("ok").tone, tsStatusOf("ok").icon], ["可用", "good", "check"]);
+  assert.deepEqual([tsStatusOf("skip").text, tsStatusOf("skip").tone], ["会跳过", "warn"]);
+  assert.deepEqual([tsStatusOf("bad").text, tsStatusOf("bad").tone, tsStatusOf("bad").icon], ["有问题", "bad", "x"]);
+  assert.equal(tsStatusOf("???").text, "有问题");
+  for (const k of ["ok", "skip", "bad"]) assert.ok(tsStatusOf(k).tip);
+  assert.equal(tsRoleName("assistant"), "模型之前的回答");
+  assert.equal(tsRoleName("system"), "系统提示");
+  assert.ok(tsRoleName("usr").includes("usr") && tsRoleName(null).includes("没写"));
+});
+T("任务集筛选标签: 全部 / 可用 / 有问题 / 带图片 / 要求 JSON 都带数字, 当前的标 aria-pressed", () => {
+  const h = tsChipsHTML({all: 14, ok: 12, bad: 2, image: 1, json: 3}, "bad");
+  assert.deepEqual([...h.matchAll(/data-ts-filter="(\w+)"/g)].map(m => m[1]), ["all", "ok", "bad", "image", "json"]);
+  assert.ok(/data-ts-filter="bad" aria-pressed="true"/.test(h) && /data-ts-filter="all" aria-pressed="false"/.test(h));
+  assert.ok(h.includes("全部 <b>14</b>") && h.includes("有问题 <b>2</b>") && h.includes("要求 JSON <b>3</b>"));
+  assert.ok(tsChipsHTML(null, "all").includes("带图片 <b>0</b>"));   /* 还没取到数据时显示 0 */
+});
+T("任务集输入长度分档: 等宽 / 按 10–20–50 倍数; 每档含下限不含上限, 行数加起来不变", () => {
+  assert.deepEqual(lenBins([]), []);
+  assert.deepEqual(lenBins([null, NaN, -1]), []);
+  assert.deepEqual(lenBins([7, 7, 7]).map(b => [b.lo, b.hi, b.n, b.label]), [[7, 8, 3, "7"]]);
+  const lin = lenBins([10, 20, 30, 40]);                    /* 最长不到最短的 20 倍: 等宽 */
+  assert.deepEqual([lin[0].lo, lin[0].hi - lin[0].lo, lin.reduce((t, b) => t + b.n, 0)], [10, 5, 4]);
+  assert.ok(lin.every((b, i) => !i || b.lo === lin[i - 1].hi), "档位首尾相接");
+  assert.equal(lin[lin.length - 1].n, 1);                    /* 最后一档有数 */
+  const wide = lenBins([5, 12, 180, 1200, 3000, 3000]);       /* 差得多: 0 10 20 50 100 200 500 1K 2K 5K */
+  assert.deepEqual(wide.map(b => b.label), ["0–10", "10–20", "20–50", "50–100", "100–200", "200–500", "500–1K", "1K–2K", "2K–5K"]);
+  assert.deepEqual(wide.map(b => b.n), [1, 1, 0, 0, 1, 0, 0, 1, 2]);
+  const edge = lenBins([1000, 1999, 2000]), binOf = v => edge.find(b => v >= b.lo && v < b.hi);
+  assert.ok(binOf(1999) && binOf(2000) && binOf(1999) !== binOf(2000));   /* 含下限、不含上限 */
+  const trim = lenBins([150, 160, 5000]);                    /* 前后没数的档去掉 */
+  assert.equal(trim[0].n > 0 && trim[trim.length - 1].n > 0, true);
+  assert.equal(lenBinText({lo: 1000, hi: 2000}), "1,000–2,000");
+  for (let i = 0; i < 30; i++) {                             /* 随机数据: 每个值都落在自己的档里 */
+    const xs = Array.from({length: 40}, () => Math.floor(Math.random() * (i % 2 ? 60000 : 900)) + (i % 3) * 7);
+    const bins = lenBins(xs);
+    assert.equal(bins.reduce((t, b) => t + b.n, 0), xs.length);
+    for (const v of xs) assert.equal(bins.filter(b => v >= b.lo && v < b.hi).length, 1, `${v} 不止落在一档`);
+  }
+});
+T("任务集参数说明: max_tokens 没写 / 写错 / 超上限, JSON 输出, 思考开关, 测试时不用的参数", () => {
+  const txt = (p, mt) => tsParamItems(p, mt).map(x => x.text);
+  assert.ok(txt({}, 4096)[0].includes("没写") && /4\D?096/.test(txt({}, 4096)[0]));   /* 千分位随系统语言 */
+  assert.deepEqual(txt({max_tokens: 256}, 256), ["每次最多生成 256 token"]);
+  assert.ok(txt({max_completion_tokens: 300}, 300)[0].includes("300"));
+  const bad = tsParamItems({max_tokens: "很多"}, 4096)[0];
+  assert.ok(bad.text.includes("不是正整数") && bad.tone === "warn");
+  assert.ok(tsParamItems({max_tokens: 99999}, 8192)[0].text.includes("超过上限"));
+  assert.ok(txt({response_format: {type: "json_object"}}, 4096).includes("要求输出 JSON 对象"));
+  assert.ok(txt({response_format: {type: "json_schema", json_schema: {name: "product"}}}, 4096).some(t => t.includes("「product」")));
+  assert.ok(txt({enable_thinking: false}, 4096).includes("关闭思考"));
+  assert.ok(txt({temperature: 0}, 4096).includes("随机性 0"));
+  const all = txt({model: "x", stream: true, top_p: 0.9}, 4096);
+  assert.ok(all.some(t => t.includes("top_p = 0.9")) && all.some(t => t.includes("测试时不用：model、stream")));
+  assert.ok(tsParamItems({temperature: 0.3}, 4096).every(x => x.tip));   /* 专业说法都在悬停提示里 */
+});
+T("任务集导入: 只收 .jsonl / .json / .txt(不分大小写), 其他文件说明原因", () => {
+  for (const ok of ["a.jsonl", "B.JSON", "c.v2.txt", "路径\\客服.JSONL"]) assert.ok(tsFileCheck(ok).ok, ok);
+  const img = tsFileCheck("shot.PNG");
+  assert.ok(!img.ok && img.reason.includes("是图片") && img.reason.includes(".jsonl"));
+  assert.ok(tsFileCheck("data.xlsx").reason.includes("是表格"));
+  assert.ok(!tsFileCheck("README").ok && !tsFileCheck("").ok && !tsFileCheck("a.jsonl.zip").ok);
+});
+T("任务集搜索: 搜到的文字标出来, 先转义再标, 不分大小写, 特殊字符照字面找", () => {
+  assert.equal(tsHighlight("Apple <b>pie</b> apple", "APPLE"), '<mark class="ts-hl">Apple</mark> &lt;b&gt;pie&lt;/b&gt; <mark class="ts-hl">apple</mark>');
+  assert.equal(tsHighlight("a.b*c", ".b*"), 'a<mark class="ts-hl">.b*</mark>c');
+  assert.equal(tsHighlight("<x>", ""), "&lt;x&gt;");
+  assert.equal(tsHighlight("abc", "zz"), "abc");
+  assert.equal(tsHighlight("一二三", "二"), '一<mark class="ts-hl">二</mark>三');
+});
+T("任务集 max_tokens 概况: 都一样 / 多数是某个值 / 没写的单独说", () => {
+  assert.equal(tsMtSummary([[512, 8]], 0).text, "每行都是 512 token");
+  const m = tsMtSummary([[512, 8], [256, 2], [4096, 1]], 1);
+  assert.equal(m.value, 512);
+  assert.ok(m.text.includes("多数是 512 token（8 / 11 行）") && m.text.includes("256（2 行）") && m.text.includes("1 行没写，按 4096"));
+  assert.equal(tsMtSummary([], 0).value, null);
+});
+T("任务集: 多久以前(放进窄的数字格)", () => {
+  const now = Date.parse("2026-09-28T12:00:00Z");
+  assert.equal(tsAgo("2026-09-28T11:59:30", now), "刚刚");
+  assert.equal(tsAgo("2026-09-28T11:55:00", now), "5 分钟前");
+  assert.equal(tsAgo("2026-09-28T09:00:00", now), "3 小时前");
+  assert.equal(tsAgo("2026-09-26T12:00:00", now), "2 天前");
+  assert.match(tsAgo("2026-07-01T00:00:00", now), /^2026-0[67]-\d\d$/);
+  assert.equal(tsAgo("", now), "—");
+});
+T("任务集: 新建面板的选项是「名称 · 可用条数」; 重复导入的检查报告说明它叫什么", () => {
+  assert.equal(taskSetText({file_id: "scn-0123456789ab", name: "客服问答", lines: 12, total: 12}), "客服问答 · 12 条可用");
+  assert.equal(taskSetText({file_id: "scn-0123456789ab", lines: 12, total: 14}), "scn-0123456789ab · 12 条可用（共 14 行）");
+  const c = {total: 3, valid: 3, json: 0, image: 0, hint: "", problems: [], warnings: [], warning_count: 0};
+  const dup = taskReportHtml({ok: true, exists: true, name: "旧的<名字>", check: c}, "a.jsonl");
+  assert.ok(dup.includes("已经导入过（名称：旧的&lt;名字&gt;）") && dup.includes("没有重复保存"));
+  const fresh = taskReportHtml({ok: true, name: "新任务集", check: c}, "新任务集.jsonl");
+  assert.ok(fresh.includes("已导入「新任务集」：共 3 行，全部可用") && fresh.includes("is-good"));
+});
+
 T("主题切换过渡: 圆心取鼠标点击处", () => {
   assert.deepEqual(themeOrigin({clientX: 120, clientY: 48}), [120, 48]);
   assert.equal(themeOrigin(null).length, 2);   /* 没有事件时也给出圆心(右上角), 不报错 */
