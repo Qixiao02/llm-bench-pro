@@ -330,6 +330,35 @@ def calibrate_prompt(url, headers, model):
             "samples": samples}
 
 
+# 服务以「上下文超长」拒绝请求时的说法(vLLM / SGLang / llama.cpp / TGI / OpenAI 等)
+_CTX_ERR = re.compile(r"maximum context|context (length|size|window)|max_model_len|max_position|too long|"
+                      r"exceeds? the (model|available)|must be <=|prompt is too long", re.I)
+
+
+class ContextOverflow(Exception):
+    """这一档超过了模型的最大上下文。"""
+
+
+def ctx_overflow(e):
+    """HTTP 400 / 413 / 422 且服务说的是上下文超长 -> 大白话原因; 其他错误返回 None。"""
+    if isinstance(e, urllib.error.HTTPError) and e.code in (400, 413, 422) and _CTX_ERR.search(str(e)):
+        return "超过模型的最大上下文（服务返回：%s）" % str(e)[:160]
+    return None
+
+
+def fit_context(ladder, max_len, out_tok, phase_id):
+    """去掉放不下的档位(目标长度 + 输出 > 最大上下文): 返回 (保留的档位, 跳过记录)。"""
+    keep, skipped = [], []
+    for item in ladder:
+        label, _, target = item
+        if max_len and target and target + out_tok > max_len:
+            skipped.append({"phase": phase_id, "label": label,
+                            "reason": "超过模型的最大上下文（%d token）" % max_len})
+        else:
+            keep.append(item)
+    return keep, skipped
+
+
 def reps_for(tokens, cal):
     """目标 token 数 -> ZH_UNIT 重复几句。"""
     return max(1, int(round((tokens - cal["overhead_tokens"]) / cal["unit_tokens"])))
@@ -357,16 +386,24 @@ def _cal_text(cal):
 def phase_prefill(url, headers, model, ladder, out_tok, rep):
     """上下文阶梯: 每档重复 rep 次取中位数; 唯一批次号避免前缀缓存命中虚高。
     ladder: resolve_ladder 的结果 [(标签, 句数, 目标 token)]。"""
-    points = []
+    points, skipped = [], []
     session_nonce = int(time.time() * 1000) % 1000000
-    for label, reps, target in ladder:
+    for i, (label, reps, target) in enumerate(ladder):
         check_cancel()
         runs = []
-        for seq in range(rep):
-            prompt = PREFILL_HEAD % (session_nonce, seq) + (ZH_UNIT * reps)
-            s = stream_call(url, {"model": model, "messages": [{"role": "user", "content": prompt}],
-                                  "max_tokens": out_tok, "temperature": 0}, headers)
-            runs.append(derive(s))
+        try:
+            for seq in range(rep):
+                prompt = PREFILL_HEAD % (session_nonce, seq) + (ZH_UNIT * reps)
+                s = stream_call(url, {"model": model, "messages": [{"role": "user", "content": prompt}],
+                                      "max_tokens": out_tok, "temperature": 0}, headers)
+                runs.append(derive(s))
+        except urllib.error.HTTPError as e:
+            why = ctx_overflow(e)
+            if not why:
+                raise
+            skipped += [{"phase": "prefill", "label": x[0], "reason": why} for x in ladder[i:]]  # 更长的也放不下
+            plog("  %s 及更长的档位跳过: %s" % (label, why))
+            break
         ttfts = [r["ttft_s"] for r in runs if r["ttft_s"]]
         tps = [r["prefill_tps"] for r in runs if r["prefill_tps"]]
         points.append({
@@ -377,7 +414,10 @@ def phase_prefill(url, headers, model, ladder, out_tok, rep):
         })
         plog("  %-6s in=%-7d ttft=%6.2fs  prefill=%8.0f t/s" %
               (label, points[-1]["in_tokens"], points[-1]["ttft_med_s"] or 0, points[-1]["prefill_tps_med"] or 0))
-    return {"id": "prefill", "name": "Prefill 阶梯", "points": points}
+    out = {"id": "prefill", "name": "Prefill 阶梯", "points": points}
+    if skipped:
+        out["skipped"] = skipped
+    return out
 
 
 def phase_decode(url, headers, model, out_tok, rep):
@@ -479,11 +519,14 @@ def phase_prefill_conc(url, headers, model, ladder, conc, out_tok, max_attempts=
                     results.append(derive(s))
             except Exception as e:
                 with lock:
-                    results.append({"error": str(e)[:ERR_MAX]})
+                    results.append({"error": str(e)[:ERR_MAX], "ctx": ctx_overflow(e)})
 
         with ThreadPoolExecutor(max_workers=conc) as ex:
             list(ex.map(worker, range(conc)))
         good = [r for r in results if "error" not in r]
+        ctx = next((r["ctx"] for r in results if r.get("ctx")), None)
+        if ctx and not good:
+            raise ContextOverflow(ctx)  # 放不下不是临时故障, 不整格重跑
         bad = len(results) - len(good)
         point = None
         if good and any(r["ttft_s"] for r in good):
@@ -506,9 +549,15 @@ def phase_prefill_conc(url, headers, model, ladder, conc, out_tok, max_attempts=
         return {"point": point, "ok": len(good), "fail": bad, "total": conc,
                 "errors": [r["error"] for r in results if "error" in r][:3]}
 
-    for label, reps, target in ladder:
+    skipped = []
+    for i, (label, reps, target) in enumerate(ladder):
         check_cancel()
-        rec = _retry_cell(lambda r=reps: run_label(r), "矩阵 %s" % label, max_attempts, retry_pause_s)
+        try:
+            rec = _retry_cell(lambda r=reps: run_label(r), "矩阵 %s" % label, max_attempts, retry_pause_s)
+        except ContextOverflow as e:
+            skipped += [{"phase": "prefill_conc", "label": x[0], "reason": str(e)} for x in ladder[i:]]
+            plog("  %s 及更长的档位跳过: %s" % (label, e))
+            break
         if rec["point"]:
             rec["point"]["label"] = label
             rec["point"]["target_tokens"] = target
@@ -534,17 +583,29 @@ def phase_prefill_conc(url, headers, model, ladder, conc, out_tok, max_attempts=
         "per_stream_decode_p90": round(pct(all_dec, 90), 1) if all_dec else None,
         "per_stream_decode_p95": round(pct(all_dec, 95), 1) if all_dec else None,
     }
-    return {"id": "prefill_conc", "name": "提示词阶梯×并发", "conc": conc, "points": points, "summary": summary}
+    out = {"id": "prefill_conc", "name": "提示词阶梯×并发", "conc": conc, "points": points, "summary": summary}
+    if skipped:
+        out["skipped"] = skipped
+    return out
 
 
 def phase_longctx(url, headers, model, ctx_tokens, out_tok, cal=None):
     """长上下文驻留: 大上下文注入后解码。句数按校准结果算(cal 为空时用旧估算)。"""
     reps = reps_for(ctx_tokens, cal or _guess(""))
     prompt = "以下是技术文档，请基于内容回答：\n" + (ZH_UNIT * reps) + "\n\n用三句话概括核心内容。"
-    s = stream_call(url, {"model": model, "messages": [{"role": "user", "content": prompt}],
-                          "max_tokens": out_tok, "temperature": 0}, headers)
+    label = "%dK" % (ctx_tokens // 1024)
+    try:
+        s = stream_call(url, {"model": model, "messages": [{"role": "user", "content": prompt}],
+                              "max_tokens": out_tok, "temperature": 0}, headers)
+    except urllib.error.HTTPError as e:
+        why = ctx_overflow(e)
+        if not why:
+            raise
+        plog("  超长输入 %s 跳过: %s" % (label, why))
+        return {"id": "longctx", "name": "长上下文驻留", "points": [],
+                "skipped": [{"phase": "longctx", "label": label, "reason": why}]}
     d = derive(s)
-    d.update(label="%dK" % (ctx_tokens // 1024), target_tokens=ctx_tokens)
+    d.update(label=label, target_tokens=ctx_tokens)
     plog("  ctx=%-7d in=%d  ttft=%6.2fs  prefill=%7.0f t/s  decode=%6.1f t/s" %
          (ctx_tokens, d["in_tokens"], d["ttft_s"] or 0, d["prefill_tps"] or 0, d["decode_tps"] or 0))
     return {"id": "longctx", "name": "长上下文驻留", "points": [d]}
@@ -1313,11 +1374,17 @@ SUITES = {
 }
 
 
-def probe_env(base_url, headers):
+def probe_env(base_url, headers, model=None):
+    """服务上的模型列表, 以及被测模型的最大上下文(vLLM / SGLang 的 /v1/models 会给 max_model_len)。"""
     env = {"gateway": base_url}
     try:
-        data = http_json(base_url.rstrip("/") + "/models", {}, dict(headers, **{"Content-Type": "application/json"}), 15)
-        env["models_visible"] = [m.get("id") for m in data.get("data", [])]
+        req = urllib.request.Request(base_url.rstrip("/") + "/v1/models", headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            models = json.loads(r.read()).get("data") or []
+        env["models_visible"] = [m.get("id") for m in models]
+        mine = next((m for m in models if m.get("id") == model), None)
+        if mine and isinstance(mine.get("max_model_len"), int) and mine["max_model_len"] > 0:
+            env["max_model_len"] = mine["max_model_len"]
     except Exception as e:
         env["models_visible"] = "unavailable: %s" % str(e)[:80]
     return env
@@ -1366,6 +1433,10 @@ def _warm_one(url, headers, model, prompt):
                           "max_tokens": 32, "temperature": 0}, headers, timeout=120)
     except RuntimeError as e:  # 空流不致命(如被截断); 连接类错误与取消照常抛出
         plog("warmup warning: %s" % e)
+    except urllib.error.HTTPError as e:  # 超过最大上下文的形状不预热(正式测量时这一档会跳过); 其他 HTTP 错误照常抛出
+        if not ctx_overflow(e):
+            raise
+        plog("warmup skip: %s" % ctx_overflow(e))
 
 
 def _warmup(url, headers, model, cfg, warmup_shapes):
@@ -1447,7 +1518,7 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
     run_id = "run_%s_%s" % (datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"), re.sub(r"[^A-Za-z0-9.-]", "_", model))
     result = {"bench_version": BENCH_VERSION, "run_id": run_id, "tag": tag, "suite": suite,
               "started_utc": datetime.now(timezone.utc).isoformat(), "url": url, "model": model,
-              "env": probe_env(base_url, headers), "phases": [],
+              "env": probe_env(base_url, headers, model), "phases": [],
               "overrides": {"conc_ladder": conc_ladder or None, "matrix_conc": matrix_conc or None, "lens": lens or None,
                             "fixed_output": bool(fixed_output), "warmup_shapes": bool(warmup_shapes)},
               "framework": fw}
@@ -1463,6 +1534,7 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
 
     plog("== llm-bench-pro v%s | %s | suite=%s ==" % (BENCH_VERSION, model, suite))
     rec = MetricsRecorder(metrics_url, headers, bool(metrics_url))
+    skips = []  # 超过模型最大上下文而没测的档位
     result["status"] = "running"
     try:
         save()
@@ -1474,6 +1546,20 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
         cfg["prefill"] = resolve_ladder(cfg.get("prefill") or [], cal)
         if cfg.get("prefill_conc"):
             cfg["prefill_conc"]["ladder"] = resolve_ladder(cfg["prefill_conc"].get("ladder") or [], cal)
+        max_len = result["env"].get("max_model_len")
+        if max_len:  # 放不下的档位开测前就去掉(不知道最大上下文时, 由各阶段在服务拒绝时跳过)
+            cfg["prefill"], sk = fit_context(cfg["prefill"], max_len, 96, "prefill")
+            skips.extend(sk)
+            if cfg.get("prefill_conc"):
+                cfg["prefill_conc"]["ladder"], sk = fit_context(cfg["prefill_conc"]["ladder"], max_len, 128, "prefill_conc")
+                skips.extend(sk)
+            for ctx in cfg.get("longctx", []):
+                if ctx + 256 > max_len:
+                    skips.append({"phase": "longctx", "label": "%dK" % (ctx // 1024),
+                                  "reason": "超过模型的最大上下文（%d token）" % max_len})
+            cfg["longctx"] = [c for c in cfg.get("longctx", []) if c + 256 <= max_len]
+            for s in skips:
+                plog("  %s 跳过: %s" % (s["label"], s["reason"]))
         _warmup(url, headers, model, cfg, warmup_shapes)
         plog("[phase] prefill")
         result["phases"].append(phase_prefill(url, headers, model, cfg["prefill"], 96, cfg["prefill_rep"])); save()
@@ -1515,6 +1601,9 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
         result["error"] = "%s: %s" % (type(e).__name__, str(e)[:300])
         raise
     finally:
+        skips.extend(s for ph in result["phases"] for s in ph.get("skipped") or [])
+        if skips:
+            result["length_skips"] = skips
         result["metrics_samples"] = rec.close()
         result["finished_utc"] = datetime.now(timezone.utc).isoformat()
         if fixed_output and url in _NO_IGNORE_EOS:

@@ -393,4 +393,12 @@ T("看资料回答: 旧结果的资料长度按实际显示, 新旧测试实际�
   assert.equal(ragActualNote(neu.phases[0], [4000]), "");
 });
 
+T("超过模型最大上下文而没测的档位: 「需要注意」里按阶段写明哪几档、为什么", () => {
+  const why = "超过模型的最大上下文（32768 token）";
+  const r = {phases: [], length_skips: [{phase: "prefill", label: "64K", reason: why}, {phase: "prefill", label: "128K", reason: why},
+    {phase: "longctx", label: "64K", reason: why}]};
+  const t = perfAnomalies(r).find(x => x.includes("没有测"));
+  assert.ok(t && t.includes("输入长度 64K、128K") && t.includes("超长输入 64K") && t.includes("32768"), t);
+});
+
 console.log("FRONTEND-OK " + __n);
