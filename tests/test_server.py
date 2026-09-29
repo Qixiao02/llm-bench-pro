@@ -391,6 +391,66 @@ class TestServer(ServerCase):
         finally:
             server.WORKS = orig
 
+    def test_export_html_gen_thumbnails(self):
+        """离线报告里作品列表的缩略图: 复用报告本来就带着的检查截图(每张只带一份, 文件不会因此变大); 没有截图的作品不带;
+        界面状态里作品列表的难度 / 搜索 / 页码 / 每页件数只收认识的字段并限制范围。"""
+        import re
+        g = gen_doc("gen_20260105_000000_thumb")
+        wd = temp_dir()
+        run_dir = os.path.join(wd, g["run_id"])
+        os.makedirs(os.path.join(run_dir, "snake.shots"))
+        with open(os.path.join(run_dir, "snake.html"), "wb") as f:
+            f.write(b"<!doctype html><html><body>snake</body></html>")
+        idle = b"\xff\xd8\xff\xe0" + b"THUMBNAIL-IDLE-MARK" * 30 + b"\xff\xd9"
+        first = b"\xff\xd8\xff\xe0" + b"FIRST-SCREEN-MARK" * 30 + b"\xff\xd9"
+        for name, data in (("01_initial.jpg", first), ("02_idle.jpg", idle)):
+            with open(os.path.join(run_dir, "snake.shots", name), "wb") as f:
+                f.write(data)
+        it = g["items"][0]
+        it["file"] = "works/%s/snake.html" % g["run_id"]
+        it["eval"] = {"method": "browser", "checks": [{"id": "load", "label": "打开", "pass": True, "detail": ""}], "shots_dir": "snake.shots",
+                      "shots": [{"name": "01_initial", "file": "01_initial.jpg", "caption": "首屏"},
+                                {"name": "02_idle", "file": "02_idle.jpg", "caption": "空闲后"}]}
+        g["items"].append({"id": "tetris", "name": "俄罗斯方块", "pass": 1, "total": 2, "stars": None,
+                           "eval": {"method": "static", "checks": [{"id": "doctype", "label": "x", "pass": True, "detail": ""}], "shots": []}})
+        sinks.SqliteSink().save(g)
+        orig = server.WORKS
+        server.WORKS = wd
+
+        def export(**body):
+            st, _, raw = self.request("POST", "/api/export-html", dict({"page": "gen", "id": g["run_id"]}, **body))
+            self.assertEqual(st, 200)
+            m = re.search(rb'<script type="application/json" id="llmb-offline">(.*?)</script>', raw, re.S)
+            return raw, json.loads(m.group(1).decode("utf-8"))
+        try:
+            html, d = export()
+            key = "works/%s/snake.shots/" % g["run_id"]
+            self.assertTrue(d["files"][key + "02_idle.jpg"].startswith("data:image/jpeg;base64,"))   # 缩略图用的那张在报告里
+            self.assertIn(key + "01_initial.jpg", d["files"])
+            self.assertEqual(len([k for k in d["files"] if k.endswith(".jpg")]), 2)              # 只带这件作品的两张截图
+            payload = base64.b64encode(idle)
+            self.assertEqual(html.count(payload), 1)                                                   # 同一张截图只嵌一份: 列表和详情共用
+            self.assertNotIn("works/%s/tetris" % g["run_id"], "".join(d["files"]))                     # 只看代码的作品没有截图可带
+
+            ui = {"genFilter": "static", "genSort": "pass", "genView": {"tier": "困难", "q": "蛇", "page": 3, "size": 24}}
+            self.assertEqual(export(ui=ui)[1]["ui"]["genView"], {"tier": "困难", "q": "蛇", "page": 3, "size": 24})
+            self.assertEqual(export(ui=ui)[1]["ui"]["genFilter"], "static")
+            bad = {"genView": {"tier": "x" * 50, "q": "y" * 200, "page": -1, "size": 7}}
+            self.assertEqual(export(ui=bad)[1]["ui"]["genView"], {"tier": "x" * 20, "q": "y" * 80, "page": 0, "size": 12})
+            for junk in ({"page": True, "size": True}, {"page": "2", "size": "24"}, {"page": 10 ** 9}, {}):
+                with self.subTest(junk=junk):
+                    v = export(ui={"genView": junk})[1]["ui"]["genView"]
+                    self.assertEqual((v["page"], v["size"]), (0, 12))
+            self.assertNotIn("genView", export(ui={"genView": "x"})[1]["ui"])
+            self.assertNotIn("genView", export()[1]["ui"])
+            # 每页件数的本地偏好跟着报告走, 别的表单偏好(地址、Key)不带
+            raw, _ = export(state={"theme": "dark", "ls": {"llm-bench-pro-gen-works": '{"size":24}', "llm-bench-pro-gen-judge": '{"genJudgeBase":"http://10.0.0.1"}'}})
+            state = json.loads(re.search(rb"window\.LLMB_OFF_STATE=(\{.*?\})</script>", raw).group(1).decode("utf-8"))
+            self.assertEqual(state["ls"]["llm-bench-pro-gen-works"], '{"size":24}')
+            self.assertNotIn("llm-bench-pro-gen-judge", state["ls"])
+        finally:
+            server.WORKS = orig
+
     def test_iq_items_and_answer(self):
         import bankman
         import iq

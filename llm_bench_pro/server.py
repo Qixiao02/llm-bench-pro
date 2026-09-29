@@ -495,7 +495,7 @@ def offline_bundle(page, a_id, cmp_ids):
 
 # 离线报告只带显示偏好(主题、视图、表格排序与列、标签页、每页条数、密度、侧栏), 不带表单里填过的地址和 Key
 EXPORT_LS_KEYS = ("llm-bench-pro-theme", "llm-bench-pro-viewmode", "llm-bench-pro-dt", "llm-bench-pro-ctab",
-                  "llm-bench-pro-qb", "llm-bench-pro-density", "llm-bench-pro-rail")
+                  "llm-bench-pro-qb", "llm-bench-pro-gen-works", "llm-bench-pro-density", "llm-bench-pro-rail")
 
 
 def _export_state(raw):
@@ -521,6 +521,12 @@ def _export_ui(raw):
     for k in ("genFilter", "genSort"):
         if isinstance(raw.get(k), str):
             ui[k] = raw[k][:40]
+    gv = raw.get("genView")  # 作品列表的难度筛选 / 名称搜索 / 第几页 / 每页几件
+    if isinstance(gv, dict):
+        page, size = gv.get("page"), gv.get("size")
+        ui["genView"] = {"tier": str(gv.get("tier") or "all")[:20], "q": str(gv.get("q") or "")[:80],
+                         "page": page if isinstance(page, int) and not isinstance(page, bool) and 0 <= page < 100000 else 0,
+                         "size": size if size in (12, 24, 48) and not isinstance(size, bool) else 12}
     return ui
 
 

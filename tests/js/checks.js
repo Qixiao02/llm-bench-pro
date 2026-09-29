@@ -669,4 +669,257 @@ T("超过模型最大上下文而没测的档位: 「需要注意」里按阶段
   assert.ok(t && t.includes("输入长度 64K、128K") && t.includes("超长输入 64K") && t.includes("32768"), t);
 });
 
+/* ---------- 代码生成: 作品列表 ---------- */
+const shotIt = (names, extra) => ({id: "snake", name: "贪吃蛇", file: "works/run1/snake.html", tags: ["困难", "游戏"], pass: 5, total: 6,
+  eval: Object.assign({method: "browser", shots_dir: "snake.shots", checks: [{id: "load", pass: true}, {id: "step1", label: "交互：按键", pass: true}],
+    shots: names.map(n => ({name: n, file: n + ".jpg", caption: "图 " + n}))}, extra || {})});
+T("作品缩略图: 优先「空闲后」的桌面截图, 其次首屏, 手机截图不用, 没有截图返回 null", () => {
+  assert.equal(genPickShot(shotIt(["01_initial", "02_idle", "03_step1", "09_mobile"])).path, "works/run1/snake.shots/02_idle.jpg");
+  assert.equal(genPickShot(shotIt(["09_mobile", "03_step1", "02_idle", "01_initial"])).file, "02_idle.jpg");   /* 顺序不影响 */
+  assert.equal(genPickShot(shotIt(["01_initial", "03_step1"])).file, "01_initial.jpg");                       /* 没有空闲后: 首屏 */
+  assert.equal(genPickShot(shotIt(["03_step1", "04_step2"])).file, "03_step1.jpg");                           /* 都没有: 第一张桌面截图 */
+  assert.equal(genPickShot(shotIt(["09_mobile"])), null);                                                     /* 只有手机截图: 不用 */
+  assert.equal(genPickShot(shotIt([])), null);
+  assert.equal(genPickShot({id: "x", file: "works/r/x.html", eval: {method: "static", checks: [], shots: []}}), null);   /* 只看代码: 没有截图 */
+  assert.equal(genPickShot({id: "x"}), null);                                                                 /* 旧版本: 没有 eval */
+  assert.equal(genPickShot({id: "x", eval: {shots_dir: "x.shots", shots: [{name: "02_idle", file: "a.jpg"}]}}), null);   /* 没有作品文件 */
+  assert.equal(genPickShot(shotIt(["02_idle"])).caption, "图 02_idle");
+});
+
+T("A / B 谁更好: 没生成 > 人工星级 > AI 分(差 5 分以内算差不多) > 检查通过比例; 检查方式不同不比", () => {
+  const ok = (pass, total, x) => Object.assign({id: "t", file: "f", pass, total, eval: {method: "browser", checks: []}}, x || {});
+  assert.equal(genWinner(null, ok(1, 2)), null);                                        /* B 没有这道题 */
+  assert.equal(genWinner(ok(1, 2), undefined), null);
+  assert.equal(genWinner({error: "x"}, ok(1, 2)).side, "b");
+  assert.equal(genWinner(ok(0, 5), {error: "x"}).side, "a");
+  assert.equal(genWinner({error: "x"}, {error: "y"}).side, "none");
+  /* 人工星级压过 AI 分和检查 */
+  let w = genWinner(ok(6, 6, {stars: 3, judge_score: 90}), ok(2, 6, {stars: 4, judge_score: 10}));
+  assert.deepEqual([w.side, w.basis], ["b", "stars"]);
+  assert.equal(genWinner(ok(6, 6, {stars: 3}), ok(2, 6, {stars: 3})).side, "tie");
+  w = genWinner(ok(2, 6, {stars: 5}), ok(6, 6));                                        /* 只有一边有星级: 不比星级 */
+  assert.deepEqual([w.side, w.basis], ["b", "checks"]);
+  /* AI 分压过检查; 差 5 分以内算差不多, 刚好差 5 分算有差别 */
+  w = genWinner(ok(2, 6, {judge_score: 82}), ok(6, 6, {judge_score: 60}));
+  assert.deepEqual([w.side, w.basis], ["a", "judge"]);
+  assert.equal(genWinner(ok(2, 6, {judge_score: 82}), ok(6, 6, {judge_score: 79})).side, "tie");
+  assert.equal(genWinner(ok(2, 6, {judge_score: 82}), ok(6, 6, {judge_score: 77})).side, "a");
+  assert.equal(genWinner(ok(6, 6, {judge_score: 70}), ok(2, 6, {judge_score: 75.1})).side, "b");
+  /* 检查通过比例: 通过数一样是差不多; 总数不同时比比例 */
+  assert.equal(genWinner(ok(6, 6), ok(4, 6)).side, "a");
+  assert.equal(genWinner(ok(4, 6), ok(6, 6)).side, "b");
+  assert.equal(genWinner(ok(5, 6), ok(5, 6)).side, "tie");
+  assert.equal(genWinner(ok(6, 7), ok(6, 6)).side, "b");
+  assert.ok(genWinner(ok(6, 6), ok(4, 6)).text.includes("A 6/6") && genWinner(ok(6, 6), ok(4, 6)).text.includes("B 4/6"));
+  /* 一边实际运行、一边只看代码: 不比; 都只看代码 / 都是旧版本可以比, 写「代码关键词」 */
+  const st = (pass, total) => ok(pass, total, {eval: {method: "static", checks: []}});
+  assert.equal(genWinner(st(5, 6), ok(3, 6)).side, "none");
+  w = genWinner(st(5, 6), st(3, 6));
+  assert.ok(w.side === "a" && w.text.includes("代码关键词"), w.text);
+  assert.equal(genWinner({file: "f", pass: 3, total: 4}, {file: "f", pass: 2, total: 4}).side, "a");
+  assert.equal(genWinner({file: "f", pass: 3, total: 4}, ok(2, 4)).side, "none");
+  assert.equal(genWinner(ok(0, 0), ok(0, 0)).side, "none");                             /* 没有检查结果 */
+  assert.deepEqual(["a", "b", "tie", "none"].map(s => genWinLabel({side: s})), ["A 更好", "B 更好", "差不多", "没法比"]);
+  assert.equal(genWinLabel(null), "");
+  assert.ok(["人工星级", "AI", "检查", "5 分", "没生成"].every(k => GEN_WIN_RULE.includes(k)));   /* 悬停提示写全了判断规则 */
+});
+
+T("卡片上的说明: 整次测试共同的情况不重复, 只写这件作品自己的问题", () => {
+  const stat = (fails, notes) => ({pass: 1, total: 3, eval: {method: "static", notes: notes || [],
+    checks: [{id: "doctype", pass: true}, ...fails.map((f, i) => ({id: "f" + (i + 1), label: "源码特征 /" + f + "/", pass: false}))]}});
+  const all = {v2: true, mode: "static", shared: "没找到浏览器"}, mix = {v2: true, mode: "mixed", shared: "没找到浏览器"};
+  const info = (it, ctx) => genCardInfo(it, genVerdict(it), ctx);
+  let i = info(stat([]), all);
+  assert.deepEqual([i.badge, i.note], [null, ""]);                                       /* 整次都只看代码: 无标签、无说明 */
+  i = info(stat(["click"]), all);
+  assert.ok(i.badge === null && i.note.includes("click"));                              /* 只写这件作品自己没找到的关键词 */
+  assert.ok(!i.note.includes("没有在浏览器里实际运行"));
+  i = info(stat([]), mix);
+  assert.deepEqual([i.badge.text, i.note], ["没有实际运行", ""]);                       /* 混合: 标出是哪几件, 原因同顶部就不再写 */
+  i = info(stat([], ["浏览器崩了一次"]), mix);
+  assert.equal(i.note, "浏览器崩了一次");                                               /* 这件自己的原因才写 */
+  i = info(stat([], ["没找到浏览器"]), mix);
+  assert.equal(i.note, "");
+  i = genCardInfo({pass: 0, total: 0}, genVerdict({pass: 0, total: 0}), {v2: false, mode: "browser", shared: ""});   /* 旧版本: 每张都一样, 不写 */
+  assert.deepEqual([i.badge, i.note], [null, ""]);
+  i = genCardInfo({pass: 0, total: 0}, genVerdict({pass: 0, total: 0}), {v2: true, mode: "browser", shared: ""});   /* 新版测试里个别没检查: 写「还没有检查」 */
+  assert.equal(i.badge.text, "还没有检查");
+  /* 其余都是这件作品自己的问题: 原样写一句; 全部通过没有说明 */
+  const fail = {error: "timed out"};
+  i = info(fail, all);
+  assert.ok(i.badge.text === "生成失败" && i.note.includes("timed out"));
+  const pass = {pass: 2, total: 2, eval: {method: "browser", checks: [{id: "load", pass: true}, {id: "step1", label: "交互：按键", pass: true}]}};
+  i = info(pass, {v2: true, mode: "browser", shared: ""});
+  assert.deepEqual([i.badge.text, i.note], ["全部检查通过", ""]);
+  const part = {pass: 1, total: 2, eval: {method: "browser", checks: [{id: "load", pass: true}, {id: "step1", label: "交互：按键", pass: false}]}};
+  i = info(part, {v2: true, mode: "browser", shared: ""});
+  assert.ok(i.badge.text === "部分功能没反应" && i.note.includes("按键"));
+  assert.equal(genStaticWhy({browser_error: "启动失败"}, []), "启动失败");
+  assert.equal(genStaticWhy({}, [{eval: {notes: ["降级"]}}]), "降级");
+  assert.equal(genStaticWhy({}, []), "后台浏览器没有启动");
+});
+
+T("作品筛选: 状态 × 难度 × 名称搜索; 标签数字和点下去看到的件数一致", () => {
+  const R = (id, name, tier, key, win) => ({it: {id, name, tags: [tier, "x"]}, v: {key}, ib: null, vb: null, win: win ? {side: win} : null});
+  const rows = [R("snake", "贪吃蛇", "困难", "pass", "a"), R("tetris", "俄罗斯方块", "困难", "error", "b"), R("pelican", "鹈鹕骑自行车", "普通", "static", "tie"),
+    R("landing", "产品落地页", "普通", "pass", "a"), R("terminal", "macOS 终端", "实战", "partial", null)];
+  const ids = f => genFilterRows(rows, f).map(r => r.it.id);
+  assert.deepEqual(ids({}), ["snake", "tetris", "pelican", "landing", "terminal"]);
+  assert.deepEqual(ids({status: "issues"}), ["tetris", "pelican", "terminal"]);
+  assert.deepEqual(ids({status: "pass"}), ["snake", "landing"]);
+  assert.deepEqual(ids({status: "error"}), ["tetris"]);
+  assert.deepEqual(ids({tier: "困难"}), ["snake", "tetris"]);
+  assert.deepEqual(ids({status: "issues", tier: "困难"}), ["tetris"]);
+  assert.deepEqual(ids({q: "贪吃"}), ["snake"]);
+  assert.deepEqual(ids({q: "  MACOS "}), ["terminal"]);                                  /* 不分大小写, 去首尾空白 */
+  assert.deepEqual(ids({q: "landing"}), ["landing"]);                                    /* 名字和题目 id 都能搜 */
+  assert.deepEqual(ids({q: "不存在"}), []);
+  assert.deepEqual(ids({status: "pass", tier: "普通", q: "产品"}), ["landing"]);
+  assert.deepEqual(ids({status: "win-a"}), ["snake", "landing"]);                        /* 对比: A 更好 / 差不多 / B 更好 */
+  assert.deepEqual([ids({status: "tie"}), ids({status: "win-b"})], [["pelican"], ["tetris"]]);
+  const c = genCounts(rows, {status: "issues", tier: "all", q: ""}, ["all", "issues", "pass", "static", "win-a"], ["普通", "困难", "实战"]);
+  assert.deepEqual(c.by, {all: 5, issues: 3, pass: 2, static: 1, "win-a": 2});           /* 状态标签的数字不受「状态」本身影响 */
+  assert.deepEqual(c.byTier, {普通: 1, 困难: 1, 实战: 1});                                /* 难度标签的数字按当前状态算 */
+  const c2 = genCounts(rows, {status: "all", tier: "困难", q: "蛇"}, ["all", "issues", "pass"], ["普通", "困难"]);
+  assert.deepEqual(c2.by, {all: 1, issues: 0, pass: 1});                                 /* 状态数字按难度和搜索算 */
+  assert.deepEqual(c2.byTier, {普通: 0, 困难: 1});
+  /* 排序: 稳定, 空值排后面 */
+  const s = [{it: {id: "a", pass: 1, total: 4, lines: 10}}, {it: {id: "b", error: "x"}}, {it: {id: "c", pass: 4, total: 4, lines: 99}}, {it: {id: "d", pass: 1, total: 4, lines: 10}}];
+  assert.deepEqual(genSortRows(s, "pass").map(r => r.it.id), ["b", "a", "d", "c"]);
+  assert.deepEqual(genSortRows(s, "lines").map(r => r.it.id), ["c", "a", "d", "b"]);
+  assert.deepEqual(genSortRows(s, "default").map(r => r.it.id), ["a", "b", "c", "d"]);
+});
+
+T("作品分页: 每页 12 / 24 / 48, 页码夹在首页和末页之间", () => {
+  assert.deepEqual(GW_SIZES, [12, 24, 48]);
+  assert.deepEqual(pageWindow(33, 12, 0), {pages: 3, page: 0, start: 0, end: 12});
+  assert.deepEqual(pageWindow(33, 12, 2), {pages: 3, page: 2, start: 24, end: 33});
+  assert.deepEqual(pageWindow(33, 12, 9), {pages: 3, page: 2, start: 24, end: 33});      /* 筛选后页数变少: 回到末页 */
+  assert.deepEqual(pageWindow(33, 12, -4), {pages: 3, page: 0, start: 0, end: 12});
+  assert.deepEqual(pageWindow(33, 48, 1), {pages: 1, page: 0, start: 0, end: 33});
+  assert.deepEqual(pageWindow(0, 12, 0), {pages: 1, page: 0, start: 0, end: 0});
+  assert.equal(pageWindow(24, 12, "1").start, 12);
+  assert.equal(pageWindow(25, 12, 2).end, 25);
+  /* 换每页条数时看的还是原来那一条: 第 3 页第一条(下标 24)在每页 48 里是第 1 页 */
+  assert.equal(Math.floor(24 / 48), 0);
+});
+
+T("作品列表: 换测试回到第 1 页并清掉筛选, 只换对照只回第 1 页, 都没换保留页码", () => {
+  const keep = [GEN_FILTER, GEN_TIER, GEN_Q, GEN_PAGE, GW.mainId, GW.pairId];
+  try {
+    GW.mainId = "gen_a"; GW.pairId = ""; GEN_FILTER = "static"; GEN_TIER = "困难"; GEN_Q = "蛇"; GEN_PAGE = 2;
+    genViewSync({run_id: "gen_a"}, null);
+    assert.deepEqual([GEN_FILTER, GEN_TIER, GEN_Q, GEN_PAGE], ["static", "困难", "蛇", 2]);
+    genViewSync({run_id: "gen_a"}, {run_id: "gen_b"});                                   /* 只换了对照 */
+    assert.deepEqual([GEN_FILTER, GEN_TIER, GEN_Q, GEN_PAGE], ["static", "困难", "蛇", 0]);
+    GEN_PAGE = 3; genViewSync({run_id: "gen_a"}, {run_id: "gen_b"});                     /* 什么都没换(比如切了主题重画) */
+    assert.equal(GEN_PAGE, 3);
+    GEN_FILTER = "win-a"; genViewSync({run_id: "gen_a"}, null);                          /* 取消对照: 对照专用的筛选回到「全部」 */
+    assert.equal(GEN_FILTER, "all");
+    GEN_FILTER = "pass"; GEN_TIER = "实战"; GEN_Q = "x"; GEN_PAGE = 2; genViewSync({run_id: "gen_c"}, null);   /* 换了测试 */
+    assert.deepEqual([GEN_FILTER, GEN_TIER, GEN_Q, GEN_PAGE], ["all", "all", "", 0]);
+    assert.equal(genViewSig(), "gen_c||all|all||" + GEN_SORT);
+  } finally { [GEN_FILTER, GEN_TIER, GEN_Q, GEN_PAGE, GW.mainId, GW.pairId] = keep; }
+});
+
+T("作品卡: 六行固定位置(空的也留着位置), 图标按钮有名字, 缩略图懒加载, 没有截图是占位", () => {
+  const run = {run_id: "gen_1", model: "m", items: []};
+  const it = {id: "snake", name: "贪吃蛇", file: "works/gen_1/snake.html", tags: ["困难", "游戏"], lines: 293, continuations: 4, out_tokens: 80000, pass: 3, total: 5,
+    eval: {method: "static", checks: [{id: "doctype", pass: true}, {id: "f1", label: "源码特征 /click/", pass: false}], notes: ["没找到浏览器"], shots: []}};
+  const ctx = {v2: true, mode: "static", shared: "没找到浏览器"};
+  let h = genCard(run, it, genVerdict(it), ctx);
+  assert.ok(!h.includes("没有在浏览器里实际运行"), "整次测试共同的话只在页面顶部说一次");
+  const pos = ["work-media", "work-head", "work-note", "work-checks", "work-data", "work-acts"].map(c => h.indexOf(`class="${c}`));
+  assert.ok(pos.every((p, i) => p > 0 && (!i || p > pos[i - 1])), "六行按固定顺序: " + pos);
+  assert.ok(h.includes("work-ph") && h.includes("没有截图 · 点击预览"));
+  assert.equal((h.match(/<img /g) || []).length, 0);
+  assert.match(h, /293 行 · 接着写 4 轮 · 80\D?000 token/);                              /* 行数 · 接着写几轮 · token 在同一行 */
+  assert.ok(h.includes("接着写 4 轮") && h.includes("代码关键词 3/5") && h.includes("click"));
+  ["预览：贪吃蛇", "新标签页打开：贪吃蛇", "更多操作：贪吃蛇", "详情：贪吃蛇", "1 分", "5 分"].forEach(l => assert.ok(h.includes(`aria-label="${l}"`), l));
+  assert.ok(h.includes('data-gen="preview"') && h.includes('data-gen="detail"') && !h.includes('data-gen="trace"'));
+  /* 有截图: 用空闲后那张, 懒加载, 16:10 的宽高; 有生成过程才有「过程」 */
+  const it2 = shotIt(["01_initial", "02_idle", "09_mobile"]);
+  it2.file = "works/gen_1/snake.html"; it2.trace = "works/gen_1/snake.gen.json"; it2.stars = 4;
+  h = genCard(run, it2, genVerdict(it2), {v2: true, mode: "browser", shared: ""});
+  assert.ok(h.includes('src="/works/gen_1/snake.shots/02_idle.jpg"') && h.includes('loading="lazy"') && h.includes('width="768" height="480"'));
+  assert.ok(h.includes('data-gen="trace"') && h.includes("work-thumb skeleton"));
+  assert.equal((h.match(/class="star on"/g) || []).length, 4);
+  /* 没有「自己的问题」时那一行是空的(不是没有): 一排卡片才能对齐 */
+  assert.ok(h.includes('<p class="work-note"></p>'));
+  /* 没生成出来: 缩略图不能点、没有星星和预览 */
+  const bad = {id: "snake", name: "贪吃蛇", error: "timed out", tags: ["困难"]};
+  h = genCard(run, bad, genVerdict(bad), ctx);
+  assert.ok(h.includes("work-thumb is-static") && h.includes("没有生成出来") && !h.includes('data-rate="1"') && !h.includes('data-gen="preview"'));
+  assert.ok(h.includes('<div class="work-checks"></div>') && h.includes('<p class="work-data"></p>'));
+  assert.ok(h.includes("timed out"));
+  /* 名称里的特殊字符要转义 */
+  const evil = Object.assign({}, it, {name: '<img src=x onerror=alert(1)>"'});
+  h = genCard(run, evil, genVerdict(evil), ctx);
+  assert.ok(!h.includes("<img src=x") && h.includes("&lt;img src=x"));
+});
+
+T("A / B 并排: 行首写谁更好, 两半各有缩略图; B 没有这道题时留出位置", () => {
+  const a = {run_id: "gen_a", model: "ma", items: []}, b = {run_id: "gen_b", model: "mb", items: []};
+  const ia = shotIt(["01_initial", "02_idle"]), ib = shotIt(["01_initial"]);
+  ia.file = "works/gen_a/snake.html"; ib.file = "works/gen_b/snake.html";
+  ib.pass = 3;
+  const row = {it: ia, v: genVerdict(ia), ib, vb: genVerdict(ib), win: genWinner(ia, ib)};
+  const ctx = {v2: true, mode: "browser", shared: ""};
+  let h = genPairHTML(a, b, row, ctx, ctx);
+  assert.ok(h.indexOf("A 更好") < h.indexOf("贪吃蛇") && h.indexOf("A 更好") < h.indexOf("work-media"), "谁更好写在行首");
+  assert.ok(h.includes("delta up") && h.includes("怎么判断谁更好") && h.includes("并排预览：贪吃蛇"));
+  assert.equal((h.match(/<article class="work"/g) || []).length, 2);
+  assert.ok(h.includes("02_idle.jpg") && h.includes("01_initial.jpg"));
+  assert.ok(h.includes(">A<") && h.includes(">B<"));
+  h = genPairHTML(a, b, {it: ia, v: genVerdict(ia), ib: null, vb: null, win: null}, ctx, ctx);
+  assert.ok(h.includes("B 没有这道题") && h.includes("work is-empty") && !h.includes("并排预览"));
+  const worse = Object.assign({}, ib, {pass: 6});
+  h = genPairHTML(a, b, {it: ia, v: genVerdict(ia), ib: worse, vb: genVerdict(worse), win: genWinner(ia, worse)}, ctx, ctx);
+  assert.ok(h.includes("delta down") && h.includes("B 更好"));
+});
+
+T("作品表: 缩略图列默认隐藏, 可选; 有「自己的问题」和(对比时)「谁更好」列", () => {
+  const spec = {id: "t-hid", columns: [{key: "a", label: "a"}, {key: "b", label: "b", hidden: true}], rows: []};
+  dataTable(spec);
+  assert.ok(dtState("t-hid").hidden.has("b") && !dtState("t-hid").hidden.has("a"));
+  const run = {run_id: "gen_1", items: []}, it = shotIt(["02_idle"]);
+  it.file = "works/gen_1/snake.html";
+  const rows = [{it, v: genVerdict(it), ib: null, vb: null, win: null}];
+  const t = genWorksTable(run, null, rows, {v2: true, mode: "browser", shared: ""});
+  const keys = t.columns.map(c => c.key);
+  assert.ok(["thumb", "name", "tier", "status", "note", "pass", "lines", "tok", "stars", "act"].every(k => keys.includes(k)) && !keys.includes("win"));
+  assert.equal(t.columns.find(c => c.key === "thumb").hidden, true);
+  assert.equal(dtExport(t.columns.find(c => c.key === "thumb"), rows[0]), "有");
+  const ib = shotIt(["01_initial"]);
+  const t2 = genWorksTable(run, {run_id: "gen_2"}, [{it, v: genVerdict(it), ib, vb: genVerdict(ib), win: genWinner(it, ib)}], {v2: true, mode: "browser", shared: ""});
+  const win = t2.columns.find(c => c.key === "win");
+  assert.ok(win && win.tip.includes("怎么判断"));
+  assert.equal(dtExport(win, {ib, win: {side: "a"}}), "A 更好");
+  assert.equal(dtExport(win, {ib: null, win: null}), "B 没有这道题");
+});
+
+T("作品列表的加载骨架: 和最终布局同形(六张卡, 每张六行)", () => {
+  const h = genSkeleton();
+  assert.equal((h.match(/class="work is-sk"/g) || []).length, 6);
+  ["work-media", "work-head", "work-note", "work-checks", "work-data", "work-acts"].forEach(c => assert.equal((h.match(new RegExp(`class="${c}"`, "g")) || []).length, 6, c));
+  assert.ok(h.includes('aria-hidden="true"') && h.includes("skeleton"));
+  assert.ok(!/<p[^>]*>(?:(?!<\/p>)[\s\S])*<div/.test(h), "p 里不能放 div: 解析器会把 p 提前关掉, 卡片的行就错位了");
+  /* 每张卡恰好六个直接孩子(顺序: 缩略图 / 标题 / 问题 / 检查 / 数据 / 操作), subgrid 才能逐行对齐 */
+  const i0 = h.indexOf('class="work is-sk"'), card = h.slice(i0, h.indexOf('class="work is-sk"', i0 + 1));
+  assert.equal((card.match(/class="work-(media|head|note|checks|data|acts)"/g) || []).length, 6);
+});
+
+T("作品占位图: 按难度(0–3)换底色、按题目类别换图标, 每道题都有类别", () => {
+  assert.ok(TASK_CATALOG.every(t => GEN_CATS[t.cat]), "33 道题都有类别");
+  assert.equal(TASK_CATALOG.length, 33);
+  assert.equal(genTierIdx({tags: ["普通"]}), 0);
+  assert.equal(genTierIdx({tags: ["实战", "网页"]}), 3);
+  assert.equal(genTierIdx({tags: []}), 0);
+  const h = genPhHTML({id: "snake", tags: ["困难"]}, "没有截图 · 点击预览");
+  assert.ok(h.includes('data-t="1"') && h.includes("#i-gamepad") && h.includes("没有截图 · 点击预览"));
+  assert.ok(genPhHTML({id: "earth", tags: ["普通"]}, "x").includes("#i-box"));
+  assert.ok(genPhHTML({id: "no-such", tags: ["普通"]}, "x").includes("#i-layout"));
+  assert.ok(genPhHTML({id: "snake", tags: ["困难"]}, "截图没能显示", "image-off", "文件不存在").includes("文件不存在"));
+});
+
 console.log("FRONTEND-OK " + __n);
