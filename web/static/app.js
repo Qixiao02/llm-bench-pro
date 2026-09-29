@@ -1,6 +1,6 @@
 "use strict";
 /* LLM Bench Pro 前端逻辑 (零依赖经典脚本; 图表用本地内置的 ECharts) */
-const UI_VERSION="3.6.0";  /* 与 llm_bench_pro/version.py 保持一致 */
+const UI_VERSION="3.7.0";  /* 与 llm_bench_pro/version.py 保持一致 */
 /* ============================================================
    基础工具
    ============================================================ */
@@ -282,8 +282,8 @@ function applyDensity(d,persist){
    导航 / 抽屉 / 弹窗 / 通用点击
    ============================================================ */
 let VIEW="dash";
-const VIEWS={dash:"viewDash",cmp:"viewCmp",iq:"viewIq",gen:"viewGen",tasks:"viewTasks",styleguide:"viewSg"};
-/* 地址 #页面, 任务集页面看某一个时是 #tasks/<任务集 id>: 拆成页面和后面的部分 */
+const VIEWS={dash:"viewDash",cmp:"viewCmp",iq:"viewIq",gen:"viewGen",tasks:"viewTasks",models:"viewModels",styleguide:"viewSg"};
+/* 地址 #页面, 看某一个任务集时是 #tasks/<任务集 id>, 看某一个模型时是 #models/<模型 id>: 拆成页面和后面的部分 */
 function parseRoute(h){const s=String(h||"").replace(/^#/,""),i=s.indexOf("/");return i<0?{view:s,sub:""}:{view:s.slice(0,i),sub:s.slice(i+1)}}
 function showView(v){
   let {view,sub}=parseRoute(v);
@@ -293,13 +293,14 @@ function showView(v){
   document.querySelectorAll(".nav-item").forEach(b=>{if(b.dataset.view===view)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
   Object.entries(VIEWS).forEach(([k,id])=>$(id).classList.toggle("is-active",k===view));
   closeDrawers();closeMenus();
-  const tsId=view==="tasks"&&TS_ID_RE.test(sub)?sub:"";
-  try{history.replaceState(null,"","#"+view+(tsId?"/"+tsId:""))}catch(e){}
+  const tsId=view==="tasks"&&TS_ID_RE.test(sub)?sub:"",mdId=view==="models"&&MD_ID_RE.test(sub)?sub:"";
+  try{history.replaceState(null,"","#"+view+(tsId?"/"+tsId:mdId?"/"+mdId:""))}catch(e){}
   if(view==="dash")render();
   if(view==="cmp")renderCmp();
   if(view==="iq"){loadBanks();loadIqResults();}
   if(view==="gen"){renderTaskChips();loadGenResults();}
   if(view==="tasks")tsShow(tsId);
+  if(view==="models")mdShow(mdId);
   if(view==="styleguide")renderStyleguide();
   window.scrollTo(0,0);
 }
@@ -310,9 +311,10 @@ function redrawVisible(){
   if(VIEW==="gen")return renderGen();
   if(VIEW==="tasks")return tsRedraw();
   if(VIEW==="styleguide")return renderStyleguide();
+  /* 模型管理页没有图表, 换主题不用重画 */
 }
 /* 新建测试用右侧抽屉: 同一时间只开一个, 结果页保持可见 */
-const DRAWERS=["launcher","iqLauncher","genLauncher","epDrawer"];
+const DRAWERS=["launcher","iqLauncher","genLauncher"];
 function closeDrawers(except){
   DRAWERS.forEach(id=>{if(id!==except&&$(id)&&!$(id).hidden)toggleLauncher(id,false)});
 }
@@ -328,12 +330,14 @@ function toggleLauncher(id,force){
   if(open&&force==null){const f=el.querySelector("input:not([type=checkbox]):not([type=file]),select");if(f)setTimeout(()=>f.focus(),60)}
 }
 $("drawerBackdrop").addEventListener("click",()=>closeDrawers());
-/* 地址栏 #dash / #iq … 变化(前进/后退、手动修改、点页面里的链接)时切换页面; 任务集页面里 #tasks ↔ #tasks/<id> 切换列表和详情 */
+/* 地址栏 #dash / #iq … 变化(前进/后退、手动修改、点页面里的链接)时切换页面;
+   任务集页面里 #tasks ↔ #tasks/<id>、模型管理页面里 #models ↔ #models/<id> 切换列表和详情 */
 function routeHash(){
   const {view,sub}=parseRoute(location.hash);
   if(!VIEWS[view])return;
   if(view!==VIEW){showView(location.hash);return}
   if(view==="tasks")tsRoute(sub);
+  if(view==="models")mdRoute(sub);
 }
 window.addEventListener("hashchange",routeHash);
 /* 运行中的任务: 侧栏圆点 + 页头"进行中"按钮, 抽屉关着也看得到 */
@@ -358,20 +362,6 @@ document.addEventListener("click",e=>{
     card.classList.toggle("is-table",on);flip.setAttribute("aria-pressed",String(on));
     flip.innerHTML=on?icon("gauge")+"图表":icon("table")+"数据";
     if(!on){const ch=card.querySelector(".chart");if(ch&&ch._ec)ch._ec.resize()}return}
-  const epBtn=e.target.closest("[data-ep-use],[data-ep-del],[data-ep-edit],[data-ep-save],[data-ep-cancel],[data-ep-reveal]");
-  if(epBtn){
-    if(epBtn.dataset.epUse)epApply(epBtn.dataset.epUse);
-    else if(epBtn.dataset.epDel)epRemove(epBtn.dataset.epDel);
-    else if(epBtn.dataset.epEdit)epEdit(epBtn.dataset.epEdit);
-    else if("epReveal" in epBtn.dataset){
-      const inp=$("epKey");if(!inp)return;
-      const show=inp.type==="password";inp.type=show?"text":"password";
-      epBtn.title=show?"隐藏 Key":"显示 Key";
-    }
-    else if("epSave" in epBtn.dataset)epSave();
-    else{EP_EDIT=null;manageEndpoints()}  /* 取消编辑 → 回到新增 */
-    return
-  }
   const row=e.target.closest("tr[data-expand]");
   if(row){const d=row.nextElementSibling;const open=d.hidden;d.hidden=!open;row.setAttribute("aria-expanded",String(open));return}
   const dd=e.target.closest("details.dropdown");
@@ -426,11 +416,27 @@ async function postWithConflict(url,body){
 }
 $("modalClose").onclick=()=>Modal.close();
 $("modal").addEventListener("mousedown",e=>{if(e.target===$("modal"))Modal.close()});
+/* 下拉菜单: ↑ ↓ 在菜单项之间移动(从按钮上按 ↓ 进到第一项) */
 document.addEventListener("keydown",e=>{
-  if($("modal").hidden){if(e.key==="Escape"){if(document.querySelector("details.dropdown[open]"))closeMenus();else closeDrawers()}return}
+  if((e.key!=="ArrowDown"&&e.key!=="ArrowUp")||!e.target.closest)return;
+  const dd=e.target.closest("details.dropdown[open]");if(!dd)return;
+  const items=[...dd.querySelectorAll(".menu .menu-item")].filter(x=>!x.disabled&&x.getClientRects().length);if(!items.length)return;
+  e.preventDefault();
+  const i=items.indexOf(document.activeElement),down=e.key==="ArrowDown";
+  items[i<0?(down?0:items.length-1):(i+(down?1:items.length-1))%items.length].focus();
+});
+document.addEventListener("keydown",e=>{
+  if($("modal").hidden){
+    if(e.key==="Escape"){
+      const open=document.querySelector("details.dropdown[open]");
+      if(open){const inside=open.contains(document.activeElement);closeMenus();if(inside){const s=open.querySelector("summary");if(s)s.focus()}}  /* 焦点回到打开菜单的按钮 */
+      else closeDrawers();
+    }
+    return;
+  }
   if(e.key==="Escape"){Modal.close();return}
-  if(e.key==="Tab"){  /* 焦点限制在弹窗内 */
-    const f=[...$("modal").querySelectorAll("button,[href],input,select,textarea,iframe,[tabindex]:not([tabindex='-1'])")].filter(x=>!x.disabled);
+  if(e.key==="Tab"){  /* 焦点限制在弹窗内(只数能拿到焦点的: 图标里的 <use href> 不算, 藏起来的不算) */
+    const f=[...$("modal").querySelectorAll("button,a[href],input,select,textarea,iframe,[tabindex]:not([tabindex='-1'])")].filter(x=>!x.disabled&&x.tabIndex>=0&&x.getClientRects().length);
     if(!f.length)return;
     if(e.shiftKey&&document.activeElement===f[0]){e.preventDefault();f[f.length-1].focus()}
     else if(!e.shiftKey&&document.activeElement===f[f.length-1]){e.preventDefault();f[0].focus()}
@@ -454,7 +460,8 @@ const CSelect=(()=>{
 
   function splitText(t){const p=String(t).split(" · ");return p.length>2?[p[0],p.slice(1).join(" · ")]:[t,""]}
   function itemsOf(c){
-    if(c.kind==="select")return[...c.el.options].map((o,i)=>({value:o.value,text:o.textContent,disabled:o.disabled,selected:i===c.el.selectedIndex}));
+    /* 选项可以用 data-sub 给第二行的小字(比如保存的模型: 名称一行, 模型名和地址一行) */
+    if(c.kind==="select")return[...c.el.options].map((o,i)=>({value:o.value,text:o.textContent,sub:o.dataset.sub,disabled:o.disabled,selected:i===c.el.selectedIndex}));
     const dl=c.dl;const v=c.el.value;
     return dl?[...dl.options].map(o=>({value:o.value,text:o.value,sub:o.label||o.textContent,disabled:false,selected:o.value===v})):[];
   }
@@ -1172,10 +1179,10 @@ function tablesCSV(ids){
 }
 function tableIdsIn(root){return root?[...new Set([...root.querySelectorAll("[data-dt]")].map(x=>x.dataset.dt))]:[]}
 function exportPageTables(page){
-  const root={dash:"dashBody",cmp:"cmpBody",iq:"iqResult",gen:"genResult",tasks:"tasksBody"}[page];
+  const root={dash:"dashBody",cmp:"cmpBody",iq:"iqResult",gen:"genResult",tasks:"tasksBody",models:"modelsBody"}[page];
   const ids=tableIdsIn($(root));
   if(!ids.length){toast("这一页没有可以导出的表格","warning");return}
-  downloadText(`${{dash:"速度测试",cmp:"速度对比",iq:"能力测试",gen:"代码生成",tasks:"任务集"}[page]}_全部表格.csv`,tablesCSV(ids));
+  downloadText(`${{dash:"速度测试",cmp:"速度对比",iq:"能力测试",gen:"代码生成",tasks:"任务集",models:"模型管理"}[page]}_全部表格.csv`,tablesCSV(ids));
   toast(`已导出 ${ids.length} 张表`,"success",2500);
 }
 async function copyText(text,what){
@@ -1543,10 +1550,11 @@ $("fSuite").addEventListener("change",suitePlaceholders);
 suitePlaceholders();
 
 async function probe(){
+  if(!$("fBase").value.trim()){msg("probeOut","error","请先填写服务地址");$("fBase").focus();return}
   const btn=$("btnProbe");setBusy(btn,true);msg("probeOut","info","正在连接…");
   try{
     const d=await postJSON("/api/probe",{base:$("fBase").value,api_key:$("fKey").value});
-    if(!d.ok){msg("probeOut","error","连不上："+d.error);return}
+    if(!d.ok){const f=mdFailText(d);msg("probeOut","error",d.code?`连不上：${f.short}。${f.long}`:"连不上："+d.error);return}
     $("modelList").innerHTML=d.models.map(m=>`<option value="${esc(m.id)}">${m.max_model_len?"最长上下文 "+Math.round(m.max_model_len/1024)+"K":""}</option>`).join("");
     if(d.models.length&&!$("fModel").value)$("fModel").value=d.models[0].id;
     if(!$("fFw").value&&d.framework)$("fFw").value=d.framework;
@@ -4654,20 +4662,196 @@ async function deleteRun(kind){
 }
 
 /* ============================================================
-   模型管理: 地址 / Key / 模型 命名保存在服务端, 三个测试页一键填入
+   模型管理: 列表(添加 / 测试连接 / 用它新建 / 编辑 / 删除) · 详情(连接信息 / 服务上的模型 / 用过的测试)
+   地址 #models 是列表, #models/<id> 是某一个; 浏览器后退回到列表, 刷新停在原处。
+   保存的模型存在服务端(含 API Key)。页面上 Key 只显示遮住的形式, 完整的 Key 只在编辑弹窗里点眼睛才看得到,
+   不写进元素属性、表格导出和本地存储; 离线报告里没有这一页, 也不带模型列表。
+   「连接状态」是这次打开页面后测试连接的结果: 只有点了「测试连接」才去连, 打开页面不会自动发请求
    ============================================================ */
 let EPS=[];
+const EPS_ST={loaded:false,err:"",loading:null};
 const EP_FIELDS={perf:["fBase","fKey","fModel"],iq:["iqBase","iqKey","iqModel"],gen:["genBase","genKey","genModel"]};
 const EP_SEL={perf:"fEpSel",iq:"iqEpSel",gen:"genEpSel"};
+const EP_ADD="__add__";          /* 新建面板的下拉里「还没有保存的模型，去添加」 */
+const MD_ID_RE=/^ep_[A-Za-z0-9_]{1,60}$/;
+const MD_NAME_MAX=64,MD_MODEL_MAX=128,MD_URL_MAX=500,MD_KEY_MAX=8192;
+const MD_PROBE_CONC=4;           /* 全部测试连接: 同时最多测几个 */
+const MD_KIND={perf:{name:"速度测试",short:"速度",icon:"gauge",view:"dash",sel:"runA",launcher:"launcher",new:"新建速度测试"},
+  iq:{name:"能力测试",short:"能力",icon:"list-checks",view:"iq",sel:"iqMainSel",launcher:"iqLauncher",new:"新建能力测试"},
+  gen:{name:"代码生成",short:"代码生成",icon:"code",view:"gen",sel:"genMainSel",launcher:"genLauncher",new:"新建生成任务"}};
+const MD_HELP={url:"OpenAI 兼容接口的地址，填到端口就行；末尾的 /v1 会自动去掉",key:"默认遮住，点右边的眼睛可以看；只存在本机的数据库里",
+  model:"要和服务上的模型名称一模一样（区分大小写）",name:"列表和新建面板里显示的名字"};
+/* cur: 正在看的模型 id(空 = 列表); probe: 这次打开页面后每个模型测试连接的结果; all: 全部测试连接的进度;
+   runs: 详情里「用过的测试」按 id|类型 缓存; form: 添加 / 编辑弹窗的状态 */
+const MD={cur:"",fromList:false,focusAfter:"",flash:"",q:"",probe:new Map(),all:null,runs:new Map(),kind:"all",form:null};
+
+/* ---------- 纯逻辑(tests/js/checks.js 有断言) ---------- */
+/* Key 的遮住形式: 16 个字以上露头尾各 4 个, 8–15 个露头尾各 2 个, 更短的全遮住; 与服务端 endpoints.mask_key 同一套 */
+function maskKey(k){
+  k=String(k||"");const n=k.length;
+  if(!n)return "—";
+  return n>=16?k.slice(0,4)+"…"+k.slice(-4):n>=8?k.slice(0,2)+"…"+k.slice(-2):"••••";
+}
+function epHost(url){const m=String(url||"").match(/^https?:\/\/([^/?#]+)/i);return m?m[1]:String(url||"")}
+/* 名称、模型名称: 去掉控制字符、会打乱文字方向的不可见字符和首尾空白(与服务端同一套) */
+function mdClean(s){return String(s??"").replace(/[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩﻿]/g,"").trim()}
+function mdLen(s){return [...String(s??"")].length}
+function mdDefaultName(model,url){return [...`${model} · ${epHost(url)}`].slice(0,MD_NAME_MAX).join("").trim()}
+/* 地址: 去掉首尾空白, 再去掉末尾的 /、/v1、/v1/chat/completions(测试时会自动加上; 与服务端 bench.normalize_base 相同)。
+   返回 {url, cut}: cut 是去掉的那一段(只去掉了末尾的 / 时为空, 不用提示) */
+function mdUrlClean(raw){
+  const s=String(raw??"").trim();let b=s.replace(/\/+$/,"");
+  for(const suf of ["/chat/completions","/v1"])if(b.endsWith(suf))b=b.slice(0,-suf.length);
+  const tail=s.slice(b.length);
+  return{url:b,cut:/^\/*$/.test(tail)?"":tail};
+}
+/* 地址能不能用: http:// 或 https:// 开头、有主机、端口是数字、中间没有空白、不带用户名密码(与服务端 endpoints.url_ok 相同) */
+function mdUrlOk(u){
+  if(!/^https?:\/\/[^\s/?#@]+(?:[/?#]\S*)?$/i.test(String(u||"")))return false;
+  try{return !!new URL(u).hostname}catch(e){return false}
+}
+/* 同一个服务的不同写法 → 同一个键(与服务端 endpoints.url_key 相同): 去掉末尾的 /v1 等, 协议和主机不分大小写,
+   localhost 和 [::1] 当作 127.0.0.1, 没写端口时补上默认端口 */
+function mdUrlKey(u){
+  const b=mdUrlClean(u).url;
+  try{
+    const x=new URL(b);let h=x.hostname.toLowerCase();
+    if(h==="localhost"||h==="[::1]")h="127.0.0.1";
+    return `${x.protocol}//${h}:${x.port||(x.protocol==="https:"?443:80)}${x.pathname.replace(/\/+$/,"")}`;
+  }catch(e){return b.toLowerCase()}
+}
+/* 添加 / 编辑时的检查(与服务端 endpoints.clean_fields 同一套): errors 是不能保存的问题, notes 是自动改过的地方 */
+function mdFormCheck(raw){
+  raw=raw||{};
+  const errors={},notes={},{url,cut}=mdUrlClean(raw.url);
+  if(!url)errors.url="请填写服务地址";
+  else if(mdLen(url)>MD_URL_MAX)errors.url=`服务地址最多 ${MD_URL_MAX} 个字（现在 ${mdLen(url)} 个）`;
+  else if(!mdUrlOk(url))errors.url="要以 http:// 或 https:// 开头，中间不能有空格，比如 http://127.0.0.1:8000";
+  else if(cut)notes.url=`已去掉末尾的「${cut}」，测试时会自动加上`;
+  const model=mdClean(raw.model);
+  if(!model)errors.model="请填写模型名称";
+  else if(mdLen(model)>MD_MODEL_MAX)errors.model=`模型名称最多 ${MD_MODEL_MAX} 个字（现在 ${mdLen(model)} 个）`;
+  const name=mdClean(raw.name);
+  if(mdLen(name)>MD_NAME_MAX)errors.name=`名称最多 ${MD_NAME_MAX} 个字（现在 ${mdLen(name)} 个）`;
+  const k0=String(raw.key??""),key=k0.trim();
+  if(/[\u0000-\u001f\u007f]/.test(key))errors.key="Key 中间不能有换行或其他控制字符";
+  else if(key.length>MD_KEY_MAX)errors.key=`Key 最多 ${MD_KEY_MAX} 个字`;
+  else if(key!==k0)notes.key="已去掉首尾的空格或换行";
+  return{ok:!Object.keys(errors).length,errors,notes,nameDefault:!name,
+    fields:{url,model,api_key:key,name:name||(url&&model?mdDefaultName(model,url):"")}};
+}
+/* 名称(详情页原地改名): 1–64 个字 */
+function mdNameCheck(raw){
+  const name=mdClean(raw),n=mdLen(name);
+  if(!n)return{ok:false,name,n,error:"名称不能为空"};
+  if(n>MD_NAME_MAX)return{ok:false,name,n,error:`名称最多 ${MD_NAME_MAX} 个字（现在 ${n} 个）`};
+  return{ok:true,name,n,error:""};
+}
+/* 连不上的原因(服务端 endpoints.probe_fail 分的类): 短说法放进列表的状态格, 大白话解释放在悬停提示和详情里 */
+const MD_FAIL={
+  timeout:["超时","10 秒内没有响应：服务太忙、地址不通，或者被防火墙拦住了"],
+  refused:["拒绝连接","这个地址上没有服务在运行：服务没开，或者端口写错了"],
+  auth:["Key 不对","服务要求 API Key：填的 Key 不对、过期了，或者没填"],
+  forbidden:["没有权限","服务认得这个 Key，但它没有访问这个服务的权限"],
+  not_found:["地址不对","这个地址上找不到 /v1/models：检查一下端口和路径（地址填到端口就行）"],
+  server:["服务出错","服务端内部出错了：稍后再试，或者看看服务的日志"],
+  http:["请求被拒绝","服务拒绝了这次请求"],
+  dns:["找不到主机","主机名写错了，或者这台电脑解析不了这个主机名"],
+  unreachable:["网络不通","这台电脑连不到那个地址：不在同一个网络，或者中间的路不通"],
+  reset:["连接被断开","服务中途断开了连接：可能不是 HTTP 服务，或者服务正在重启"],
+  tls:["证书有问题","HTTPS 证书验证没通过：证书过期、是自签名的，或者其实该用 http://"],
+  bad_json:["不是模型列表","返回的不是 OpenAI 兼容的模型列表：这个地址可能不是模型服务"],
+  bad_url:["地址格式不对","要以 http:// 或 https:// 开头，比如 http://127.0.0.1:8000"],
+  bad_key:["Key 格式不对","Key 中间不能有换行或其他控制字符"],
+};
+/* {short: 如「401 Key 不对」「拒绝连接」, long: 大白话解释, raw: 服务端给的原文(Key 已由服务端遮住)} */
+function mdFailText(d){
+  d=d||{};
+  const st=d.status,code=d.code==="auth"&&st===403?"forbidden":d.code,f=MD_FAIL[code];
+  if(!f)return{short:"连不上",long:d.error||"连不上这个服务",raw:d.error||""};
+  const withSt=st&&["auth","forbidden","not_found","server","http"].includes(code);
+  return{short:(withSt?st+" ":"")+f[0],long:f[1],raw:d.error||""};
+}
+function mdLatency(ms){return ms==null||!isFinite(ms)?"—":ms<1000?`${fmtInt(ms)} 毫秒`:`${fmt(ms/1000,1)} 秒`}
+function mdCtxText(n){return n?`最大上下文 ${fmtInt(n)} token`:"服务没给最大上下文"}
+/* 最近使用: 一键填入的时间和最近一次用它跑测试的时间, 取晚的那个; 都没有时为空 */
+function mdLastUse(ep){
+  const a=ep&&ep.last_used_utc,b=ep&&ep.uses&&ep.uses.last_utc,da=toDate(a),db=toDate(b);
+  return da&&(!db||da>=db)?a:db?b:"";
+}
+function mdTime(iso){const d=toDate(iso);return d?d.getTime():null}
+/* 默认顺序: 最近使用的在前; 都没用过的按添加时间, 新的在前 */
+function mdOrder(list){
+  const t=e=>mdTime(mdLastUse(e))??-Infinity,c=e=>mdTime(e.created_utc)??0;
+  return [...(list||[])].sort((x,y)=>(t(y)-t(x))||(c(y)-c(x)));
+}
+/* 保存的模型在不在服务返回的模型列表里(区分大小写) */
+function mdHasModel(d,model){return !!(d&&(d.models||[]).some(m=>m.id===model))}
+function mdUses(ep){return Object.assign({perf:0,iq:0,gen:0,total:0,last_utc:null},ep&&ep.uses)}
+/* 用过的测试: 一行结果摘要(速度: 最高总生成速度与单个请求速度; 能力: 正确率; 代码生成: 完成几题、检查通过率) */
+function mdRunSummary(r){
+  const s=(r&&r.summary)||{};
+  if(r.kind==="perf"){
+    const p=[];
+    if(s.peak_tps!=null)p.push(`最高总生成速度 ${fmt(s.peak_tps,1)} token/秒${s.peak_conc?`（同时 ${s.peak_conc} 个请求）`:""}`);
+    if(s.decode_tps!=null)p.push(`单个请求 ${fmt(s.decode_tps,1)} token/秒`);
+    if(s.scn)p.push(`模拟业务 ${s.scn} 类`);
+    return p.join(" · ")||"没有速度数据";
+  }
+  if(r.kind==="iq")return s.acc!=null?`正确率 ${fmt(s.acc,1)}%${s.n?`（答对 ${fmtInt(s.correct)} / ${fmtInt(s.n)} 题）`:""}`:"没有成绩";
+  const p=[`完成 ${fmtInt(s.done||0)} / ${fmtInt(s.planned||0)} 题`];
+  if(s.exec!=null)p.push(`${s.method==="static"?"只看了代码":"运行检查"}通过 ${fmt(s.exec,0)}%`);
+  if(s.judge!=null)p.push(`AI 打分 ${fmt(s.judge,0)}`);
+  return p.join(" · ");
+}
+function mdRunSetting(r){
+  if(r.kind==="perf")return SUITE_NAME[r.suite]||r.suite||"—";
+  return r.thinking==null?"—":r.thinking?"思考":"不思考";
+}
+function mdRunStatus(r){
+  const tone={done:"good",running:"info",failed:"bad",interrupted:"warn",cancelled:"warn"}[r.status]||"neutral";
+  return{tone,text:STATUS_NAME[r.status]||r.status||"—",tip:r.error||""};
+}
+
+/* ---------- 接口 ---------- */
 function loadEndpoints(){
-  return getJSON("/api/endpoints").then(l=>{EPS=Array.isArray(l)?l:[];renderEpSelects()}).catch(()=>{});
+  if(OFF)return Promise.resolve();
+  const before=EPS_ST.loaded?JSON.stringify(EPS):"";
+  const p=EPS_ST.loading=tsApi("/api/endpoints")
+    .then(l=>{if(EPS_ST.loading!==p)return;EPS=Array.isArray(l)?l:[];EPS_ST.loaded=true;EPS_ST.err="";renderEpSelects()})
+    .catch(e=>{if(EPS_ST.loading!==p)return;EPS_ST.err=e.message;if(EPS_ST.loaded&&VIEW==="models")toast("刷新模型列表失败："+e.message,"error")})
+    .finally(()=>{if(EPS_ST.loading!==p)return;EPS_ST.loading=null;
+      if(VIEW==="models"&&(!before||EPS_ST.err||before!==JSON.stringify(EPS)))mdRender();mdPaintAllBtn()});
+  return p;
+}
+/* 保存(新增或修改); 成功后 EPS 换成服务端返回的全部(带「用过几次」), 新建面板的下拉跟着更新 */
+async function mdSave(fields,id){
+  const d=await postJSON("/api/endpoints",Object.assign({},fields,id?{id}:{}));
+  if(!d.ok)return{ok:false,error:d.error||"保存失败"};
+  EPS=Array.isArray(d.endpoints)?d.endpoints:EPS;EPS_ST.loaded=true;renderEpSelects();
+  return{ok:true,ep:d.endpoint};
+}
+/* 记下「一键填入」的时间(列表里的「最近使用」) */
+function mdTouch(id){
+  postJSON("/api/endpoint-use",{id}).then(d=>{
+    if(!d.ok)return;
+    const e=EPS.find(x=>x.id===id);if(e){e.last_used_utc=d.last_used_utc;renderEpSelects()}
+  });
+}
+
+/* ---------- 新建面板: 「从已保存的模型填入」 ---------- */
+/* 下拉里的一项: 名称一行, 模型名和主机一行(名称就是默认的「模型 · 主机」时不重复) */
+function epOptionSub(e){
+  const d=`${e.model} · ${epHost(e.url)}`;
+  return e.name===d||e.name===mdDefaultName(e.model,e.url)?"":d;
 }
 function renderEpSelects(){
   Object.values(EP_SEL).forEach(id=>{
     const sel=$(id);if(!sel)return;
-    const cur=sel.value;
-    sel.innerHTML='<option value="">选择后自动填入 地址 / Key / 模型</option>'+EPS.map(e=>`<option value="${esc(e.id)}">${esc(e.name)}</option>`).join("");
-    if([...sel.options].some(o=>o.value===cur))sel.value=cur;
+    sel.innerHTML='<option value="">选择后自动填入 地址 / Key / 模型</option>'+(EPS.length
+      ?mdOrder(EPS).map(e=>{const sub=epOptionSub(e);return `<option value="${esc(e.id)}"${sub?` data-sub="${esc(sub)}"`:""}>${esc(e.name)}</option>`}).join("")
+      :`<option value="${EP_ADD}">还没有保存的模型，去添加 →</option>`);
+    sel.value="";
   });
 }
 function epFill(page,ep){
@@ -4678,73 +4862,725 @@ function epFill(page,ep){
   if(ep.model){$(m).value=ep.model;$(m).dispatchEvent(new Event("input"))}
 }
 function onEpSelect(page){
-  const sel=$(EP_SEL[page]),ep=EPS.find(x=>x.id===sel.value);
+  const sel=$(EP_SEL[page]),v=sel.value;
   sel.value="";
-  if(!ep)return;
-  epFill(page,ep);
-  postJSON("/api/endpoint-use",{id:ep.id}).catch(()=>{});
+  if(v===EP_ADD){  /* 还没有保存的模型: 到模型管理页面, 打开「添加模型」 */
+    closeDrawers();
+    if(VIEW!=="models"||MD.cur){try{history.pushState(null,"","#models")}catch(e){}showView("models")}
+    mdFormDialog("",null);return;
+  }
+  const ep=EPS.find(x=>x.id===v);if(!ep)return;
+  epFill(page,ep);mdTouch(ep.id);
   toast(`已填入「${ep.name}」`,"success");
 }
-async function epSave(){
-  const editing=EP_EDIT?EPS.find(x=>x.id===EP_EDIT):null;
-  const body={id:EP_EDIT||null,name:$("epName").value.trim(),url:$("epUrl").value.trim(),api_key:$("epKey").value,model:$("epModel").value.trim()};
-  if(!body.url||!body.model){msg("epOut","warning","服务地址和模型名称必须填写");return}
-  const d=await postJSON("/api/endpoints",body);
-  if(!d.ok){msg("epOut","error","保存失败："+d.error);return}
-  EPS=d.endpoints||EPS;EP_EDIT=null;renderEpSelects();
-  toast(editing?"已更新":"已添加「"+d.endpoint.name+"」","success");
-  manageEndpoints();
-}
-function epEdit(id){EP_EDIT=id;manageEndpoints()}
-function maskKey(k){k=String(k||"");return k?k.slice(0,4)+"…"+k.slice(-4):"—"}
-function epHost(url){const m=String(url||"").match(/^https?:\/\/([^/?#]+)/i);return m?m[1]:String(url||"")}
-let EP_EDIT=null;  /* 正在编辑的配置 id; null = 新增 */
-function manageEndpoints(){
-  let editing=EP_EDIT?EPS.find(x=>x.id===EP_EDIT):null;
-  if(EP_EDIT&&!editing)EP_EDIT=null;
-  const val=v=>esc(editing?(v||""):"");
-  const spec={id:"ep-t",title:`已保存的模型 <span class="dt-sub">${EPS.length} 个</span>`,search:EPS.length>6,rowKey:e=>e.id,
-    columns:[{key:"name",label:"名称 · 模型 · 地址",type:"html",wrap:true,get:e=>`<b>${esc(e.name)}</b><span class="sub">${esc(e.model||"—")} · ${esc(epHost(e.url))}${e.last_used_utc?" · 最近使用 "+esc(shortTime(e.last_used_utc)):""}</span>`,
-        text:(v,e)=>`${e.name} ${e.model||""} ${e.url||""}`,sortValue:e=>e.name},
-      {key:"key",label:"Key",type:"text",get:e=>maskKey(e.api_key)},
-      {key:"act",label:"",type:"html",noSort:true,get:e=>`<span class="dt-actions"><button type="button" class="btn btn-secondary btn-sm" data-ep-use="${esc(e.id)}" title="填入速度、能力、代码生成三个新建面板">填入</button>
-        <button type="button" class="btn btn-ghost btn-icon btn-sm" data-ep-edit="${esc(e.id)}" title="编辑" aria-label="编辑">${icon("sliders")}</button>
-        <button type="button" class="btn btn-ghost btn-icon btn-sm ep-del" data-ep-del="${esc(e.id)}" title="删除" aria-label="删除">${icon("trash")}</button></span>`}],
-    rows:EPS,empty:"还没有保存的模型，在下面添加"};
-  const form=`<form class="ep-form" autocomplete="off" onsubmit="epSave();return false">
-      <div class="step-h"><span class="step-n">${editing?icon("sliders","icon-sm"):icon("plus","icon-sm")}</span>${editing?"编辑「"+esc(editing.name)+"」":"添加一个模型"}</div>
-      <div class="ep-fields">
-        <div class="field span-2"><label for="epName">名称</label><input class="input" id="epName" placeholder="留空则用「模型 · 地址」" value="${editing?esc(editing.name):""}"></div>
-        <div class="field span-2"><label for="epUrl">服务地址</label><input class="input" id="epUrl" placeholder="http://127.0.0.1:8000" value="${val(editing&&editing.url)}"></div>
-        <div class="field"><label for="epModel">模型名称</label><input class="input" id="epModel" placeholder="模型名称" value="${val(editing&&editing.model)}"></div>
-        <div class="field"><label for="epKey">API Key</label>
-          <div class="ep-keywrap"><input class="input" id="epKey" type="password" autocomplete="off" placeholder="没有可不填" value="${val(editing&&editing.api_key)}">
-          <button type="button" class="btn btn-ghost btn-icon btn-sm" data-ep-reveal title="显示 Key" aria-label="显示 Key">${icon("eye")}</button></div></div>
-      </div>
-      <div class="ep-actions"><span class="inline-msg" id="epOut"></span>
-        ${editing?'<button type="button" class="btn btn-ghost btn-sm" data-ep-cancel>取消</button>':""}
-        <button type="submit" class="btn btn-primary btn-sm">${editing?"保存":"添加"}</button></div>
-    </form>`;
-  $("epBody").innerHTML=`<div class="ep-shell">${dataTable(spec)}${form}<p class="ep-note">保存在本机数据库里，API Key 默认遮住。</p></div>`;
-  if($("epDrawer").hidden)toggleLauncher("epDrawer",true);
-  if(editing)setTimeout(()=>{const n=$("epUrl");if(n)n.focus()},60);
-}
-async function epApply(id){
-  const ep=EPS.find(x=>x.id===id);if(!ep)return;
-  Object.keys(EP_FIELDS).forEach(page=>epFill(page,ep));
-  toggleLauncher("epDrawer",false);
-  postJSON("/api/endpoint-use",{id}).catch(()=>{});
-  toast(`已填入「${ep.name}」到三个新建面板`,"success");
-}
-async function epRemove(id){
-  const ep=EPS.find(x=>x.id===id);if(!ep)return;
-  const ok=await confirmDialog({title:"删除保存的模型",message:"确定删除「"+ep.name+"」吗？已经填到面板里的内容不受影响。",confirmText:"删除",danger:true});
-  if(!ok){manageEndpoints();return}
-  await postJSON("/api/endpoint-delete",{id});
-  await loadEndpoints();
-  manageEndpoints();
-}
 Object.keys(EP_SEL).forEach(page=>{const sel=$(EP_SEL[page]);if(sel)sel.addEventListener("change",()=>onEpSelect(page))});
+
+/* ---------- 路由 ---------- */
+function mdShow(id){  /* 切到模型管理页面(showView 调用): 每次进来都重新取一次列表(「用过几次」会变) */
+  MD.cur=id||"";MD.fromList=false;MD.focusAfter="";MD.runs.clear();MD.kind="all";
+  loadEndpoints();
+  mdRender();
+}
+function mdRoute(sub){  /* 同一页面里 #models ↔ #models/<id>(点链接、后退、前进) */
+  const id=MD_ID_RE.test(sub)?sub:"",prev=MD.cur;
+  if(id===prev)return;
+  MD.fromList=!prev&&!!id;  /* 从列表点进来的: 「← 全部模型」用浏览器后退, 不多出一条历史 */
+  MD.focusAfter=id?"detail":prev?"row:"+prev:"";
+  MD.cur=id;closeMenus();
+  if(id){MD.runs.clear();MD.kind="all"}
+  mdRender();
+  window.scrollTo(0,0);
+}
+function mdOpen(id){location.hash="#models/"+id}
+function mdBack(){
+  if(MD.fromList){MD.fromList=false;history.back();return}
+  const prev=MD.cur;
+  try{history.replaceState(null,"","#models")}catch(e){}
+  MD.cur="";MD.focusAfter="row:"+prev;
+  mdRender();window.scrollTo(0,0);
+}
+function mdRender(){if(VIEW==="models")MD.cur?mdRenderDetail():mdRenderList()}
+function mdRefresh(){MD.runs.clear();loadEndpoints();if(MD.cur)mdPaintRuns(true)}
+
+/* ---------- 公共小块 ---------- */
+function mdLink(ep){return `<a class="qb-link" href="#models/${esc(ep.id)}">「${esc(ep.name)}」</a>`}
+function mdErrorHTML(title,message,what,inline){
+  return emptyState(title,message,{iconName:"alert",inline,action:`<button type="button" class="btn btn-secondary" data-md-retry="${what}">${icon("refresh")}重试</button>`});
+}
+function mdSkRows(n){return `<div class="ts-sk-rows">${'<div class="skeleton" style="height:14px"></div>'.repeat(n)}</div>`}
+/* 用它新建: 速度测试 / 能力测试 / 代码生成 / 三个新建面板都填上。菜单在表格里也能完整显示(打开时按按钮位置固定定位) */
+function mdUseMenu(ep,where){
+  const head=where==="head";
+  const item=(t,ic,label)=>`<button type="button" class="menu-item" role="menuitem" data-md-use="${t}" data-id="${esc(ep.id)}">${icon(ic)}${label}</button>`;
+  return `<details class="dropdown md-use-dd" data-md-menu="use" data-id="${esc(ep.id)}">
+    <summary class="btn ${head?"btn-primary btn-sm":"btn-ghost btn-sm md-act md-use-btn"}" aria-label="用它新建：${esc(ep.name)}" title="用它新建：把地址、Key、模型填进新建面板">${icon("play")}${head?"<span>用它新建</span>":""}${icon("chevron-down","icon-sm")}</summary>
+    <div class="dropdown-panel menu" role="menu" aria-label="用它新建">
+      ${item("perf","gauge","新建速度测试")}${item("iq","list-checks","新建能力测试")}${item("gen","code","新建生成任务")}
+      <div class="menu-sep"></div>${item("all","layers","三个新建面板都填上")}</div></details>`;
+}
+/* 「测试连接」按钮进行中: 转圈 +「正在连接…」, 用 aria-disabled 禁用(焦点留在按钮上, 键盘用户不会丢位置) */
+function mdProbeBtn(b,ep){
+  const busy=(mdProbeOf(ep)||{}).st==="busy",use=b.querySelector("use"),sp=b.querySelector("span"),t=busy?"正在连接…":"测试连接";
+  b.classList.toggle("is-loading",busy);b.setAttribute("aria-disabled",String(busy));
+  if(use)use.setAttribute("href",busy?"#i-loader":"#i-plug");
+  if(sp)sp.textContent=t;
+  b.title=busy?"正在请求 /v1/models，最多等 10 秒":"测试连接：请求 /v1/models，看现在能不能连上";
+  if(!sp)b.setAttribute("aria-label",`${t}：${ep.name}`);
+}
+function mdPaintAllBtn(){
+  const a=MD.all,none=!EPS.length;  /* 还没取到列表、取失败或者一个都没有: 不能点 */
+  document.querySelectorAll("[data-md-probe-all]").forEach(b=>{
+    const use=b.querySelector("use"),sp=b.querySelector("span");
+    b.classList.toggle("is-loading",!!a);b.setAttribute("aria-disabled",String(!!a||none));
+    if(use)use.setAttribute("href",a?"#i-loader":"#i-plug");
+    if(sp)sp.textContent=a?`正在测试 ${a.done} / ${a.total}…`:"全部测试连接";
+    b.title=none?"还没有保存的模型":a?"正在逐个测试连接（同时最多 4 个）":"逐个测试保存的模型能不能连上（同时最多 4 个）";
+  });
+}
+
+/* ---------- 连接状态(这次打开页面后) ---------- */
+/* 这个模型的测试连接结果; 之后改过地址或 Key 的不算 */
+function mdProbeOf(ep){const p=ep&&MD.probe.get(ep.id);return p&&p.url===ep.url&&p.key===(ep.api_key||"")?p:null}
+function mdClock(ts){const d=new Date(ts);return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`}
+function mdConnState(ep){
+  const p=mdProbeOf(ep);
+  if(!p)return{tone:"neutral",text:"还没检查",icon:"minus"};
+  if(p.st==="busy")return{tone:"info",text:"正在连接…",icon:"loader"};
+  if(p.st==="ok")return mdHasModel(p.d,ep.model)?{tone:"good",text:"正常 · "+mdLatency(p.d.latency_ms),icon:"check"}
+    :{tone:"warn",text:"连得上，但没有这个模型",icon:"alert"};
+  return{tone:"bad",text:"连不上 · "+mdFailText(p.d).short,icon:"x"};
+}
+function mdConnTip(ep){
+  const p=mdProbeOf(ep);
+  if(!p)return "这次打开页面后还没测试过连接";
+  if(p.st==="busy")return "正在请求 /v1/models，最多等 10 秒";
+  if(p.st==="ok"){const d=p.d;
+    return [`响应 ${mdLatency(d.latency_ms)}`,d.framework?`${d.framework}${d.fw_version?" "+d.fw_version:""}`:"",`服务上有 ${d.count} 个模型`,
+      mdHasModel(d,ep.model)?"":`没有「${ep.model}」`,mdClock(p.at)+" 检查"].filter(Boolean).join(" · ")}
+  const f=mdFailText(p.d);
+  return `${f.long}${f.raw?"\n服务返回："+f.raw:""}\n${mdClock(p.at)} 检查`;
+}
+function mdConnHTML(ep){
+  const s=mdConnState(ep),tip=esc(mdConnTip(ep));
+  if(s.tone==="neutral")return `<span class="md-conn" data-md-conn="${esc(ep.id)}" title="${tip}">${icon("minus","icon-sm")}${esc(s.text)}</span>`;
+  return `<span class="badge is-${s.tone} md-conn" data-md-conn="${esc(ep.id)}" title="${tip}">${icon(s.icon,s.icon==="loader"?"md-spin":"")}${esc(s.text)}</span>`;
+}
+async function mdProbe(id,{quiet=false}={}){
+  const ep=EPS.find(x=>x.id===id);if(!ep)return;
+  const cur=MD.probe.get(id);
+  if(cur&&cur.st==="busy"&&cur.url===ep.url&&cur.key===(ep.api_key||""))return cur.done;
+  const st={st:"busy",url:ep.url,key:ep.api_key||"",at:Date.now(),d:null};
+  MD.probe.set(id,st);mdPaintProbe(id);
+  st.done=postJSON("/api/probe",{base:ep.url,api_key:ep.api_key||""}).then(d=>{
+    if(MD.probe.get(id)!==st)return;  /* 这期间删掉了, 或者改了地址 / Key 又测了一次 */
+    if(!d.ok&&!d.code){MD.probe.delete(id);mdPaintProbe(id);if(!quiet)toast("测试连接没有发出去："+(d.error||"原因不明"),"error");return}
+    Object.assign(st,{st:d.ok?"ok":"fail",d,at:Date.now()});
+    mdPaintProbe(id);
+    if(quiet)return;
+    const s=mdConnState(ep);
+    toast(`「${ep.name}」`+(s.tone==="good"?`连接正常：响应 ${mdLatency(d.latency_ms)}`:s.tone==="warn"?`连得上，但服务上没有「${ep.model}」`:`连不上：${mdFailText(d).short}`),
+      s.tone==="good"?"success":s.tone==="warn"?"warning":"error",3500);
+  });
+  return st.done;
+}
+/* 全部测试连接: 按列表顺序逐个测, 同时最多 4 个 */
+async function mdProbeAll(){
+  if(MD.all||!EPS.length)return;
+  const ids=mdOrder(EPS).map(e=>e.id);
+  MD.all={done:0,total:ids.length};mdPaintAllBtn();
+  let i=0;
+  const worker=async()=>{while(i<ids.length){const id=ids[i++];await mdProbe(id,{quiet:true});if(MD.all){MD.all.done++;mdPaintAllBtn()}}};
+  await Promise.all(Array.from({length:Math.min(MD_PROBE_CONC,ids.length)},worker));
+  const eps=ids.map(id=>EPS.find(x=>x.id===id)).filter(Boolean),st=eps.map(mdConnState);
+  const ok=st.filter(s=>s.tone==="good").length,warn=st.filter(s=>s.tone==="warn").length,bad=st.filter(s=>s.tone==="bad").length;
+  MD.all=null;mdPaintAllBtn();
+  toast(`测完 ${eps.length} 个：${ok} 个正常`+(warn?`，${warn} 个连得上但没有保存的模型`:"")+(bad?`，${bad} 个连不上`:""),bad?"error":warn?"warning":"success",5000);
+}
+/* 测试连接的结果就地更新: 列表只换这一行的状态格和按钮(焦点不动), 详情换概况和连接信息 */
+function mdPaintProbe(id){
+  if(VIEW!=="models")return;
+  const ep=EPS.find(x=>x.id===id);
+  if(!MD.cur){
+    const ov=$("mdOv");if(ov)ov.innerHTML=mdListOverview();
+    if(!ep)return;
+    document.querySelectorAll(`#mdTable [data-md-conn="${CSS.escape(id)}"]`).forEach(x=>{x.outerHTML=mdConnHTML(ep)});
+    document.querySelectorAll(`#mdTable [data-md-act="probe"][data-id="${CSS.escape(id)}"]`).forEach(b=>mdProbeBtn(b,ep));
+    return;
+  }
+  if(MD.cur!==id||!ep)return;
+  const ov=$("mdDetOv");if(ov)ov.innerHTML=mdDetailOverview(ep);
+  const body=$("mdConnBody");
+  if(body){
+    const had=body.contains(document.activeElement);
+    body.innerHTML=mdConnBodyHTML(ep);
+    if(had){const b=document.querySelector('#mdHeadActs [data-md-act="probe"]');if(b)b.focus({preventScroll:true})}
+  }
+  document.querySelectorAll('#mdHeadActs [data-md-act="probe"]').forEach(b=>mdProbeBtn(b,ep));
+}
+
+/* ---------- 列表 ---------- */
+function mdRenderList(){
+  const el=$("modelsBody");if(!el)return;
+  mdPaintAllBtn();
+  if(!EPS_ST.loaded){
+    el.innerHTML=EPS_ST.err?mdErrorHTML("没能加载模型列表",EPS_ST.err,"list"):tsSkOv()+
+      `<div class="sec"><div class="skeleton" style="height:14px;width:22%"></div>${mdSkRows(4)}</div>`;
+    buildJump("modelsJump",null);return;
+  }
+  if(!EPS.length){el.innerHTML=mdEmptyHTML();buildJump("modelsJump",null);mdFocusAfter();return}
+  if(MD.flash&&MD.q&&!mdRows().some(e=>e.id===MD.flash))MD.q="";  /* 刚保存的那一行被搜索条件挡住了: 清掉搜索 */
+  const a=document.activeElement,typing=a&&a.id==="mdSearch"?a.selectionStart:null;  /* 列表刷新时正在搜索: 焦点和光标留在搜索框 */
+  el.innerHTML=`<div id="mdOv">${mdListOverview()}</div>`+panel({id:"md-list",title:"全部模型",jump:"模型列表",
+    desc:"点一行看详情。「连接状态」是这次打开页面后测试连接的结果；「在测试里用过」按服务地址和模型名称对上历史测试",
+    tools:`<label class="qb-search md-search">${icon("search")}<input class="input" id="mdSearch" type="search" placeholder="搜索名称、模型名、服务地址" value="${esc(MD.q)}" aria-label="搜索名称、模型名、服务地址" autocomplete="off"></label>`,
+    tables:[`<div id="mdTable">${mdTableHTML()}</div>`]});
+  buildJump("modelsJump",el);
+  if(typing!=null){const s=$("mdSearch");if(s){s.focus({preventScroll:true});try{s.setSelectionRange(typing,typing)}catch(e){}}}
+  mdFlashRow();
+  mdFocusAfter();
+}
+function mdEmptyHTML(){
+  return `<div class="empty ts-empty md-empty">${icon("sliders")}<div class="empty-title">还没有保存的模型</div>
+    <div class="empty-desc">把常用的模型服务（服务地址、API Key、模型名称）存在这里，新建速度测试、能力测试、代码生成时一键填入，不用每次复制粘贴。</div>
+    <ol class="ts-steps"><li><b>添加模型</b><span>填服务地址和 Key</span></li><li><b>测试连接</b><span>从服务上的模型里点选</span></li><li><b>一键填入</b><span>在新建测试里选它</span></li></ol>
+    <div class="ts-empty-acts"><button type="button" class="btn btn-primary" data-md-add>${icon("plus")}<span>添加模型</span></button></div></div>`;
+}
+function mdListOverview(){
+  const L=EPS,n=L.length,withKey=L.filter(e=>e.api_key).length;
+  const st=L.map(e=>[e,mdConnState(e)]),done=st.filter(([,s])=>s.tone!=="neutral"&&s.tone!=="info");
+  const good=done.filter(([,s])=>s.tone==="good"),warn=done.filter(([,s])=>s.tone==="warn"),bad=done.filter(([,s])=>s.tone==="bad");
+  const busy=st.filter(([,s])=>s.tone==="info").length;
+  const last=mdOrder(L).find(e=>mdLastUse(e));
+  const most=[...L].filter(e=>mdUses(e).total).sort((a,b)=>mdUses(b).total-mdUses(a).total)[0];
+  const U=L.reduce((t,e)=>{const u=mdUses(e);t.perf+=u.perf;t.iq+=u.iq;t.gen+=u.gen;t.total+=u.total;return t},{perf:0,iq:0,gen:0,total:0});
+  const uText=u=>`速度 ${fmtInt(u.perf)} · 能力 ${fmtInt(u.iq)} · 代码生成 ${fmtInt(u.gen)}`;
+  const concl=[{tone:"info",html:`保存了 <b>${fmtInt(n)}</b> 个模型${withKey?`，其中 ${fmtInt(withKey)} 个带 API Key`:"，都没有 API Key"}。`},
+    last?{tone:"info",html:`最近用的是 ${mdLink(last)}（${esc(tsAgo(mdLastUse(last)))}）。`}
+      :{tone:"info",html:"还没有用过：在列表里点 ▶「用它新建」，或者在新建测试面板里选「从已保存的模型填入」。"},
+    !done.length?{tone:"info",html:busy?`正在测试连接（${busy} 个）…`:"这次打开页面后还没测试过连接：点「全部测试连接」看看它们现在能不能连上（只请求模型列表，不会发起测试）。"}
+      :{tone:bad.length?"bad":warn.length?"warn":"good",html:`这次打开页面后测过 <b>${fmtInt(done.length)}</b> 个：<b>${fmtInt(good.length)}</b> 个正常`+
+        (warn.length?`，<b>${fmtInt(warn.length)}</b> 个连得上但服务上没有保存的模型（${warn.slice(0,3).map(([e])=>mdLink(e)).join("、")}）`:"")+
+        (bad.length?`，<b>${fmtInt(bad.length)}</b> 个连不上：${bad.slice(0,3).map(([e,s])=>`${mdLink(e)}（${esc(s.text.replace(/^连不上 · /,""))}）`).join("、")}${bad.length>3?" 等":""}`:"")+
+        (busy?`；还有 ${busy} 个正在测`:"")+"。"},
+    most?{tone:"info",html:`用得最多的是 ${mdLink(most)}：在测试里用过 <b>${fmtInt(mdUses(most).total)}</b> 次（${uText(mdUses(most))}）。`}
+      :{tone:"info",html:"保存的模型还没在测试里用过（按服务地址和模型名称对上历史测试）。"}];
+  const stats=stat("保存的模型",fmtInt(n),"个",{sub:`带 API Key 的 ${fmtInt(withKey)} 个`})+
+    stat("连接正常",done.length?fmtInt(good.length):"—","个",{sub:done.length?`这次测过 ${fmtInt(done.length)} 个`:"这次还没测过",tip:"这次打开页面后测试连接的结果"})+
+    stat("连不上",done.length?fmtInt(bad.length):"—","个",{sub:bad.length?`<span class="bad">${esc(bad.slice(0,2).map(([e])=>e.name).join("、"))}${bad.length>2?" 等":""}</span>`:done.length?"没有":"这次还没测过"})+
+    stat("在测试里用过",fmtInt(U.total),"次",{sub:uText(U),tip:"按服务地址和模型名称对上历史测试"});
+  return overview(concl,stats,{title:"概况"});
+}
+function mdRows(){
+  const q=MD.q.trim().toLowerCase(),rows=mdOrder(EPS);
+  return q?rows.filter(e=>[e.name,e.model,e.url].some(s=>String(s||"").toLowerCase().includes(q))):rows;  /* 不搜 Key */
+}
+function mdListSpec(list){
+  const rows=list.map(e=>Object.assign({_cls:"is-link"},e)),q=MD.q.trim();
+  return{id:"md-list-t",title:`保存的模型 <span class="dt-sub">${q?`找到 ${fmtInt(rows.length)} / ${fmtInt(EPS.length)} 个`:`${fmtInt(EPS.length)} 个`}</span>`,
+    exportName:"模型列表",search:false,pageSize:20,pageSizes:[10,20,50,100],rowKey:e=>e.id,rows,empty:"没有模型",
+    note:"默认按最近使用排序",
+    columns:[
+      {key:"name",label:"名称",type:"html",sticky:true,sortValue:e=>e.name,text:(v,e)=>e.name,
+        get:e=>`<a class="ts-name-link md-name-link" href="#models/${esc(e.id)}" title="${esc(e.name)}">${esc(e.name)}</a>`},
+      {key:"model",label:"模型名",type:"html",sortValue:e=>e.model,text:(v,e)=>e.model,
+        get:e=>`<span class="dt-ellipsis md-model" title="${esc(e.model)}">${esc(e.model)}</span>`},
+      {key:"host",label:"服务地址",type:"html",sortValue:e=>epHost(e.url),text:(v,e)=>e.url,tip:"只显示主机和端口，鼠标放上去看完整地址",
+        get:e=>`<span class="dt-ellipsis md-host" title="${esc(e.url)}">${esc(epHost(e.url))}</span>`},
+      {key:"key",label:"API Key",type:"html",sortValue:e=>e.api_key?1:0,text:(v,e)=>e.api_key?maskKey(e.api_key):"没有",
+        tip:"只显示遮住的形式；完整的 Key 在「编辑」里点眼睛才看得到",
+        get:e=>e.api_key?`<span class="mono md-key">${esc(maskKey(e.api_key))}</span>`:`<span class="faint">没有</span>`},
+      {key:"conn",label:"连接状态",type:"status",tip:"这次打开页面后测试连接的结果",get:e=>mdConnState(e),fmt:(v,e)=>mdConnHTML(e)},
+      {key:"last",label:"最近使用",type:"html",tip:"最近一次一键填入、或者用它跑测试的时间",sortValue:e=>mdTime(mdLastUse(e)),
+        text:(v,e)=>mdLastUse(e)?timeText(mdLastUse(e)):"还没用过",
+        get:e=>{const t=mdLastUse(e);return t?`<span title="${esc(timeText(t))}">${esc(tsAgo(t))}</span>`:`<span class="faint">还没用过</span>`}},
+      ...Object.entries(MD_KIND).map(([k,m])=>({key:"u_"+k,label:m.short,group:"在测试里用过（次）",type:"int",get:e=>mdUses(e)[k],
+        tip:`用它跑过几次${m.name}（按服务地址和模型名称对上历史测试）`,fmt:v=>v?numText(v,0):`<span class="faint">0</span>`})),
+      {key:"act",label:"操作",type:"html",noSort:true,get:mdActionsHTML,text:()=>""}]};
+}
+function mdActionsHTML(e){
+  const b=(act,ic,label,cls="",tip=label,attrs="")=>`<button type="button" class="btn btn-ghost btn-icon btn-sm md-act${cls}" data-md-act="${act}" data-id="${esc(e.id)}" title="${esc(tip)}" aria-label="${esc(label)}：${esc(e.name)}"${attrs}>${icon(ic)}</button>`;
+  /* 正在测试连接的这一行: 排序、翻页、搜索把表格重画时也保持「正在连接…」(与 mdProbeBtn 就地更新的结果一样) */
+  const busy=(mdProbeOf(e)||{}).st==="busy";
+  const probe=busy?b("probe","loader","正在连接…"," is-loading","正在请求 /v1/models，最多等 10 秒",' aria-disabled="true"'):b("probe","plug","测试连接");
+  return `<span class="dt-actions">${probe}${mdUseMenu(e,"row")}${b("edit","pencil","编辑")}${b("delete","trash","删除"," md-act-del")}</span>`;
+}
+function mdTableHTML(){
+  const rows=mdRows();
+  if(!rows.length)return emptyState("没有符合条件的模型",`没有找到「${MD.q.trim()}」：搜索的是名称、模型名和服务地址`,
+    {iconName:"search",inline:true,action:`<button type="button" class="btn btn-secondary" data-md-clear>${icon("x")}清除搜索</button>`});
+  const spec=mdListSpec(rows);
+  if(MD.flash){  /* 刚保存的那一行: 翻到它所在的那一页 */
+    const i=dtRows(spec).findIndex(e=>e.id===MD.flash),st=dtState(spec.id);
+    if(i>=0)st.page=Math.floor(i/dtPageSize(spec,st));
+  }
+  return dataTable(spec);
+}
+function mdPaintTable(){
+  const box=$("mdTable");if(!box)return;
+  box.innerHTML=mdTableHTML();
+  EPS.forEach(ep=>{const b=box.querySelector(`[data-md-act="probe"][data-id="${CSS.escape(ep.id)}"]`);if(b)mdProbeBtn(b,ep)});
+}
+/* 刚添加或刚改过的那一行短暂高亮 */
+function mdFlashRow(){
+  const id=MD.flash;if(!id)return;
+  MD.flash="";
+  const tr=document.querySelector(`[data-dt="md-list-t"] tr[data-rk="${CSS.escape(id)}"]`);if(!tr)return;
+  tr.classList.add("is-flash");
+  const r=tr.getBoundingClientRect();
+  if(r.bottom>innerHeight-8||r.top<120)tr.scrollIntoView({block:"nearest"});
+  setTimeout(()=>tr.classList.remove("is-flash"),1600);
+}
+/* 页面切换后焦点放到合适的地方: 进详情放到名称上, 回列表放回刚才那一行, 删完最后一个放到「添加模型」 */
+function mdFocusAfter(){
+  const f=MD.focusAfter;if(!f)return;
+  const a=document.activeElement;
+  if(a&&a!==document.body&&!$("modelsBody").contains(a)&&!a.closest(".nav")&&!a.closest("#viewModels .pagehead"))return;  /* 焦点在别处, 不去抢 */
+  MD.focusAfter="";
+  const el=f==="detail"?$("mdNameH"):f==="add"?$("mdAddBtn"):f.startsWith("row:")?document.querySelector(`[data-dt="md-list-t"] tr[data-rk="${CSS.escape(f.slice(4))}"] .md-name-link`):null;
+  if(el)el.focus({preventScroll:true});
+}
+
+/* ---------- 详情 ---------- */
+function mdRenderDetail(){
+  const el=$("modelsBody"),id=MD.cur;if(!el)return;
+  mdPaintAllBtn();MD.flash="";
+  const back=`<button type="button" class="btn btn-ghost btn-sm ts-back" data-md-back>${icon("arrow-left")}全部模型</button>`;
+  if(!EPS_ST.loaded){
+    el.innerHTML=`<div class="ts-head">${back}</div>`+(EPS_ST.err?mdErrorHTML("没能加载这个模型",EPS_ST.err,"list"):
+      `<div class="skeleton" style="height:24px;width:34%"></div><div class="skeleton" style="height:12px;width:46%;margin:10px 0 20px"></div>`+tsSkOv()+
+      `<div class="sec"><div class="skeleton" style="height:14px;width:18%"></div>${mdSkRows(3)}</div>`);
+    buildJump("modelsJump",null);return;
+  }
+  const ep=EPS.find(x=>x.id===id);
+  if(!ep){
+    el.innerHTML=`<div class="ts-head">${back}</div>`+emptyState("这个模型不存在","可能已经被删除了。已经填到新建面板里的内容和过去的测试结果都不受影响",
+      {iconName:"inbox",action:`<button type="button" class="btn btn-secondary" data-md-back>${icon("arrow-left")}回到全部模型</button>`});
+    buildJump("modelsJump",null);return;
+  }
+  el.innerHTML=mdDetailHead(ep,back)+`<div id="mdDetOv">${mdDetailOverview(ep)}</div>`+mdConnSec(ep)+mdRunsSec(ep);
+  document.querySelectorAll('#mdHeadActs [data-md-act="probe"]').forEach(b=>mdProbeBtn(b,ep));
+  if(!MD.runs.has(mdRunsKey()))mdLoadRuns();
+  buildJump("modelsJump",el);
+  mdFocusAfter();
+}
+function mdDetailHead(ep,back){
+  /* 每一段包在 span 里: 外面是 flex, 不包的话「模型」和后面的值之间的空格会被吃掉 */
+  const meta=[`<span>模型 <span class="mono" title="${esc(ep.model)}">${esc(ep.model)}</span></span>`,`<span class="md-url">地址 <span class="mono">${esc(ep.url)}</span></span>`,
+    ep.api_key?`<span>API Key <span class="mono" title="只显示遮住的形式；完整的 Key 在「编辑」里点眼睛才看得到">${esc(maskKey(ep.api_key))}</span></span>`:"<span>没有 API Key</span>",
+    ep.created_utc?`<span>添加于 ${esc(timeText(ep.created_utc))}</span>`:""].filter(Boolean);
+  return `<div class="ts-head">${back}
+    <div class="ts-head-main">
+      <div class="ts-title" id="mdTitle">${mdTitleHTML(ep)}</div>
+      <div class="ts-actions" id="mdHeadActs">
+        <button type="button" class="btn btn-secondary btn-sm" data-md-act="probe" data-id="${esc(ep.id)}">${icon("plug")}<span>测试连接</span></button>
+        ${mdUseMenu(ep,"head")}
+        <details class="dropdown more ts-more" data-md-menu="more" data-id="${esc(ep.id)}"><summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作" title="更多操作">${icon("more")}</summary>
+          <div class="dropdown-panel menu is-right" role="menu">
+            <button class="menu-item" type="button" role="menuitem" data-md-act="edit" data-id="${esc(ep.id)}">${icon("pencil")}编辑地址、Key、模型</button>
+            <button class="menu-item is-danger" type="button" role="menuitem" data-md-act="delete" data-id="${esc(ep.id)}">${icon("trash")}删除这个模型</button>
+          </div></details>
+      </div>
+    </div>
+    <div class="ts-meta">${meta.join('<span class="ts-dot" aria-hidden="true">·</span>')}</div>
+  </div>`;
+}
+function mdTitleHTML(ep){
+  return `<h2 class="ts-name" id="mdNameH" tabindex="-1" title="${esc(ep.name)}">${esc(ep.name)}</h2>
+    <button type="button" class="btn btn-ghost btn-icon btn-sm ts-edit" data-md-rename aria-label="改名：${esc(ep.name)}" title="改名（回车保存，Esc 取消）">${icon("pencil")}</button>`;
+}
+function mdDetailOverview(ep){
+  const p=mdProbeOf(ep),s=mdConnState(ep),u=mdUses(ep),d=p&&p.d;
+  const fwText=d&&d.framework?`${d.framework}${d.fw_version?" "+d.fw_version:""}`:"";
+  let conn;
+  if(!p)conn={tone:"info",html:"这次打开页面后还没测试过连接：点「测试连接」看看现在能不能连上（只请求模型列表，不会发起测试）。"};
+  else if(p.st==="busy")conn={tone:"info",html:"正在测试连接…"};
+  else if(p.st==="ok"){
+    const mine=(d.models||[]).find(m=>m.id===ep.model);
+    conn=mine?{tone:"good",html:`连接正常：响应 <b>${esc(mdLatency(d.latency_ms))}</b>${fwText?`，${esc(fwText)}`:""}；服务上有 ${fmtInt(d.count)} 个模型，保存的「${esc(ep.model)}」在里面（${esc(mdCtxText(mine.max_model_len))}）。`}
+      :{tone:"warn",html:`连得上（响应 ${esc(mdLatency(d.latency_ms))}），但服务上没有「${esc(ep.model)}」这个模型：可能写错了（区分大小写），或者服务换了模型。服务上现在是 ${(d.models||[]).slice(0,4).map(m=>`「${esc(m.id)}」`).join("、")||"空的"}${d.count>4?" 等":""}。`};
+  }else{const f=mdFailText(d);conn={tone:"bad",html:`连不上：<b>${esc(f.short)}</b>——${esc(f.long)}。`}}
+  const concl=[conn,
+    u.total?{tone:"info",html:`在测试里用过 <b>${fmtInt(u.total)}</b> 次：速度测试 ${fmtInt(u.perf)} 次、能力测试 ${fmtInt(u.iq)} 次、代码生成 ${fmtInt(u.gen)} 次；最近一次是 ${esc(timeText(u.last_utc))}。`}
+      :{tone:"info",html:"还没有用它跑过测试（按服务地址和模型名称对上历史测试）。点「用它新建」就能把地址、Key、模型填进新建面板。"},
+    ep.last_used_utc?{tone:"info",html:`最近一次一键填入是 ${esc(tsAgo(ep.last_used_utc))}（${esc(timeText(ep.last_used_utc))}）。`}
+      :{tone:"info",html:"还没有一键填入过。"}];
+  const stats=stat("连接",p&&p.st==="ok"?(s.tone==="good"?"正常":"缺模型"):p&&p.st==="fail"?"连不上":p?"测试中":"—","",
+      {sub:p&&p.st==="ok"?`响应 ${esc(mdLatency(d.latency_ms))} · ${esc(mdClock(p.at))} 检查`:p&&p.st==="fail"?esc(mdFailText(d).short):"这次还没测过",tip:"这次打开页面后测试连接的结果"})+
+    stat("框架与版本",fwText?esc(fwText):"—","",{sub:p&&p.st==="ok"?(fwText?"从 /version 或 /metrics 认出来的":"认不出框架（不是 vLLM，或服务没开放）"):"测试连接后显示"})+
+    stat("服务上的模型",p&&p.st==="ok"?fmtInt(d.count):"—","个",{sub:p&&p.st==="ok"?(mdHasModel(d,ep.model)?"包含保存的模型":`<span class="warn">没有「${esc(ep.model)}」</span>`):"测试连接后显示"})+
+    stat("在测试里用过",fmtInt(u.total),"次",{sub:`速度 ${fmtInt(u.perf)} · 能力 ${fmtInt(u.iq)} · 代码生成 ${fmtInt(u.gen)}`});
+  return overview(concl,stats,{title:"概况"});
+}
+function mdConnSec(ep){
+  return `<section class="sec" id="md-conn" data-jump="连接信息"><div class="sec-head"><div class="sec-head-text"><h2 class="sec-title">连接信息</h2>
+    <p class="sec-desc">这次打开页面后测试连接的结果：请求服务的 /v1/models（最多等 10 秒），再从 /version、/metrics 认框架和版本，都带上保存的 Key；不会发起测试</p></div></div>
+    <div id="mdConnBody">${mdConnBodyHTML(ep)}</div></section>`;
+}
+function mdConnBodyHTML(ep){
+  const p=mdProbeOf(ep),btn=(label,ic)=>`<button type="button" class="btn btn-secondary btn-sm" data-md-act="probe" data-id="${esc(ep.id)}">${icon(ic)}<span>${label}</span></button>`;
+  if(!p)return emptyState("还没测试连接","点「测试连接」看看现在能不能连上，顺便列出服务上有哪些模型、每个的最大上下文",
+    {iconName:"plug",inline:true,action:btn("测试连接","plug")});
+  if(p.st==="busy")return `<div class="md-conn-meta" role="status"><span class="badge is-info">${icon("loader","md-spin")}正在连接…</span><span class="faint">最多等 10 秒</span></div>${mdSkRows(3)}`;
+  if(p.st==="fail"){
+    const f=mdFailText(p.d);
+    return alertBox("bad",`<b>连不上：${esc(f.short)}</b><div>${esc(f.long)}</div>${f.raw?`<div class="md-raw">服务返回：<span class="mono">${esc(f.raw)}</span></div>`:""}<div class="md-raw">${esc(mdClock(p.at))} 检查</div>`,btn("再试一次","refresh"));
+  }
+  const d=p.d,has=mdHasModel(d,ep.model);
+  const warn=has?"":alertBox("warn",`服务上没有「${esc(ep.model)}」这个模型：可能写错了（区分大小写），或者服务换了模型。${d.models&&d.models.length?"可以在下面的列表里点「改用这个」。":""}`);
+  const meta=`<div class="md-conn-meta">${[`<span class="badge is-good">${icon("check")}连接正常</span>`,`<span>响应 <b>${esc(mdLatency(d.latency_ms))}</b></span>`,
+    `<span>${d.framework?`框架 <b>${esc(d.framework)}${d.fw_version?" "+esc(d.fw_version):""}</b>`:"认不出框架"}</span>`,`<span>服务上有 <b>${fmtInt(d.count)}</b> 个模型</span>`,`<span>${esc(mdClock(p.at))} 检查</span>`]
+    .join('<span class="ts-dot" aria-hidden="true">·</span>')}${btn("再测一次","refresh")}</div>`;
+  return warn+meta+(d.models&&d.models.length?dataTable(mdModelsSpec(ep,d)):emptyState("服务上没有模型","/v1/models 返回的是空列表",{inline:true}));
+}
+function mdModelsSpec(ep,d){
+  const rows=(d.models||[]).map(m=>({id:m.id,max_model_len:m.max_model_len,_cls:m.id===ep.model?"md-cur":""}));
+  return{id:"md-models-t",title:`服务上的模型 <span class="dt-sub">${fmtInt(rows.length)} 个</span>`,exportName:"服务上的模型",search:rows.length>12,pageSize:50,rowKey:m=>m.id,rows,
+    columns:[
+      {key:"id",label:"模型名称",type:"html",sticky:true,sortValue:m=>m.id,text:(v,m)=>m.id,
+        get:m=>`<span class="mono">${esc(m.id)}</span>${m.id===ep.model?` <span class="badge is-good" title="保存的就是这个模型">${icon("check")}当前保存的</span>`:""}`},
+      {key:"max_model_len",label:"最大上下文",unit:"token",type:"int",tip:"服务允许的最长输入加输出（max_model_len）；服务没给时为空"},
+      {key:"act",label:"操作",type:"html",noSort:true,text:()=>"",
+        get:m=>m.id===ep.model?`<span class="faint">正在用</span>`:`<button type="button" class="btn btn-ghost btn-sm" data-md-switch="${esc(m.id)}" title="把保存的模型名称改成「${esc(m.id)}」">改用这个</button>`}]};
+}
+function mdRunsKey(){return MD.cur+"|"+MD.kind}
+function mdRunsSec(ep){
+  return `<section class="sec" id="md-runs" data-jump="用过的测试"><div class="sec-head"><div class="sec-head-text"><h2 class="sec-title">最近用它跑过的测试</h2>
+    <p class="sec-desc">按服务地址和模型名称对上历史测试（地址写法不同但指向同一个服务的也算），新的在前，最多列 50 次；点一行到结果页看那次测试</p></div>
+    <div class="sec-tools" id="mdRunsSeg">${mdRunsSegHTML(ep)}</div></div>
+    <div id="mdRunsBody">${mdRunsBodyHTML()}</div></section>`;
+}
+function mdRunsSegHTML(ep){
+  const ent=MD.runs.get(MD.cur+"|all"),c=(ent&&ent.d&&ent.d.counts)||mdUses(ep),total=(c.perf||0)+(c.iq||0)+(c.gen||0);
+  return `<span class="seg" role="group" aria-label="按类型筛选">${[["all","全部",total],["perf","速度",c.perf],["iq","能力",c.iq],["gen","代码生成",c.gen]]
+    .map(([k,label,n])=>`<button type="button" class="seg-btn" data-md-kind="${k}" aria-pressed="${k===MD.kind}">${label} <b class="md-seg-n">${fmtInt(n||0)}</b></button>`).join("")}</span>`;
+}
+function mdLoadRuns(){
+  const id=MD.cur,kind=MD.kind,k=id+"|"+kind;if(!id)return;
+  const ent={loading:true,d:null,err:""};MD.runs.set(k,ent);
+  tsApi(`/api/endpoint-runs?id=${encodeURIComponent(id)}&kind=${encodeURIComponent(kind)}`)
+    .then(d=>{ent.d=d}).catch(e=>{ent.err=e.message})
+    .finally(()=>{ent.loading=false;if(VIEW==="models"&&MD.cur===id&&MD.kind===kind)mdPaintRuns()});
+}
+function mdPaintRuns(reload){
+  if(reload&&MD.cur&&!MD.runs.has(mdRunsKey()))mdLoadRuns();
+  const body=$("mdRunsBody"),seg=$("mdRunsSeg"),ep=EPS.find(x=>x.id===MD.cur);if(!body)return;
+  const k=document.activeElement&&document.activeElement.closest&&document.activeElement.closest("#mdRunsSeg [data-md-kind]");
+  if(seg&&ep){seg.innerHTML=mdRunsSegHTML(ep);if(k){const b=seg.querySelector(`[data-md-kind="${MD.kind}"]`);if(b)b.focus({preventScroll:true})}}
+  body.innerHTML=mdRunsBodyHTML();
+}
+function mdRunsBodyHTML(){
+  const ent=MD.runs.get(mdRunsKey()),ep=EPS.find(x=>x.id===MD.cur);
+  if(!ent||ent.loading)return `<div aria-busy="true">${mdSkRows(4)}</div>`;
+  if(ent.err)return mdErrorHTML("没能加载用过的测试",ent.err,"runs",true);
+  const d=ent.d,kindName=MD.kind==="all"?"测试":MD_KIND[MD.kind].name;
+  if(!d.runs.length)return emptyState(`还没有用它跑过${kindName}`,"按服务地址和模型名称对上历史测试：速度测试、能力测试、代码生成都算",
+    {iconName:"inbox",inline:true,action:ep?`<button type="button" class="btn btn-secondary" data-md-use="${MD.kind==="all"?"perf":MD.kind}" data-id="${esc(ep.id)}">${icon("play")}用它${MD.kind==="all"?"新建速度测试":MD_KIND[MD.kind].new}</button>`:""});
+  return dataTable(mdRunsSpec(d));
+}
+function mdRunsSpec(d){
+  const rows=d.runs.map(r=>Object.assign({_cls:"is-link"},r));
+  return{id:"md-runs-t",title:`用过的测试 <span class="dt-sub">${d.matched>rows.length?`最近 ${fmtInt(rows.length)} 次（一共 ${fmtInt(d.matched)} 次）`:`${fmtInt(rows.length)} 次`}</span>`,
+    exportName:"用过的测试",search:false,pageSize:20,pageSizes:[10,20,50],rowKey:r=>r.run_id,rows,
+    columns:[
+      {key:"kind",label:"类型",type:"html",sticky:true,sortValue:r=>r.kind,text:(v,r)=>MD_KIND[r.kind].name,
+        get:r=>`<a class="md-run-link" href="#${MD_KIND[r.kind].view}" data-md-run="${esc(r.run_id)}" data-kind="${esc(r.kind)}" title="到${MD_KIND[r.kind].name}页看这次测试">${icon(MD_KIND[r.kind].icon,"icon-sm")}${MD_KIND[r.kind].name}</a>`},
+      {key:"started_utc",label:"开始时间",type:"text",get:r=>timeText(r.started_utc),sortValue:r=>mdTime(r.started_utc)},
+      {key:"sum",label:"结果",type:"text",wrap:true,get:r=>mdRunSummary(r)},
+      {key:"setting",label:"设置",type:"text",get:r=>mdRunSetting(r),tip:"速度测试的规模；能力测试和代码生成是否让模型先思考"},
+      {key:"status",label:"状态",type:"status",get:r=>mdRunStatus(r)},
+      {key:"fw",label:"框架",type:"text",get:r=>[r.framework,r.fw_version].filter(Boolean).join(" ")||"—"},
+      {key:"tag",label:"备注标签",type:"text",get:r=>r.tag||"—"}]};
+}
+function mdSetKind(kind){
+  if(!["all","perf","iq","gen"].includes(kind)||kind===MD.kind)return;
+  MD.kind=kind;
+  document.querySelectorAll("#mdRunsSeg [data-md-kind]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.mdKind===kind)));
+  const ent=MD.runs.get(mdRunsKey());
+  if(ent&&!ent.err){mdPaintRuns();return}
+  mdLoadRuns();
+  const k=kind;setTimeout(()=>{const e=MD.runs.get(MD.cur+"|"+k);if(MD.kind===k&&e&&e.loading)mdPaintRuns()},150);  /* 慢的时候才换成骨架, 不闪 */
+}
+/* 到结果页看某次测试(「用过的测试」里的一行): 选中它, 浏览器后退回到这里 */
+async function mdOpenRun(kind,id){
+  const k=MD_KIND[kind];if(!k)return;
+  if(kind==="perf"){
+    if(!RUNS[id])await refresh();
+    if(!RUNS[id]){toast("这次测试已经不在了（可能被删除）","warning");return}
+    $("runA").value=id;
+  }else{  /* 能力测试 / 代码生成的列表切页面时才取: 先放一个选项进去, 取回列表后会保留这个选择 */
+    const sel=$(k.sel);
+    if(![...sel.options].some(o=>o.value===id)){const o=document.createElement("option");o.value=id;o.textContent=id;sel.appendChild(o)}
+    sel.value=id;
+  }
+  location.hash="#"+k.view;
+}
+
+/* ---------- 操作 ---------- */
+/* 用它新建: 切到对应页面、打开新建面板、填好地址 / Key / 模型, 这几栏短暂高亮; 「三个新建面板都填上」只填不跳 */
+function mdUse(id,target){
+  const ep=EPS.find(x=>x.id===id);if(!ep)return;
+  mdTouch(id);
+  if(target==="all"){
+    Object.keys(EP_FIELDS).forEach(p=>epFill(p,ep));
+    toast(`已把「${ep.name}」填进速度测试、能力测试、代码生成三个新建面板`,"success",3500);return;
+  }
+  const k=MD_KIND[target];if(!k)return;
+  if(VIEW!==k.view){try{history.pushState(null,"","#"+k.view)}catch(e){}showView(k.view)}  /* 浏览器后退回到模型管理 */
+  epFill(target,ep);
+  toggleLauncher(k.launcher,true);  /* 打开时会重算面板底部的「这次将测」 */
+  const grid=$(EP_FIELDS[target][0]).closest(".form-grid");
+  requestAnimationFrame(()=>{
+    if(!grid)return;
+    grid.scrollIntoView({block:"nearest",behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});
+    grid.classList.remove("is-flash");void grid.offsetWidth;grid.classList.add("is-flash");
+    setTimeout(()=>grid.classList.remove("is-flash"),1800);
+    $(EP_FIELDS[target][0]).focus({preventScroll:true});
+  });
+  toast(`已在「${k.new}」里填好「${ep.name}」的服务地址、Key 和模型`,"success",3500);
+}
+async function mdDelete(id){
+  const ep=EPS.find(x=>x.id===id);if(!ep)return;
+  const u=mdUses(ep);
+  const ok=await confirmDialog({title:"删除模型",confirmText:"删除",danger:true,
+    message:`删除「${ep.name}」？\n\n已经填到新建面板里的内容和过去的测试结果都不受影响，只是以后不能再一键填入它。`+
+      (u.total?`\n用它跑过的 ${u.total} 次测试会留着。`:"")+"\n删除后不能恢复。"});
+  if(!ok)return;
+  const d=await postJSON("/api/endpoint-delete",{id});
+  if(!d.ok&&!/不存在/.test(d.error||"")){toast("删除失败："+(d.error||"原因不明"),"error");return}
+  toast(`已删除「${ep.name}」`,"success",3000);
+  const L=mdOrder(EPS),i=L.findIndex(x=>x.id===id),next=L[i+1]||L[i-1];
+  EPS=EPS.filter(x=>x.id!==id);MD.probe.delete(id);renderEpSelects();
+  if(MD.cur===id){MD.cur="";MD.fromList=false;try{history.replaceState(null,"","#models")}catch(e){}}
+  MD.focusAfter=next?"row:"+next.id:"add";
+  mdRender();  /* 列表就地更新, 不整页刷新 */
+}
+/* 「服务上的模型」里点「改用这个」: 把保存的模型名称改成这一个 */
+async function mdSwitchModel(model){
+  const ep=EPS.find(x=>x.id===MD.cur);if(!ep||!model||model===ep.model)return;
+  const r=await mdSave({name:ep.name===mdDefaultName(ep.model,ep.url)?"":ep.name,url:ep.url,api_key:ep.api_key||"",model},ep.id);
+  if(!r.ok){toast("没有改成："+r.error,"error");return}
+  toast(`已改用「${model}」`,"success",2500);
+  mdRender();
+}
+/* 详情页头: 点名称旁的笔原地改名; 回车保存, Esc 取消, 空名或超长当场提示 */
+function mdInlineRename(){
+  const ep=EPS.find(x=>x.id===MD.cur),box=$("mdTitle");if(!ep||!box)return;
+  box.innerHTML=`<form class="ts-rename-inline" id="mdInline" novalidate>
+    <input class="input ts-name-input" id="mdInlineInput" autocomplete="off" spellcheck="false" aria-label="名称" aria-describedby="mdInlineHelp">
+    <button type="submit" class="btn btn-primary btn-sm" id="mdInlineSave" disabled>保存</button>
+    <button type="button" class="btn btn-ghost btn-sm" data-md-inline-cancel>取消</button>
+    <div class="ts-name-help" id="mdInlineHelp" aria-live="polite">回车保存，Esc 取消</div></form>`;
+  const inp=$("mdInlineInput"),help=$("mdInlineHelp"),save=$("mdInlineSave");
+  inp.value=ep.name;
+  const cancel=()=>{box.innerHTML=mdTitleHTML(ep);const b=box.querySelector("[data-md-rename]");if(b)b.focus()};
+  const check=()=>{const c=mdNameCheck(inp.value),same=c.ok&&c.name===ep.name;
+    save.disabled=!c.ok||same;inp.setAttribute("aria-invalid",String(!c.ok));
+    help.classList.toggle("is-error",!c.ok);help.textContent=c.ok?(same?"名称没有改动；Esc 取消":`${c.n} / ${MD_NAME_MAX} 个字；回车保存，Esc 取消`):c.error;return c};
+  inp.addEventListener("input",check);
+  inp.addEventListener("keydown",e=>{if(e.key==="Escape"){e.preventDefault();e.stopPropagation();cancel()}});
+  box.querySelector("[data-md-inline-cancel]").addEventListener("click",cancel);
+  $("mdInline").addEventListener("submit",async e=>{
+    e.preventDefault();const c=check();
+    if(!c.ok){inp.focus();return}
+    if(c.name===ep.name){cancel();return}
+    setBusy(save,true);
+    const r=await mdSave({name:c.name,url:ep.url,api_key:ep.api_key||"",model:ep.model},ep.id);
+    if(!r.ok){setBusy(save,false);help.textContent=r.error;help.classList.add("is-error");inp.focus();return}
+    toast(`已改名为「${r.ep.name}」`,"success",2500);
+    mdRender();
+    const b=document.querySelector("#mdTitle [data-md-rename]");if(b)b.focus({preventScroll:true});
+  });
+  inp.focus();inp.select();
+}
+/* 打开弹窗的按钮: 关弹窗时焦点回到它; 它在列表或页头里被重新画过时, 按同样的位置找新的 */
+function mdOpenerSel(el){
+  if(!el||!el.closest)return "";
+  if(el.id)return "#"+CSS.escape(el.id);
+  const dd=el.closest("details[data-md-menu]");
+  if(dd)return `details[data-md-menu="${dd.dataset.mdMenu}"][data-id="${CSS.escape(dd.dataset.id)}"]>summary`;
+  if(el.dataset.mdAct&&el.dataset.id)return `[data-md-act="${el.dataset.mdAct}"][data-id="${CSS.escape(el.dataset.id)}"]`;
+  return "";
+}
+/* 添加 / 编辑: 弹窗。自动聚焦第一个要填的框; 地址粘贴或离开输入框时去掉首尾空格和末尾的 /v1…并提示;
+   Key 默认遮住; 「测试连接」列出服务上的模型, 点一下填进「模型名称」; 回车保存, Esc 关闭; 编辑时没改动保存按钮不能点 */
+function mdFormDialog(id,opener){
+  const ep=id?EPS.find(x=>x.id===id):null;if(id&&!ep)return;
+  const back=mdOpenerSel(opener);
+  Modal.open(ep?"编辑模型":"添加模型",mdFormHTML(!!ep),{dialog:true});
+  Modal.last={focus:()=>{const el=(back&&document.querySelector(back))||$("mdAddBtn");if(el&&el.getClientRects().length)el.focus({preventScroll:true})}};
+  const F=MD.form={id:ep?ep.id:"",orig:ep?{url:ep.url,model:ep.model,api_key:ep.api_key||"",name:ep.name}:null,touched:{},tried:false,probe:null,urlCut:"",keyNote:""};
+  const ids={url:"mdUrl",key:"mdKey",model:"mdModel",name:"mdName"},el=k=>$(ids[k]);
+  if(ep){el("url").value=ep.url;el("key").value=ep.api_key||"";el("model").value=ep.model;el("name").value=ep.name}  /* 用属性赋值, Key 不进元素属性 */
+  const save=$("mdFormSave"),formEl=$("mdForm"),alive=()=>$("mdForm")===formEl;   /* 弹窗关掉又打开后, 上一个弹窗里还没回来的请求不能去改新弹窗 */
+  const raw=()=>({url:el("url").value,key:el("key").value,model:el("model").value,name:el("name").value});
+  const paint=()=>{
+    if(!alive())return null;
+    const c=mdFormCheck(raw()),pr=F.probe&&F.probe.d&&F.probe.d.ok?F.probe.d:null;
+    const dup=c.fields.url&&c.fields.model?EPS.find(x=>x.id!==F.id&&x.model===c.fields.model&&mdUrlKey(x.url)===mdUrlKey(c.fields.url)):null;
+    Object.keys(ids).forEach(k=>{
+      const h=$(ids[k]+"Help"),err=(F.tried||F.touched[k])&&c.errors[k];
+      let text=MD_HELP[k],cls="";
+      if(err){text=err;cls="is-error"}
+      else if(k==="url"&&(c.notes.url||F.urlCut)){text=c.notes.url||`已去掉末尾的「${F.urlCut}」，测试时会自动加上`;cls="is-note"}
+      else if(k==="key"&&(c.notes.key||F.keyNote)){text=c.notes.key||F.keyNote;cls="is-note"}
+      else if(k==="name"&&c.nameDefault&&c.fields.name)text=`不填就用「${c.fields.name}」`;
+      else if(k==="model"&&c.fields.model&&pr&&!mdHasModel(pr,c.fields.model)){text=`服务上没有「${c.fields.model}」：服务上有 ${pr.models.slice(0,3).map(m=>m.id).join("、")||"（空）"}${pr.models.length>3?" 等":""}`;cls="is-warn"}
+      else if(k==="model"&&dup){text=`已经保存过同样的地址和模型：「${dup.name}」（再存一个也可以）`;cls="is-note"}
+      h.textContent=text;h.className="help md-help"+(cls?" "+cls:"");
+      el(k).setAttribute("aria-invalid",String(!!err));
+    });
+    const same=!!F.orig&&c.ok&&["url","model","api_key","name"].every(k=>c.fields[k]===F.orig[k]);
+    save.disabled=same;
+    msg("mdFormMsg",same?"info":"",same?"没有改动":"");
+    document.querySelectorAll("#mdFormProbeOut [data-md-pick]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.mdPick===c.fields.model)));
+    return c;
+  };
+  const tidyUrl=()=>{const i=el("url"),r=mdUrlClean(i.value);if(r.url!==i.value){i.value=r.url;if(r.cut)F.urlCut=r.cut}};
+  const tidyKey=()=>{const i=el("key"),v=i.value.trim();if(v!==i.value){i.value=v;if(v)F.keyNote="已去掉首尾的空格或换行"}};
+  Object.keys(ids).forEach(k=>{
+    el(k).addEventListener("input",()=>{if(k==="url")F.urlCut="";if(k==="key")F.keyNote="";paint()});
+    el(k).addEventListener("blur",()=>{if(!alive())return;if(k==="url")tidyUrl();if(k==="key")tidyKey();F.touched[k]=true;paint()});
+  });
+  el("url").addEventListener("paste",()=>setTimeout(()=>{if(alive()){tidyUrl();paint()}},0));
+  el("key").addEventListener("paste",()=>setTimeout(()=>{if(alive()){tidyKey();paint()}},0));
+  $("mdKeyEye").addEventListener("click",()=>{
+    const i=el("key"),show=i.type==="password",b=$("mdKeyEye");
+    i.type=show?"text":"password";
+    b.setAttribute("aria-pressed",String(show));b.title=show?"隐藏 Key":"显示 Key";b.setAttribute("aria-label",b.title);
+    b.querySelector("use").setAttribute("href",show?"#i-eye-off":"#i-eye");
+  });
+  $("mdFormProbe").addEventListener("click",async()=>{
+    const btn=$("mdFormProbe");if(btn.getAttribute("aria-disabled")==="true")return;
+    tidyUrl();tidyKey();
+    const c=mdFormCheck(raw());
+    if(c.errors.url||c.errors.key){F.touched.url=F.touched.key=true;paint();el(c.errors.url?"url":"key").focus();return}
+    btn.classList.add("is-loading");btn.setAttribute("aria-disabled","true");btn.querySelector("use").setAttribute("href","#i-loader");btn.querySelector("span").textContent="正在连接…";
+    const out=$("mdFormProbeOut");
+    out.innerHTML=`<div class="md-conn-meta" role="status"><span class="badge is-info">${icon("loader","md-spin")}正在连接…</span><span class="faint">最多等 10 秒</span></div>`;
+    const url=c.fields.url,key=c.fields.api_key,at=Date.now();
+    const d=await postJSON("/api/probe",{base:url,api_key:key});
+    if(!alive())return;  /* 弹窗已经关了 */
+    btn.classList.remove("is-loading");btn.setAttribute("aria-disabled","false");btn.querySelector("use").setAttribute("href","#i-plug");btn.querySelector("span").textContent="测试连接";
+    F.probe={d,url,key,at};
+    out.innerHTML=mdFormProbeHTML(d,c.fields.model);
+    if(d.ok&&d.models.length===1&&!el("model").value.trim()){el("model").value=d.models[0].id;F.touched.model=true}  /* 只有一个模型: 直接填上 */
+    paint();
+  });
+  $("mdFormProbeOut").addEventListener("click",e=>{
+    const b=e.target.closest("[data-md-pick]");if(!b)return;
+    el("model").value=b.dataset.mdPick;F.touched.model=true;paint();
+  });
+  $("mdForm").querySelector("[data-md-form-cancel]").addEventListener("click",()=>Modal.close());
+  $("mdForm").addEventListener("submit",async e=>{
+    e.preventDefault();
+    if(save.disabled&&save.classList.contains("is-loading"))return;
+    tidyUrl();tidyKey();F.tried=true;
+    const c=paint();if(!c)return;
+    if(!c.ok){const k=Object.keys(ids).find(x=>c.errors[x]);if(k)el(k).focus();return}
+    if(save.disabled)return;
+    setBusy(save,true);
+    const r=await mdSave(c.fields,F.id);
+    if(!alive())return;
+    setBusy(save,false);
+    if(!r.ok){msg("mdFormMsg","error","保存失败："+r.error);return}
+    const sv=r.ep,pk=F.probe;
+    if(pk&&pk.url===sv.url&&pk.key===(sv.api_key||"")&&(pk.d.ok||pk.d.code))  /* 弹窗里测过、地址和 Key 没再改: 结果记到这个模型上 */
+      MD.probe.set(sv.id,{st:pk.d.ok?"ok":"fail",d:pk.d,url:sv.url,key:sv.api_key||"",at:pk.at});
+    MD.flash=sv.id;
+    if(!F.id&&MD.cur){try{history.pushState(null,"","#models")}catch(e){}MD.cur="";MD.fromList=false}  /* 在详情里添加的: 回到列表看新的这一行 */
+    toast(F.id?`已保存「${sv.name}」`:`已添加「${sv.name}」`,"success",2500);
+    mdRender();   /* 列表就地更新并高亮这一行; 详情就地更新 */
+    Modal.close();
+  });
+  const first=Object.keys(ids).find(k=>(k==="url"||k==="model")&&!el(k).value.trim())||"url";
+  setTimeout(()=>{const i=el(first);if(i){i.focus();if(ep)i.setSelectionRange(i.value.length,i.value.length)}},0);
+  paint();
+}
+function mdFormHTML(edit){
+  const f=(id,label,req,input)=>`<div class="field"><label for="${id}">${label}<span class="md-req${req?"":" is-opt"}">${req?"必填":"可不填"}</span></label>${input}
+    <span class="help md-help" id="${id}Help"></span></div>`;
+  return `<form class="md-form" id="mdForm" novalidate autocomplete="off">
+    ${f("mdUrl","服务地址",true,`<input class="input" id="mdUrl" placeholder="http://127.0.0.1:8000" spellcheck="false" autocomplete="off" inputmode="url" aria-describedby="mdUrlHelp" aria-required="true">`)}
+    ${f("mdKey","API Key",false,`<div class="md-keywrap"><input class="input" id="mdKey" type="password" placeholder="没有可不填" spellcheck="false" autocomplete="new-password" aria-describedby="mdKeyHelp">
+      <button type="button" class="btn btn-ghost btn-icon btn-sm" id="mdKeyEye" aria-label="显示 Key" title="显示 Key" aria-pressed="false">${icon("eye")}</button></div>`)}
+    <div class="md-probe"><button type="button" class="btn btn-secondary btn-sm" id="mdFormProbe">${icon("plug")}<span>测试连接</span></button>
+      <span class="help">用上面的地址和 Key 取服务上的模型列表，点一个就填进「模型名称」</span></div>
+    <div id="mdFormProbeOut" aria-live="polite"></div>
+    ${f("mdModel","模型名称",true,`<input class="input" id="mdModel" placeholder="比如 Qwen3-8B；先点「测试连接」可以直接选" spellcheck="false" autocomplete="off" aria-describedby="mdModelHelp" aria-required="true">`)}
+    ${f("mdName","名称",false,`<input class="input" id="mdName" placeholder="不填就用「模型 · 主机」" autocomplete="off" aria-describedby="mdNameHelp">`)}
+    <div class="dialog-actions"><span class="inline-msg" id="mdFormMsg" aria-live="polite"></span>
+      <button type="button" class="btn btn-secondary" data-md-form-cancel>取消</button>
+      <button type="submit" class="btn btn-primary" id="mdFormSave">${icon("check")}<span>${edit?"保存修改":"保存"}</span></button></div>
+  </form>`;
+}
+function mdFormProbeHTML(d,model){
+  if(!d.ok&&!d.code)return alertBox("bad",`<b>测试连接没有发出去</b><div>${esc(d.error||"原因不明")}</div>`);
+  if(!d.ok){const f=mdFailText(d);return alertBox("bad",`<b>连不上：${esc(f.short)}</b><div>${esc(f.long)}</div>${f.raw?`<div class="md-raw">服务返回：<span class="mono">${esc(f.raw)}</span></div>`:""}`)}
+  const fw=d.framework?` · ${esc(d.framework)}${d.fw_version?" "+esc(d.fw_version):""}`:"";
+  if(!d.models.length)return alertBox("warn",`<b>连接正常</b> · 响应 ${esc(mdLatency(d.latency_ms))}${fw}<div>但服务上没有模型（/v1/models 返回的是空列表）</div>`);
+  return alertBox("good",`<b>连接正常</b> · 响应 ${esc(mdLatency(d.latency_ms))}${fw}<div>服务上有 ${fmtInt(d.count)} 个模型，点一个填进「模型名称」：</div>`)+
+    `<div class="md-pick" role="group" aria-label="服务上的模型">${d.models.map(m=>`<button type="button" class="md-pick-item" data-md-pick="${esc(m.id)}" aria-pressed="${m.id===model}">
+      <span class="md-pick-id">${esc(m.id)}</span><span class="md-pick-sub">${esc(mdCtxText(m.max_model_len))}</span></button>`).join("")}</div>`;
+}
+
+/* ---------- 事件 ---------- */
+$("mdAddBtn").addEventListener("click",e=>mdFormDialog("",e.currentTarget));
+document.addEventListener("click",e=>{
+  if(!e.target.closest)return;
+  const go=e.target.closest("[data-goto-models]");
+  if(go){e.preventDefault();closeDrawers();if(VIEW!=="models"||MD.cur)location.hash="#models";return}
+  const pa=e.target.closest("[data-md-probe-all]");if(pa){if(pa.getAttribute("aria-disabled")!=="true")mdProbeAll();return}
+  if(e.target.closest("[data-md-refresh]")){mdRefresh();return}
+});
+$("modelsBody").addEventListener("click",e=>{
+  const t=e.target;
+  const add=t.closest("[data-md-add]");if(add){mdFormDialog("",add);return}
+  const use=t.closest("[data-md-use]");if(use){mdUse(use.dataset.id||MD.cur,use.dataset.mdUse);return}
+  const act=t.closest("[data-md-act]");
+  if(act){
+    if(act.getAttribute("aria-disabled")==="true")return;
+    const id=act.dataset.id,a=act.dataset.mdAct;
+    if(a==="probe")mdProbe(id);else if(a==="edit")mdFormDialog(id,act);else if(a==="delete")mdDelete(id);
+    return;
+  }
+  if(t.closest("[data-md-back]")){e.preventDefault();mdBack();return}
+  if(t.closest("[data-md-rename]")){mdInlineRename();return}
+  const rt=t.closest("[data-md-retry]");
+  if(rt){if(rt.dataset.mdRetry==="list"){EPS_ST.err="";loadEndpoints();mdRender()}else{MD.runs.delete(mdRunsKey());mdLoadRuns();mdPaintRuns()}return}
+  if(t.closest("[data-md-clear]")){MD.q="";const s=$("mdSearch");if(s)s.value="";dtState("md-list-t").page=0;mdPaintTable();if(s)s.focus();return}
+  const sw=t.closest("[data-md-switch]");if(sw){mdSwitchModel(sw.dataset.mdSwitch);return}
+  const kd=t.closest("[data-md-kind]");if(kd){mdSetKind(kd.dataset.mdKind);return}
+  const run=t.closest("[data-md-run]");if(run){e.preventDefault();mdOpenRun(run.dataset.kind,run.dataset.mdRun);return}
+  if(t.closest("a,button,input,select,label,summary,details"))return;
+  const tr=t.closest('[data-dt="md-list-t"] tr.is-link');if(tr&&tr.dataset.rk){mdOpen(tr.dataset.rk);return}  /* 点一行打开详情 */
+  const rr=t.closest('[data-dt="md-runs-t"] tr.is-link');
+  if(rr&&rr.dataset.rk){const ent=MD.runs.get(mdRunsKey()),r=ent&&ent.d&&ent.d.runs.find(x=>x.run_id===rr.dataset.rk);if(r)mdOpenRun(r.kind,r.run_id)}
+});
+let mdQT=null;
+$("modelsBody").addEventListener("input",e=>{
+  if(e.target.id!=="mdSearch")return;
+  clearTimeout(mdQT);
+  mdQT=setTimeout(()=>{MD.q=e.target.value.slice(0,200);dtState("md-list-t").page=0;mdPaintTable()},160);
+});
+/* 「用它新建」菜单在表格里(外面是可以左右滑的滚动区): 打开时按按钮位置固定定位; 滚动时跟着按钮走,
+   按钮滚出看得见的范围或者改了窗口大小时收起 */
+function mdPlaceMenu(d){
+  const s=d.querySelector("summary"),p=d.querySelector(".dropdown-panel");if(!s||!p)return;
+  const r=s.getBoundingClientRect(),vw=document.documentElement.clientWidth;
+  p.style.left="0px";p.style.top="0px";
+  const w=p.offsetWidth,h=p.offsetHeight;
+  p.style.left=Math.max(8,Math.min(r.right-w,vw-w-8))+"px";
+  p.style.top=(innerHeight-r.bottom-8<h&&r.top-8>h?r.top-4-h:r.bottom+4)+"px";
+}
+document.addEventListener("toggle",e=>{const d=e.target;if(d&&d.matches&&d.matches("details.md-use-dd")&&d.open)mdPlaceMenu(d)},true);
+document.addEventListener("scroll",()=>{
+  const d=document.querySelector("details.md-use-dd[open]");if(!d)return;
+  const s=d.querySelector("summary").getBoundingClientRect(),box=d.closest(".dt-scroll");
+  const c=box?box.getBoundingClientRect():{left:0,top:0,right:innerWidth,bottom:innerHeight};
+  if(s.bottom<Math.max(0,c.top)||s.top>Math.min(innerHeight,c.bottom)||s.right<c.left||s.left>c.right)d.open=false;
+  else mdPlaceMenu(d);
+},true);
+window.addEventListener("resize",()=>document.querySelectorAll("details.md-use-dd[open]").forEach(d=>{d.open=false}));
 
 /* ============================================================
    样式自检: 令牌色块 / 字号 / 基础组件(地址 #styleguide)
