@@ -30,6 +30,7 @@
   <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
   <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
   <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><path d="m2 2 20 20"/></symbol>
   <symbol id="i-columns" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
   <symbol id="i-loader" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.22-8.56"/></symbol>
@@ -91,7 +92,7 @@
     <button class="nav-item" data-view="gen" title="代码生成"><svg class="icon"><use href="#i-code"/></svg><span class="nav-text">代码生成</span><span class="nav-short">生成</span><span class="nav-dot" data-running="gen" hidden></span></button>
     <div class="nav-label">设置</div>
     <button class="nav-item" data-view="tasks" data-online-only title="任务集：速度测试「自定义任务集」用的请求文件，在这里导入、逐行查看、下载模板"><svg class="icon"><use href="#i-file-json"/></svg><span class="nav-text">任务集</span><span class="nav-short">任务集</span></button>
-    <button class="nav-item" data-online-only onclick="manageEndpoints()" title="模型管理：保存常用的服务地址、Key 和模型，三个新建面板一键填入"><svg class="icon"><use href="#i-sliders"/></svg><span class="nav-text">模型管理</span><span class="nav-short">模型</span></button>
+    <button class="nav-item" data-view="models" data-online-only title="模型管理：保存常用的服务地址、Key 和模型，测试连接，新建测试时一键填入"><svg class="icon"><use href="#i-sliders"/></svg><span class="nav-text">模型管理</span><span class="nav-short">模型</span></button>
     <button class="nav-item" onclick="showGlossary()" title="名词解释：页面上出现的名词都是什么意思"><svg class="icon"><use href="#i-help"/></svg><span class="nav-text">名词解释</span><span class="nav-short">名词</span></button>
   </nav>
   <div class="rail-foot">
@@ -270,6 +271,33 @@
   <div id="tasksBody"></div>
 </section>
 
+<!-- ======================== 模型管理(地址 #models, 看某一个是 #models/<id>) ======================== -->
+<section class="page" id="viewModels">
+  <div class="pagehead">
+    <header class="bar">
+      <h1 class="bar-title" title="常用的模型服务：服务地址、API Key、模型名称，新建测试时一键填入">模型管理</h1>
+      <span class="bar-desc md-bar-desc">保存常用的服务地址、Key 和模型，测一测能不能连上，新建测试时一键填入</span>
+      <div class="bar-tools">
+        <button class="btn btn-secondary btn-sm md-bar-probe" type="button" data-md-probe-all title="逐个测试保存的模型能不能连上（同时最多 4 个）"><svg class="icon"><use href="#i-plug"/></svg><span>全部测试连接</span></button>
+        <details class="dropdown more">
+          <summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作" title="更多操作"><svg class="icon"><use href="#i-more"/></svg></summary>
+          <div class="dropdown-panel menu is-right" role="menu">
+            <button class="menu-item" type="button" data-md-refresh><svg class="icon"><use href="#i-refresh"/></svg>刷新</button>
+            <button class="menu-item md-menu-probe" type="button" data-md-probe-all><svg class="icon"><use href="#i-plug"/></svg><span>全部测试连接</span></button>
+            <button class="menu-item" type="button" onclick="exportPageTables('models')"><svg class="icon"><use href="#i-download"/></svg>导出本页全部表格（CSV）</button>
+            <div class="menu-sep"></div>
+            <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
+            <button class="menu-item" type="button" data-theme-toggle><svg class="icon"><use href="#i-contrast"/></svg>切换亮色 / 暗色</button>
+          </div>
+        </details>
+        <button class="btn btn-primary btn-sm bar-new" type="button" id="mdAddBtn" aria-label="添加模型" title="添加模型：服务地址、API Key、模型名称"><svg class="icon"><use href="#i-plus"/></svg><span>添加模型</span></button>
+      </div>
+    </header>
+    <nav class="secnav" id="modelsJump" aria-label="跳转到"></nav>
+  </div>
+  <div id="modelsBody"></div>
+</section>
+
 <!-- ======================== 样式自检(地址 #styleguide, 不在导航里) ======================== -->
 <section class="page" id="viewSg">
   <div class="pagehead">
@@ -290,9 +318,10 @@
     <div class="runlog" id="runLog" hidden></div>
     <div class="step-h"><span class="step-n">1</span>服务与模型</div>
     <div class="form-grid">
-      <div class="field span-2"><label for="fEpSel">从已保存的模型填入</label>
-        <select class="select" id="fEpSel" aria-label="选择已保存的模型"><option value="">选择后自动填入 地址 / Key / 模型</option></select>
-        <span class="help">在左侧「模型管理」里保存常用的模型</span></div>
+      <div class="field span-2"><div class="field-head"><label for="fEpSel">从已保存的模型填入</label>
+          <a href="#models" class="help-link md-manage" data-goto-models title="到「模型管理」页面添加、测试连接、编辑保存的模型">管理</a></div>
+        <select class="select" id="fEpSel" aria-label="从已保存的模型填入"><option value="">选择后自动填入 地址 / Key / 模型</option></select>
+        <span class="help">选一个就把服务地址、Key、模型名称都填好；常用的模型在「模型管理」里保存</span></div>
       <div class="field span-2"><label for="fBase">服务地址</label>
         <input class="input" id="fBase" placeholder="http://127.0.0.1:8000">
         <span class="help">OpenAI 兼容接口的地址，填到端口或 /v1 都可以</span></div>
@@ -401,8 +430,9 @@
     <div class="runlog" id="iqLog" hidden></div>
     <div class="step-h"><span class="step-n">1</span>服务与模型</div>
     <div class="form-grid">
-      <div class="field span-2"><label for="iqEpSel">从已保存的模型填入</label>
-        <select class="select" id="iqEpSel" aria-label="选择已保存的模型"><option value="">选择后自动填入 地址 / Key / 模型</option></select></div>
+      <div class="field span-2"><div class="field-head"><label for="iqEpSel">从已保存的模型填入</label>
+          <a href="#models" class="help-link md-manage" data-goto-models title="到「模型管理」页面添加、测试连接、编辑保存的模型">管理</a></div>
+        <select class="select" id="iqEpSel" aria-label="从已保存的模型填入"><option value="">选择后自动填入 地址 / Key / 模型</option></select></div>
       <div class="field span-2"><label for="iqBase">服务地址</label><input class="input" id="iqBase" placeholder="http://127.0.0.1:8000"></div>
       <div class="field"><label for="iqKey">API Key（可选）</label><input class="input" id="iqKey" type="password" placeholder="没有可不填" autocomplete="off"></div>
       <div class="field"><label for="iqModel">模型名称</label><input class="input" id="iqModel" placeholder="模型名称"></div>
@@ -471,8 +501,9 @@
     <div class="runlog" id="genLog" hidden></div>
     <div class="step-h"><span class="step-n">1</span>服务与模型</div>
     <div class="form-grid">
-      <div class="field span-2"><label for="genEpSel">从已保存的模型填入</label>
-        <select class="select" id="genEpSel" aria-label="选择已保存的模型"><option value="">选择后自动填入 地址 / Key / 模型</option></select></div>
+      <div class="field span-2"><div class="field-head"><label for="genEpSel">从已保存的模型填入</label>
+          <a href="#models" class="help-link md-manage" data-goto-models title="到「模型管理」页面添加、测试连接、编辑保存的模型">管理</a></div>
+        <select class="select" id="genEpSel" aria-label="从已保存的模型填入"><option value="">选择后自动填入 地址 / Key / 模型</option></select></div>
       <div class="field span-2"><label for="genBase">服务地址</label><input class="input" id="genBase" placeholder="http://127.0.0.1:8000"></div>
       <div class="field"><label for="genKey">API Key（可选）</label><input class="input" id="genKey" type="password" placeholder="没有可不填" autocomplete="off"></div>
       <div class="field"><label for="genModel">模型名称</label><input class="input" id="genModel" placeholder="模型名称"></div>
@@ -513,14 +544,6 @@
     <span class="inline-msg" id="genInfo"></span>
     <button class="btn btn-primary" id="genBtnStart" onclick="genStart()"><svg class="icon"><use href="#i-play"/></svg>开始生成</button>
   </div>
-</aside>
-<!-- ======================== 模型管理 ======================== -->
-<aside class="drawer" id="epDrawer" hidden aria-labelledby="epTitle">
-  <div class="drawer-head">
-    <div><h2 class="card-title" id="epTitle">模型管理</h2><p class="card-desc">保存常用的服务地址、Key 和模型。点「填入」会同时填到速度、能力、代码生成三个新建面板</p></div>
-    <button class="btn btn-ghost btn-icon btn-sm" data-toggle="epDrawer" aria-label="关闭"><svg class="icon"><use href="#i-x"/></svg></button>
-  </div>
-  <div class="drawer-body" id="epBody"></div>
 </aside>
 <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
 

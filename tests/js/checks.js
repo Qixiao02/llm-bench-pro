@@ -471,10 +471,162 @@ T("主题切换过渡: 圆心取鼠标点击处", () => {
   assert.deepEqual(themeOrigin({clientX: 120, clientY: 48}), [120, 48]);
   assert.equal(themeOrigin(null).length, 2);   /* 没有事件时也给出圆心(右上角), 不报错 */
 });
-T("maskKey: API Key 掩码显示", () => {
+T("maskKey: API Key 只显示遮住的形式(16 个字以上露头尾各 4 个, 8–15 个露各 2 个, 更短的全遮住), 与服务端同一套", () => {
   assert.equal(maskKey("sk-1234567890abcdef"), "sk-1…cdef");
+  assert.equal(maskKey("sk-demo-1234"), "sk…34");
+  assert.equal(maskKey("abc"), "••••");
   assert.equal(maskKey(""), "—");
   assert.equal(maskKey(null), "—");
+  for (let n = 1; n <= 40; n++) {              /* 任何长度都不会露出完整的 Key, 最多露一半 */
+    const k = "k".repeat(n), m = maskKey(k);
+    assert.notEqual(m, k);
+    assert.ok([...m].filter(c => c === "k").length <= Math.floor(n / 2), `${n} 个字露多了: ${m}`);
+  }
+});
+/* ---------- 模型管理页面 ---------- */
+T("模型管理: 地址 #models/<id> 拆成页面和模型 id; id 只认 ep_ 加字母数字下划线", () => {
+  assert.deepEqual(parseRoute("#models/ep_1790652162_f0295b25"), {view: "models", sub: "ep_1790652162_f0295b25"});
+  assert.ok(VIEWS.models === "viewModels");
+  assert.ok(MD_ID_RE.test("ep_1790652162_f0295b25"));
+  for (const bad of ["", "ep_", "ep_../x", "scn-0123456789ab", "ep_" + "a".repeat(61), "ep_a b"]) assert.ok(!MD_ID_RE.test(bad), bad);
+  assert.ok(!DRAWERS.includes("epDrawer"));      /* 旧的右侧面板没有了 */
+});
+T("模型管理: 地址规整(去掉首尾空白和末尾的 /v1、/v1/chat/completions, 告诉用户去掉了什么), 与服务端 normalize_base 相同", () => {
+  assert.deepEqual(mdUrlClean(" http://127.0.0.1:8000/v1/chat/completions \n"), {url: "http://127.0.0.1:8000", cut: "/v1/chat/completions"});
+  assert.deepEqual(mdUrlClean("http://h:8000/v1/"), {url: "http://h:8000", cut: "/v1/"});
+  assert.deepEqual(mdUrlClean("http://h:8000/"), {url: "http://h:8000", cut: ""});   /* 只去掉了末尾的 /: 不用提示 */
+  assert.deepEqual(mdUrlClean("http://h/gateway/chat/completions"), {url: "http://h/gateway", cut: "/chat/completions"});
+  assert.deepEqual(mdUrlClean("http://h:8000"), {url: "http://h:8000", cut: ""});
+  for (const ok of ["http://127.0.0.1:8000", "https://api.example.com", "http://[::1]:8000", "http://h:8000/gateway"]) assert.ok(mdUrlOk(ok), ok);
+  for (const bad of ["", "ftp://h", "http://", "http://a b", "http://h:abc", "http://h:99999", "http://user:pw@h", "127.0.0.1:8000", "javascript:alert(1)"]) assert.ok(!mdUrlOk(bad), bad);
+});
+T("模型管理: 同一个服务的不同写法算同一个(去掉 /v1、主机不分大小写、localhost 当 127.0.0.1、补默认端口), 与服务端 url_key 相同", () => {
+  const same = ["http://127.0.0.1:18199/v1/chat/completions", "http://127.0.0.1:18199", "HTTP://LOCALHOST:18199/v1", " http://[::1]:18199 "];
+  assert.equal(new Set(same.map(mdUrlKey)).size, 1, same.map(mdUrlKey).join(" | "));
+  assert.equal(mdUrlKey("http://127.0.0.1:18199/v1"), "http://127.0.0.1:18199");
+  assert.equal(mdUrlKey("http://h"), mdUrlKey("http://h:80/v1"));
+  assert.equal(mdUrlKey("https://h"), mdUrlKey("https://H:443"));
+  assert.notEqual(mdUrlKey("http://h:8000"), mdUrlKey("http://h:8001"));
+  assert.notEqual(mdUrlKey("http://h:8000"), mdUrlKey("http://h:8000/gateway"));
+});
+T("模型管理: 添加 / 编辑时的检查(必填、http(s)、长度、Key 去首尾空白、名称默认「模型 · 主机」), 与服务端 clean_fields 同一套", () => {
+  const ok = mdFormCheck({url: " http://127.0.0.1:18199/v1 ", key: "  sk-demo-1234\n", model: " Qwen3-8B ", name: ""});
+  assert.ok(ok.ok);
+  assert.deepEqual(ok.fields, {url: "http://127.0.0.1:18199", model: "Qwen3-8B", api_key: "sk-demo-1234", name: "Qwen3-8B · 127.0.0.1:18199"});
+  assert.ok(ok.nameDefault && ok.notes.url.includes("「/v1」") && ok.notes.key.includes("去掉首尾"));
+  const empty = mdFormCheck({});
+  assert.deepEqual([empty.ok, empty.errors.url, empty.errors.model], [false, "请填写服务地址", "请填写模型名称"]);
+  assert.ok(mdFormCheck({url: "ftp://h", model: "m"}).errors.url.includes("http://"));
+  assert.ok(mdFormCheck({url: "http://h", model: "m", key: "sk-a\nb"}).errors.key.includes("换行"));
+  assert.ok(mdFormCheck({url: "http://h", model: "m", name: "名".repeat(65)}).errors.name.includes("64"));
+  assert.ok(mdFormCheck({url: "http://h", model: "m", name: "名".repeat(64)}).ok);   /* 按字数不按字节 */
+  assert.ok(mdFormCheck({url: "http://h", model: "m".repeat(129)}).errors.model.includes("128"));
+  assert.equal(mdFormCheck({url: "http://h", model: "m", name: " 甲‮乙 "}).fields.name, "甲乙");
+  assert.equal(mdDefaultName("m".repeat(100), "http://h:1").length, 64);
+  assert.deepEqual([mdNameCheck("").error, mdNameCheck("名".repeat(65)).ok, mdNameCheck(" 新名字 ").name], ["名称不能为空", false, "新名字"]);
+});
+T("模型管理: 连不上的原因写成大白话(超时 / 拒绝连接 / 401 Key 不对 / 404 地址不对…), 服务端原文另外给", () => {
+  const f = (code, status, error) => mdFailText({ok: false, code, status, error});
+  assert.equal(f("timeout").short, "超时");
+  assert.equal(f("refused").short, "拒绝连接");
+  assert.equal(f("auth", 401).short, "401 Key 不对");
+  assert.equal(f("auth", 403).short, "403 没有权限");
+  assert.equal(f("not_found", 404).short, "404 地址不对");
+  assert.equal(f("server", 502).short, "502 服务出错");
+  assert.equal(f("dns").short, "找不到主机");
+  assert.equal(f("bad_json").short, "不是模型列表");
+  assert.ok(f("refused").long.includes("端口") && f("timeout").long.includes("10 秒") && f("auth", 401).long.includes("Key"));
+  assert.equal(f("auth", 401, "HTTP 401: bad key").raw, "HTTP 401: bad key");
+  assert.deepEqual(mdFailText({ok: false, error: "奇怪的错误"}), {short: "连不上", long: "奇怪的错误", raw: "奇怪的错误"});
+  for (const k of Object.keys(MD_FAIL)) assert.ok(MD_FAIL[k][0] && MD_FAIL[k][1], k);
+});
+T("模型管理: 连接状态是文字 + 图标 + 颜色(正常带延迟 / 连得上但没有这个模型 / 连不上带原因 / 还没检查), 改过地址或 Key 的旧结果不算", () => {
+  const ep = {id: "ep_1_a", url: "http://h:1", api_key: "k", model: "m"};
+  const saved = new Map(MD.probe);
+  try {
+    MD.probe.clear();
+    assert.equal(mdConnState(ep).text, "还没检查");
+    MD.probe.set(ep.id, {st: "busy", url: ep.url, key: "k"});
+    assert.deepEqual([mdConnState(ep).text, mdConnState(ep).icon], ["正在连接…", "loader"]);
+    MD.probe.set(ep.id, {st: "ok", url: ep.url, key: "k", at: 0, d: {ok: true, latency_ms: 23, count: 1, models: [{id: "m"}]}});
+    assert.deepEqual([mdConnState(ep).tone, mdConnState(ep).text], ["good", "正常 · 23 毫秒"]);
+    MD.probe.get(ep.id).d.models = [{id: "M"}];               /* 区分大小写 */
+    assert.equal(mdConnState(ep).tone, "warn");
+    MD.probe.set(ep.id, {st: "fail", url: ep.url, key: "k", at: 0, d: {ok: false, code: "auth", status: 401, error: "x"}});
+    assert.deepEqual([mdConnState(ep).tone, mdConnState(ep).text], ["bad", "连不上 · 401 Key 不对"]);
+    assert.equal(mdConnState(Object.assign({}, ep, {api_key: "k2"})).text, "还没检查");   /* 改了 Key: 之前的结果不算 */
+    assert.ok(!mdConnHTML(Object.assign({}, ep, {api_key: "sk-secret-0123456789"})).includes("sk-secret"));
+  } finally {
+    MD.probe.clear();
+    saved.forEach((v, k) => MD.probe.set(k, v));
+  }
+  assert.equal(mdLatency(23), "23 毫秒");
+  assert.equal(mdLatency(6004), "6.0 秒");
+  assert.equal(mdLatency(null), "—");
+  assert.ok(mdCtxText(131072).includes("最大上下文") && mdCtxText(131072).replace(/\D/g, "") === "131072");
+});
+T("模型管理: 正在测试连接的这一行, 排序 / 翻页 / 搜索把表格重画后按钮仍是「正在连接…」(转圈、禁用、有提示)", () => {
+  const ep = {id: "ep_1_a", name: "甲", url: "http://h:1", api_key: "k", model: "m"};
+  const saved = new Map(MD.probe);
+  try {
+    MD.probe.clear();
+    const idle = mdActionsHTML(ep);
+    assert.ok(idle.includes("测试连接：甲") && !idle.includes("aria-disabled") && idle.includes("#i-plug"));
+    MD.probe.set(ep.id, {st: "busy", url: ep.url, key: "k"});
+    const busy = mdActionsHTML(ep);
+    assert.ok(busy.includes("正在连接…：甲") && busy.includes('aria-disabled="true"') && busy.includes("is-loading") && busy.includes("#i-loader") && busy.includes("最多等 10 秒"));
+    assert.ok(busy.includes("用它新建：甲") && busy.includes("编辑：甲") && busy.includes("删除：甲"));   /* 每个图标按钮都有 aria-label */
+  } finally {
+    MD.probe.clear();
+    saved.forEach((v, k) => MD.probe.set(k, v));
+  }
+});
+T("模型管理: 默认按最近使用排序(一键填入和最近一次测试取晚的); 都没用过的按添加时间, 新的在前", () => {
+  const eps = [{id: "a", created_utc: "2026-01-01T00:00:00Z"},
+    {id: "b", created_utc: "2026-01-02T00:00:00Z", last_used_utc: "2026-03-01T00:00:00Z"},
+    {id: "c", created_utc: "2026-01-03T00:00:00Z", uses: {last_utc: "2026-03-05T00:00:00+00:00"}},
+    {id: "d", created_utc: "2026-01-04T00:00:00Z"},
+    {id: "e", created_utc: "2026-01-05T00:00:00Z", last_used_utc: "2026-03-09T00:00:00Z", uses: {last_utc: "2026-03-02T00:00:00+00:00"}}];
+  assert.deepEqual(mdOrder(eps).map(e => e.id), ["e", "c", "b", "d", "a"]);
+  assert.equal(mdLastUse(eps[4]), "2026-03-09T00:00:00Z");
+  assert.equal(mdLastUse(eps[2]), "2026-03-05T00:00:00+00:00");
+  assert.equal(mdLastUse(eps[0]), "");
+  assert.deepEqual(eps.map(e => e.id), ["a", "b", "c", "d", "e"]);   /* 不改原数组 */
+});
+T("模型管理: 列表里任何地方都没有完整的 Key(单元格、悬停提示、复制和导出 CSV 用的文字、概况), 搜索也不搜 Key", () => {
+  const key = "sk-list-secret-0123456789";
+  const saved = EPS;
+  try {
+    EPS = [{id: "ep_1_a", name: "甲", url: "http://h:1", model: "m", api_key: key, uses: {perf: 1, iq: 0, gen: 2, total: 3, last_utc: null}}];
+    const spec = mdListSpec(mdRows());
+    const cells = spec.rows.map(r => spec.columns.map(c => dtCell(c, r, {max: {}, heat: {}}) + "|" + dtExport(c, r)).join("|")).join("");
+    assert.ok(!cells.includes(key) && cells.includes(maskKey(key)));
+    assert.ok(!JSON.stringify(dtMatrix(spec)).includes(key));
+    assert.ok(!mdActionsHTML(EPS[0]).includes(key) && !mdListOverview().includes(key));
+    MD.q = "0123456789";
+    assert.equal(mdRows().length, 0);
+    MD.q = "";
+    assert.deepEqual(spec.columns.map(c => c.key), ["name", "model", "host", "key", "conn", "last", "u_perf", "u_iq", "u_gen", "act"]);
+    assert.equal(spec.columns.find(c => c.key === "u_gen").group, "在测试里用过（次）");
+  } finally {
+    EPS = saved;
+    MD.q = "";
+  }
+});
+T("模型管理: 用过的测试一行摘要(速度 / 能力 / 代码生成)与设置、状态", () => {
+  assert.equal(mdRunSummary({kind: "perf", summary: {peak_tps: 1280.84, peak_conc: 4, decode_tps: 410}}), "最高总生成速度 1280.8 token/秒（同时 4 个请求） · 单个请求 410.0 token/秒");
+  assert.equal(mdRunSummary({kind: "perf", summary: {scn: 2}}), "模拟业务 2 类");
+  assert.ok(mdRunSummary({kind: "iq", summary: {acc: 79.2, correct: 19, n: 24}}).startsWith("正确率 79.2%（答对 19 / 24 题）"));
+  assert.equal(mdRunSummary({kind: "iq", summary: {acc: null}}), "没有成绩");
+  assert.equal(mdRunSummary({kind: "gen", summary: {done: 30, planned: 33, exec: 78.4, method: "browser", judge: 71}}), "完成 30 / 33 题 · 运行检查通过 78% · AI 打分 71");
+  assert.ok(mdRunSummary({kind: "gen", summary: {done: 1, planned: 1, exec: 60, method: "static"}}).includes("只看了代码"));
+  assert.deepEqual([mdRunSetting({kind: "perf", suite: "quick"}), mdRunSetting({kind: "iq", thinking: true}), mdRunSetting({kind: "gen", thinking: null})], ["快速", "思考", "—"]);
+  assert.deepEqual([mdRunStatus({status: "done"}).tone, mdRunStatus({status: "failed", error: "x"}).tip, mdRunStatus({status: "interrupted"}).text], ["good", "x", "已中断"]);
+});
+T("模型管理: 新建面板的下拉 — 名称一行、模型和主机一行(默认名称时不重复); 一个都没有时给「去添加」", () => {
+  assert.equal(epOptionSub({name: "m · h:1", model: "m", url: "http://h:1"}), "");
+  assert.equal(epOptionSub({name: "我的模型", model: "m", url: "http://h:1/v1"}), "m · h:1");
+  assert.equal(EP_ADD, "__add__");
 });
 
 T("输入长度: 旧算法拼的档位按实际长度显示, 新测试不动; 长度范围不同的两次测试不可比", () => {

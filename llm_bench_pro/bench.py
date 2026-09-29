@@ -1415,12 +1415,12 @@ def lens_to_ladder(lens_k):
     return ["%dK" % k for k in lens_k]
 
 
-def detect_framework(base_url, headers):
-    """尝试从引擎 /version 与 /metrics 探测框架名与版本, 失败返回空。"""
+def detect_framework(base_url, headers, timeout=4):
+    """尝试从引擎 /version 与 /metrics 探测框架名与版本, 失败返回空。timeout: 每个请求最多等几秒。"""
     name, ver = "", ""
     try:
         req = urllib.request.Request(base_url.rstrip("/") + "/version", headers=headers)
-        with urllib.request.urlopen(req, timeout=4) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             d = json.loads(r.read())
             ver = str(d.get("version", "")).strip()
     except Exception:
@@ -1428,7 +1428,7 @@ def detect_framework(base_url, headers):
     if not ver:
         try:
             req = urllib.request.Request(base_url.rstrip("/") + "/metrics", headers=headers)
-            with urllib.request.urlopen(req, timeout=4) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 for line in r.read().decode().splitlines():
                     if line.startswith("vllm:version{") or line.startswith("vllm:version "):
                         ver = line.rsplit(" ", 1)[-1].strip().strip('"')

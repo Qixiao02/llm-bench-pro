@@ -446,13 +446,21 @@ def _now():
 
 
 def list_endpoints(db_path=None):
+    """保存的模型: 最近用过(一键填入)的在前, 没用过的按添加时间。"""
     with session(db_path) as conn:
-        rows = conn.execute("SELECT * FROM endpoints ORDER BY last_used_utc DESC, created_utc DESC").fetchall()
+        rows = conn.execute("SELECT * FROM endpoints ORDER BY COALESCE(last_used_utc, created_utc) DESC, created_utc DESC").fetchall()
         return [dict(r) for r in rows]
 
 
+def get_endpoint(ep_id, db_path=None):
+    with session(db_path) as conn:
+        row = conn.execute("SELECT * FROM endpoints WHERE id=?", (ep_id,)).fetchone()
+        return dict(row) if row else None
+
+
 def save_endpoint(ep, db_path=None):
-    """upsert: 有 id 则整体覆盖(以最后一次保存为准), 无 id 则新建。返回完整字段。"""
+    """有 id 则整体覆盖(以最后一次保存为准), 无 id 则新建。返回完整字段; id 不存在时抛 KeyError。
+    last_used_utc 只记「一键填入」的时间(touch_endpoint): 新建时为空, 编辑不改。"""
     ep = dict(ep)
     if not ep.get("url") or not str(ep["url"]).startswith(("http://", "https://")):
         raise ValueError("API 地址必须以 http:// 或 https:// 开头")
@@ -466,27 +474,78 @@ def save_endpoint(ep, db_path=None):
         if ep.get("id"):
             row = conn.execute("SELECT id FROM endpoints WHERE id=?", (ep["id"],)).fetchone()
             if not row:
-                raise ValueError("配置不存在或已被删除")
-            conn.execute("UPDATE endpoints SET name=?,url=?,api_key=?,model=?,last_used_utc=? WHERE id=?",
-                         (ep["name"][:64], ep["url"], ep.get("api_key") or "", ep["model"][:128], now, ep["id"]))
+                raise KeyError("配置不存在或已被删除")
+            conn.execute("UPDATE endpoints SET name=?,url=?,api_key=?,model=? WHERE id=?",
+                         (ep["name"][:64], ep["url"], ep.get("api_key") or "", ep["model"][:128], ep["id"]))
         else:
             ep["id"] = "ep_%d_%s" % (int(time.time()), os.urandom(4).hex())
             conn.execute("INSERT INTO endpoints (id,name,url,api_key,model,created_utc,last_used_utc) VALUES (?,?,?,?,?,?,?)",
-                         (ep["id"], ep["name"][:64], ep["url"], ep.get("api_key") or "", ep["model"][:128], now, now))
+                         (ep["id"], ep["name"][:64], ep["url"], ep.get("api_key") or "", ep["model"][:128], now, None))
         row = conn.execute("SELECT * FROM endpoints WHERE id=?", (ep["id"],)).fetchone()
         return dict(row)
 
 
 def touch_endpoint(ep_id, db_path=None):
+    """记下「一键填入」的时间; 返回这个时间, id 不存在时返回 None。"""
+    now = _now()
     with session(db_path) as conn, write_tx(conn):
-        cur = conn.execute("UPDATE endpoints SET last_used_utc=? WHERE id=?", (_now(), ep_id))
-        return cur.rowcount > 0
+        cur = conn.execute("UPDATE endpoints SET last_used_utc=? WHERE id=?", (now, ep_id))
+        return now if cur.rowcount > 0 else None
 
 
 def delete_endpoint(ep_id, db_path=None):
     with session(db_path) as conn, write_tx(conn):
         cur = conn.execute("DELETE FROM endpoints WHERE id=?", (ep_id,))
         return cur.rowcount > 0
+
+
+def run_targets(db_path=None):
+    """所有测试的 (run_id, 类型, 地址, 模型, 开始时间): 模型管理页按地址和模型统计「在测试里用过几次」。
+    只查一次 runs 表, 分组在调用方(endpoints.usage)做, 不按模型逐个查。"""
+    with session(db_path) as conn:
+        return [tuple(r) for r in conn.execute("SELECT run_id, kind, url, model, started_utc FROM runs")]
+
+
+def run_briefs(run_ids, db_path=None):
+    """几次测试的摘要原料(模型管理页「最近用它跑过的测试」): 返回 {run_id: 行}, 行里有
+    kind / status / 时间 / 标签 / 框架 / 正确率等列, 速度测试另带 phases=[(阶段 id, 数据或 None)]
+    (只解析 concurrency / decode 两个阶段), 代码生成另带 items(作品条目) 和 planned(计划几题)。"""
+    ids = list(dict.fromkeys(run_ids))
+    if not ids:
+        return {}
+    marks = ",".join("?" * len(ids))
+    out = {}
+    with session(db_path) as conn:
+        for r in conn.execute("SELECT run_id, kind, status, heartbeat_ts, started_utc, finished_utc, tag, framework, fw_version, "
+                              "suite, thinking, bank_id, acc, correct, n, error, meta_json FROM runs WHERE run_id IN (%s)" % marks, ids):
+            d = {k: r[k] for k in ("run_id", "kind", "started_utc", "finished_utc", "tag", "framework", "fw_version",
+                                   "suite", "bank_id", "acc", "correct", "n", "error")}
+            d["status"] = _row_status(r)
+            d["thinking"] = None if r["thinking"] is None else bool(r["thinking"])
+            if r["kind"] == "perf":
+                d["phases"] = []
+            elif r["kind"] == "gen":
+                try:
+                    planned = json.loads(r["meta_json"]).get("planned")
+                except (ValueError, AttributeError):
+                    planned = None
+                d.update(items=[], planned=planned)
+            out[r["run_id"]] = d
+        for r in conn.execute("SELECT run_id, phase_id, CASE WHEN phase_id IN ('concurrency','decode') THEN data_json END AS data_json "
+                              "FROM perf_phases WHERE run_id IN (%s) ORDER BY run_id, seq" % marks, ids):
+            if r["run_id"] in out and "phases" in out[r["run_id"]]:
+                try:
+                    data = json.loads(r["data_json"]) if r["data_json"] else None
+                except ValueError:
+                    data = None
+                out[r["run_id"]]["phases"].append((r["phase_id"], data))
+        for r in conn.execute("SELECT run_id, data_json FROM gen_items WHERE run_id IN (%s) ORDER BY run_id, seq" % marks, ids):
+            if r["run_id"] in out and "items" in out[r["run_id"]]:
+                try:
+                    out[r["run_id"]]["items"].append(json.loads(r["data_json"]))
+                except ValueError:
+                    pass
+    return out
 
 
 def get_run(run_id, items=True, db_path=None, conn=None):

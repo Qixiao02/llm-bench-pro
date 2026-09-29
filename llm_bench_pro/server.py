@@ -31,6 +31,7 @@ if _PKG_DIR not in sys.path:
 
 import bankman  # noqa: E402
 import bench  # noqa: E402
+import endpoints  # noqa: E402
 import export_html  # noqa: E402
 import gen  # noqa: E402
 import geneval  # noqa: E402
@@ -88,6 +89,7 @@ _STATIC_TYPES = {".css": "text/css; charset=utf-8", ".js": "application/javascri
 
 STARTED_AT = time.time()
 CONFIG = {"host": "127.0.0.1", "port": 18080, "token": ""}
+PROBE_TIMEOUT = 10  # 测试连接: 拉 /v1/models 最多等几秒
 
 
 def safe_join(base, rel):
@@ -844,6 +846,64 @@ def task_set_image(fid, line, idx):
     return 200, data, ctype
 
 
+# ---------------------------------------------------------------- 模型管理页面
+# 保存的模型(名称 / 地址 / Key / 模型) + 在测试里用过几次 + 最近用它跑过的测试。函数返回 (状态码, 数据), 由 Handler 输出
+
+def endpoint_list():
+    """保存的模型, 每个带上在测试里用过几次(按地址和模型对上历史测试: 只查一次 runs 表, 在 endpoints.usage 里分组)。"""
+    groups = endpoints.usage(store.run_targets())
+    eps = store.list_endpoints()
+    for ep in eps:
+        ep["uses"] = endpoints.uses_of(ep, groups)
+    return eps
+
+
+def _endpoint_of(ep_id):
+    """(保存的模型, 状态码, 错误说明): id 必须是 ep_ 加字母数字, 模型要存在。"""
+    if not isinstance(ep_id, str) or not endpoints.ID_RE.match(ep_id):
+        return None, 400, "模型 id 不对（应为 ep_ 开头的字母、数字、下划线）"
+    ep = store.get_endpoint(ep_id)
+    if not ep:
+        return None, 404, "这个模型不存在（可能已被删除）"
+    return ep, 200, ""
+
+
+def endpoint_runs(ep_id, kind="", limit=""):
+    """最近用这个模型(地址和模型名称都对上)跑过的测试, 新的在前, 最多 50 次; kind 为 perf / iq / gen 时只要这一类。
+    每次带上结果摘要(速度: 最高总生成速度与单个请求速度; 能力: 正确率; 代码生成: 完成几题、检查通过率)。"""
+    ep, code, err = _endpoint_of(ep_id)
+    if not ep:
+        return code, {"ok": False, "error": err}
+    kind = kind or "all"
+    if kind not in ("all",) + endpoints.KINDS:
+        return 400, {"ok": False, "error": "kind 应为 all / perf / iq / gen 之一"}
+    try:
+        limit = int(limit or endpoints.RUNS_MAX)
+    except (TypeError, ValueError):
+        return 400, {"ok": False, "error": "limit 应为整数"}
+    if not 1 <= limit <= endpoints.RUNS_MAX:
+        return 400, {"ok": False, "error": "limit 应为 1–%d" % endpoints.RUNS_MAX}
+    hit, counts = endpoints.matching_runs(store.run_targets(), ep, kind)
+    briefs = store.run_briefs([rid for rid, _ in hit[:limit]])
+    runs = []
+    for rid, _ in hit[:limit]:
+        b = briefs.get(rid)
+        if not b:  # 查完列表之后刚被删掉
+            continue
+        acc = {k: b.pop(k) for k in ("acc", "correct", "n")}
+        if b["kind"] == "perf":
+            b["summary"] = endpoints.perf_summary(b.pop("phases"))
+        elif b["kind"] == "gen":
+            b["summary"] = endpoints.gen_summary(b.pop("items"), b.pop("planned"))
+        else:
+            b["summary"] = acc
+        if b.get("error"):
+            b["error"] = str(b["error"])[:200]
+        runs.append(b)
+    return 200, {"ok": True, "id": ep["id"], "kind": kind, "limit": limit, "counts": counts,
+                 "total": sum(counts.values()), "matched": len(hit), "runs": runs}
+
+
 # ---------------------------------------------------------------- HTTP
 
 class Handler(BaseHTTPRequestHandler):
@@ -922,7 +982,9 @@ class Handler(BaseHTTPRequestHandler):
             "/api/gen-status": lambda: self._json(JOBS["gen"].snapshot()),
             "/api/replay-list": lambda: self._json(self.replay_list()),
             "/api/scenario-list": lambda: self._json(self.scenario_list()),
-            "/api/endpoints": lambda: self._json(store.list_endpoints()),
+            # 模型管理页面
+            "/api/endpoints": lambda: self._json(endpoint_list()),
+            "/api/endpoint-runs": lambda: self._reply(endpoint_runs(q("id"), q("kind"), q("limit"))),
             # 任务集页面
             "/api/task-sets": lambda: self._reply(task_set_list()),
             "/api/task-set": lambda: self._reply(task_set_detail(q("id"), q("offset"), q("limit"), q("status"), q("q"),
@@ -1008,25 +1070,35 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def api_probe(self, body):
-        """探测端点: /v1/models 拉取模型清单 + 延迟。"""
-        base = bench.normalize_base(body.get("base", ""))
-        if not re.match(r"^https?://", base):
-            return self._json({"ok": False, "base": base, "error": "API 地址需以 http:// 或 https:// 开头"})
-        api_key = body.get("api_key", "")
+        """测试连接: 拉 /v1/models 得到模型清单(含最大上下文 max_model_len)和延迟, 再从 /version、/metrics 认框架和版本
+        (带上同样的 Key: 服务开了鉴权时不带就认不出来)。连不上时 code 说明原因(见 endpoints.probe_fail), 页面写成大白话。"""
+        raw, api_key = body.get("base"), body.get("api_key")
+        if not isinstance(raw, str) or (api_key is not None and not isinstance(api_key, str)):
+            return self._json({"ok": False, "code": "bad_url", "error": "base / api_key 应为文字"}, 400)
+        base = bench.normalize_base(raw)
+        if not endpoints.url_ok(base):
+            return self._json({"ok": False, "code": "bad_url", "base": base, "error": endpoints.BAD_URL}, 400)
+        api_key = (api_key or "").strip()
+        if re.search(r"[\x00-\x1f\x7f]", api_key):
+            return self._json({"ok": False, "code": "bad_key", "base": base, "error": "API Key 中间不能有换行或其他控制字符"}, 400)
         headers = {"Authorization": "Bearer " + api_key} if api_key else {}
         t0 = time.perf_counter()
         try:
             req = urllib.request.Request(base + "/v1/models", headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT) as r:
                 data = json.loads(r.read())
             latency = round((time.perf_counter() - t0) * 1000)
-            models = [{"id": m.get("id"), "max_model_len": m.get("max_model_len")} for m in data.get("data", [])]
-            fw = bench.detect_framework(base, {})
-            return self._json({"ok": True, "base": base, "latency_ms": latency,
-                               "count": len(models), "models": models,
-                               "framework": fw.get("name") or None, "fw_version": fw.get("version") or None})
+            models = endpoints.models_of(data)
         except Exception as e:
-            return self._json({"ok": False, "base": base, "error": "%s: %s" % (type(e).__name__, str(e)[:200])})
+            code, status, text = endpoints.probe_fail(e)
+            if api_key:  # 有的服务在出错说明里原样带上收到的 Key: 页面上只给遮住的形式
+                text = text.replace(api_key, endpoints.mask_key(api_key))
+            return self._json({"ok": False, "base": base, "code": code, "status": status, "error": text})
+        # 认框架用剩下的时间(每个请求最多 4 秒): 服务慢的时候整个测试连接也不超过 PROBE_TIMEOUT 秒
+        left = PROBE_TIMEOUT - (time.perf_counter() - t0)
+        fw = bench.detect_framework(base, headers, timeout=min(4, left / 2)) if left >= 1 else {}
+        return self._json({"ok": True, "base": base, "latency_ms": latency, "count": len(models), "models": models,
+                           "framework": fw.get("name") or None, "fw_version": fw.get("version") or None})
 
     def api_cancel(self, body):
         kind = body.get("job")
@@ -1059,21 +1131,37 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"ok": True, "kind": kind})
 
     def api_endpoint_save(self, body):
-        """模型端点配置: 命名保存 地址/Key/模型, 三页启动器一键填入, 免去复制粘贴。"""
+        """保存一个模型(名称 / 服务地址 / API Key / 模型名称), 三个新建面板一键填入, 免去复制粘贴。
+        带 id 是修改, 不带是新增; 字段规则见 endpoints.clean_fields。返回这一个和全部(都带「用过几次」)。"""
+        ep_id = body.get("id")
+        if ep_id not in (None, "") and (not isinstance(ep_id, str) or not endpoints.ID_RE.match(ep_id)):
+            return self._json({"ok": False, "error": "模型 id 不对（应为 ep_ 开头的字母、数字、下划线）"}, 400)
+        fields, err = endpoints.clean_fields(body)
+        if err:
+            return self._json({"ok": False, "error": err}, 400)
         try:
-            ep = store.save_endpoint({"id": body.get("id"), "name": body.get("name"),
-                                      "url": body.get("url"), "api_key": body.get("api_key"),
-                                      "model": body.get("model")})
+            ep = store.save_endpoint(dict(fields, id=ep_id or None))
+        except KeyError:
+            return self._json({"ok": False, "error": "这个模型不存在（可能已被删除）"}, 404)
         except ValueError as e:
             return self._json({"ok": False, "error": str(e)}, 400)
-        return self._json({"ok": True, "endpoint": ep, "endpoints": store.list_endpoints()})
+        eps = endpoint_list()
+        return self._json({"ok": True, "endpoint": next((x for x in eps if x["id"] == ep["id"]), ep), "endpoints": eps})
 
     def api_endpoint_use(self, body):
-        return self._json({"ok": bool(store.touch_endpoint(body.get("id") or ""))})
+        """记下「一键填入」的时间(列表里的「最近使用」)。"""
+        ep, code, err = _endpoint_of(body.get("id"))
+        if not ep:
+            return self._json({"ok": False, "error": err}, code)
+        return self._json({"ok": True, "id": ep["id"], "last_used_utc": store.touch_endpoint(ep["id"])})
 
     def api_endpoint_delete(self, body):
-        ok = store.delete_endpoint(body.get("id") or "")
-        return self._json({"ok": True} if ok else {"ok": False, "error": "配置不存在"}, 200 if ok else 404)
+        """删除保存的模型。已经填到新建面板里的内容和过去的测试结果都不受影响。"""
+        ep, code, err = _endpoint_of(body.get("id"))
+        if not ep:
+            return self._json({"ok": False, "error": err}, code)
+        store.delete_endpoint(ep["id"])
+        return self._json({"ok": True, "id": ep["id"]})
 
     # ---- 任务场景: 自定义任务集 / 图片包
     _MAX_UPLOAD_IMAGES = 64
