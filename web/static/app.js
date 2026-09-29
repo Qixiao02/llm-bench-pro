@@ -104,10 +104,10 @@ function workFrameSrc(path){
 }
 /* 新标签页打开: 像普通网页一样运行(可以加载外部字体和脚本), 仍然隔离, 碰不到本系统的数据和接口 */
 function workOpenUrl(path){return OFF?workUrl(path):"/"+path+"?open=1"}
-function workOpenLink(it,{text=false}={}){
+function workOpenLink(it,{text=false,label=false}={}){
   if(!it||!it.file||it.error)return "";
   const tip="新标签页打开：像普通网页一样运行（可以加载外部字体和脚本），仍然隔离，碰不到本系统的数据";
-  return `<a class="btn ${text?"btn-secondary btn-sm":"btn-ghost btn-icon btn-sm"} work-open" href="${esc(workOpenUrl(it.file))}" target="_blank" rel="noopener noreferrer" title="${tip}"${text?"":` aria-label="新标签页打开"`}>${icon("external")}${text?"新标签页打开":""}</a>`;
+  return `<a class="btn ${text?"btn-secondary btn-sm":"btn-ghost btn-icon btn-sm"} work-open" href="${esc(workOpenUrl(it.file))}" target="_blank" rel="noopener noreferrer" title="${tip}"${text?"":` aria-label="${esc("新标签页打开"+(label?"："+it.name:""))}"`}>${icon("external")}${text?"新标签页打开":""}</a>`;
 }
 /* 图表卡里的标签页(条形 / 能力形状、折线 / 散点)记住上次选的 */
 const CTAB=Object.assign({subj:"bars",tok:"line"},lsGet("llm-bench-pro-ctab"));
@@ -911,11 +911,14 @@ function abCell(va,vb,f,hasB){return `${f(va)}${hasB?`<span class="sub">B ${f(vb
 const DT={specs:new Map(),state:new Map()};
 const DT_PAGE=50;
 const DT_LS="llm-bench-pro-dt";
-function dtState(id){
+function dtState(id,spec){
   let s=DT.state.get(id);
   if(!s){
     const saved=lsGet(DT_LS)[id]||{};
-    s={sort:saved.sort||null,hidden:new Set(saved.hidden||[]),size:saved.size||0,q:"",page:0,open:new Set(),closed:new Set()};
+    spec=spec||DT.specs.get(id);
+    /* 没有保存过选择时, 列定义里写了 hidden:true 的列默认不显示 */
+    const hidden=saved.hidden||(spec?spec.columns.filter(c=>c.hidden).map(c=>c.key):[]);
+    s={sort:saved.sort||null,hidden:new Set(hidden),size:saved.size||0,q:"",page:0,open:new Set(),closed:new Set()};
     DT.state.set(id,s);
   }
   return s;
@@ -957,7 +960,7 @@ function pagerTarget(input){
 /* 翻页会重画翻页器: 记下焦点在哪个位置, 重画后放回同一个翻页器的对应位置(键盘连续翻页不丢焦点) */
 function pagerFocusKey(){
   const a=document.activeElement,p=a&&a.closest&&a.closest(".pager");if(!p)return null;
-  return{compact:p.classList.contains("is-compact"),what:a.dataset.dir||(a.matches(".pager-input,[data-qb-jumpbtn],[data-dt-jumpbtn]")?"jump":"num")};
+  return{compact:p.classList.contains("is-compact"),what:a.dataset.dir||(a.matches(".pager-input,[data-qb-jumpbtn],[data-dt-jumpbtn],[data-gw-jumpbtn]")?"jump":"num")};
 }
 function pagerRefocus(root,k){
   if(!k||!root)return;
@@ -1155,6 +1158,7 @@ function dtInner(spec){
 }
 function dataTable(spec){
   DT.specs.set(spec.id,spec);
+  dtState(spec.id,spec);
   return `<div class="dt" data-dt="${esc(spec.id)}">${dtInner(spec)}</div>`;
 }
 function dtRefresh(id,keepFocus){
@@ -3145,23 +3149,23 @@ const TIER_NAME={普通:"基础",困难:"进阶",地狱:"高难",实战:"真实�
 const TIER_ORDER=["普通","困难","地狱","实战"];
 const tagName=t=>TIER_NAME[t]||t;
 const TASK_CATALOG=[
- {id:"pelican",name:"鹈鹕骑自行车",tier:"普通"},{id:"earth",name:"可拖拽 3D 地球",tier:"普通"},
- {id:"blackhole",name:"黑洞吸积盘",tier:"普通"},{id:"matrix",name:"矩阵字符雨",tier:"普通"},
- {id:"koi",name:"锦鲤池塘",tier:"普通"},{id:"fireworks",name:"点击烟花",tier:"普通"},
- {id:"solar",name:"太阳系模拟",tier:"普通"},{id:"landing",name:"产品落地页",tier:"普通"},
- {id:"dashboard",name:"数据看板",tier:"普通"},
- {id:"flappy",name:"Flappy Bird",tier:"困难"},{id:"tetris",name:"俄罗斯方块",tier:"困难"},
- {id:"breakout",name:"打砖块",tier:"困难"},{id:"ninja",name:"切水果",tier:"困难"},
- {id:"platformer",name:"2D 平台跳跃",tier:"困难"},{id:"snake",name:"贪吃蛇",tier:"困难"},
- {id:"fps",name:"3D 第一人称迷宫",tier:"地狱"},{id:"cube3d",name:"3D 魔方",tier:"地狱"},
- {id:"pinball",name:"物理弹珠台",tier:"地狱"},{id:"fluid",name:"实时流体模拟",tier:"地狱"},
- {id:"eco",name:"生态进化模拟",tier:"地狱"},{id:"piano",name:"可弹奏钢琴",tier:"地狱"},
- {id:"sortviz",name:"排序算法可视化",tier:"地狱"},{id:"win95",name:"Win95 桌面",tier:"地狱"},
- {id:"applecard",name:"Apple 风格产品页",tier:"实战"},{id:"stripe",name:"Stripe 风格首屏",tier:"实战"},
- {id:"iostodo",name:"iOS 待办应用",tier:"实战"},{id:"ecomdetail",name:"电商详情页",tier:"实战"},
- {id:"ioscalc",name:"iOS 计算器",tier:"实战"},{id:"dock",name:"macOS Dock",tier:"实战"},
- {id:"terminal",name:"macOS 终端",tier:"实战"},{id:"parallax",name:"3D 悬停卡片",tier:"实战"},
- {id:"glasslogin",name:"玻璃拟态登录页",tier:"实战"},{id:"feed",name:"社区信息流",tier:"实战"},
+ {id:"pelican",name:"鹈鹕骑自行车",tier:"普通",cat:"anim"},{id:"earth",name:"可拖拽 3D 地球",tier:"普通",cat:"d3"},
+ {id:"blackhole",name:"黑洞吸积盘",tier:"普通",cat:"anim"},{id:"matrix",name:"矩阵字符雨",tier:"普通",cat:"anim"},
+ {id:"koi",name:"锦鲤池塘",tier:"普通",cat:"anim"},{id:"fireworks",name:"点击烟花",tier:"普通",cat:"anim"},
+ {id:"solar",name:"太阳系模拟",tier:"普通",cat:"anim"},{id:"landing",name:"产品落地页",tier:"普通",cat:"page"},
+ {id:"dashboard",name:"数据看板",tier:"普通",cat:"page"},
+ {id:"flappy",name:"Flappy Bird",tier:"困难",cat:"game"},{id:"tetris",name:"俄罗斯方块",tier:"困难",cat:"game"},
+ {id:"breakout",name:"打砖块",tier:"困难",cat:"game"},{id:"ninja",name:"切水果",tier:"困难",cat:"game"},
+ {id:"platformer",name:"2D 平台跳跃",tier:"困难",cat:"game"},{id:"snake",name:"贪吃蛇",tier:"困难",cat:"game"},
+ {id:"fps",name:"3D 第一人称迷宫",tier:"地狱",cat:"d3"},{id:"cube3d",name:"3D 魔方",tier:"地狱",cat:"d3"},
+ {id:"pinball",name:"物理弹珠台",tier:"地狱",cat:"game"},{id:"fluid",name:"实时流体模拟",tier:"地狱",cat:"anim"},
+ {id:"eco",name:"生态进化模拟",tier:"地狱",cat:"anim"},{id:"piano",name:"可弹奏钢琴",tier:"地狱",cat:"app"},
+ {id:"sortviz",name:"排序算法可视化",tier:"地狱",cat:"anim"},{id:"win95",name:"Win95 桌面",tier:"地狱",cat:"app"},
+ {id:"applecard",name:"Apple 风格产品页",tier:"实战",cat:"page"},{id:"stripe",name:"Stripe 风格首屏",tier:"实战",cat:"page"},
+ {id:"iostodo",name:"iOS 待办应用",tier:"实战",cat:"app"},{id:"ecomdetail",name:"电商详情页",tier:"实战",cat:"page"},
+ {id:"ioscalc",name:"iOS 计算器",tier:"实战",cat:"app"},{id:"dock",name:"macOS Dock",tier:"实战",cat:"app"},
+ {id:"terminal",name:"macOS 终端",tier:"实战",cat:"app"},{id:"parallax",name:"3D 悬停卡片",tier:"实战",cat:"page"},
+ {id:"glasslogin",name:"玻璃拟态登录页",tier:"实战",cat:"page"},{id:"feed",name:"社区信息流",tier:"实战",cat:"page"},
 ];
 function renderTaskChips(){
   const box=$("genTasks");
@@ -3244,7 +3248,7 @@ function watchGen(title,keepRun){
   }});
 }
 async function loadGenResults(focusNew,keepRun){
-  if(!GEN_LOADED)$("genResult").innerHTML=skeletonPage();
+  if(!GEN_LOADED)$("genResult").innerHTML=genSkeleton();
   try{
     const list=await getJSON("/api/gen-results");
     const prev=new Set(Object.keys(GEN_RUNS));
@@ -3355,22 +3359,315 @@ function changeKind(it){
 const CHANGE_KINDS=[["raw","原样保存，一个字没改"],["trimmed","只去掉了代码前后的说明文字或代码块标记"],["stitched","把多轮接着写的内容拼接起来"],["rescued","思考失败，改为不思考重新生成"],["legacy","旧任务，没有保存原始输出"]];
 function tone2color(t){return t==="good"?C.goodMark:t==="bad"?C.badMark:t==="warn"?C.warnMark:C.axis}
 
-/* 作品排序(卡片与表格共用): 默认按题目顺序 */
+/* ============================================================
+   作品列表: 卡片(缩略图 / 标题 / 自己的问题 / 检查 / 数据 / 操作) · 分页 · 筛选 · 搜索 · 排序 · A / B 并排 · 表格
+   下面「纯逻辑」一节的函数不碰页面(缩略图选哪张、谁更好、卡片上写什么、筛选与分页), tests/js/checks.js 有断言。
+   ============================================================ */
 let GEN_SORT="default";
 const GEN_SORTS=[["default","按题目顺序"],["pass","检查通过项（少的在前）"],["lines","代码行数（多的在前）"],["tokens","输出 token（多的在前）"],["rounds","接着写的轮数（多的在前）"],["stars","人工星级（高的在前）"]];
-function genSortItems(list){
-  const key={pass:x=>x.it.error?-1:(x.it.total?x.it.pass/x.it.total:0),lines:x=>-(x.it.lines||0),tokens:x=>-(x.it.out_tokens||0),rounds:x=>-(x.it.continuations||0),stars:x=>-(x.it.stars||0)}[GEN_SORT];
-  if(!key)return list;
-  return list.map((x,i)=>[x,key(x),i]).sort((p,q)=>p[1]-q[1]||p[2]-q[2]).map(x=>x[0]);
+const GEN_LS="llm-bench-pro-gen-works";        /* 每页几件、上次看到第几页(同一个测试和筛选下刷新页面停在原处) */
+const GEN_PREF=lsGet(GEN_LS);
+const GW_SIZES=[12,24,48];
+let GEN_TIER="all",GEN_Q="",GEN_PAGE=0,GEN_SIZE=GW_SIZES.includes(GEN_PREF.size)?GEN_PREF.size:12;
+const GW={a:null,b:null,rows:[],ctx:null,ctxB:null,mainId:"",pairId:"",sigTable:""};   /* 当前这一节要用的数据, 筛选 / 翻页时只重画这一节 */
+
+/* ---------- 纯逻辑 ---------- */
+function genSortRows(rows,sort){
+  const key={pass:x=>x.it.error?-1:(x.it.total?x.it.pass/x.it.total:0),lines:x=>-(x.it.lines||0),tokens:x=>-(x.it.out_tokens||0),rounds:x=>-(x.it.continuations||0),stars:x=>-(x.it.stars||0)}[sort];
+  if(!key)return rows;
+  return rows.map((x,i)=>[x,key(x),i]).sort((p,q)=>p[1]-q[1]||p[2]-q[2]).map(x=>x[0]);
+}
+
+/* 缩略图选哪张(规则):
+   1. 只用桌面尺寸的截图(1280×800, 缩小后 768×480, 正好是 16:10); 手机尺寸(*_mobile, 390 宽的竖屏)不用;
+   2. 首选「空闲后」那张(*_idle): 作品已经打开一会儿、动画在跑、还没有任何操作。比首屏晚一点, 启动 / 加载中的画面(例如 Win95 的黑色开机画面)
+      已经过去; 游戏类是标题画面, 像封面; A / B 对比时两边拍的是同一个时刻, 看起来公平;
+   3. 没有就用首屏(*_initial), 再没有就用第一张桌面截图;
+   4. 不选操作之后的截图: 滚动 / 点击之后常常是黑屏或半截画面(实测好几件作品如此), 想看操作后的画面点「详情」。
+   没有截图(只看了代码 / 浏览器没起来 / 旧版本)返回 null, 列表显示占位。 */
+function genPickShot(it){
+  const e=it&&it.eval;
+  if(!e||!it.file||!e.shots_dir||!Array.isArray(e.shots))return null;
+  const desk=e.shots.filter(s=>s&&s.file&&!/mobile/i.test(String(s.name||s.file)));
+  const s=desk.find(x=>/idle$/.test(String(x.name||"")))||desk.find(x=>/initial$/.test(String(x.name||"")))||desk[0];
+  if(!s)return null;
+  return{file:s.file,name:s.name||"",caption:s.caption||"",path:it.file.replace(/[^/]+$/,"")+e.shots_dir+"/"+s.file};
+}
+
+/* 谁更好(A / B 对比, 一道题一个结论), 判断顺序:
+   1. 有一边没生成出来: 另一边更好(两边都没生成出来: 不比);
+   2. 两边都有人工星级: 比星级(相同就是差不多);
+   3. 否则两边都有 AI 看图打分: 比 AI 分(差 5 分以内算差不多);
+   4. 否则比检查通过的比例(6/6 比 4/6; 通过数一样就是差不多); 一边实际运行、一边只看了代码时检查方式不同, 不比。
+   返回 {side: a | b | tie | none, basis: gen | stars | judge | checks, text: 一句话说明}; 有一边没有这道题返回 null。 */
+const GEN_WIN_RULE="怎么判断谁更好：有一边没生成出来，另一边更好；两边都有人工星级，比星级；否则两边都有 AI 看图打分，比 AI 分（差 5 分以内算差不多）；再否则比检查通过的比例。一边实际运行、一边只看了代码时，检查方式不同，不比。";
+const GEN_JUDGE_TIE=5;
+function genWinner(ia,ib){
+  if(!ia||!ib)return null;
+  if(ia.error&&ib.error)return{side:"none",basis:"gen",text:"两边都没生成出来"};
+  if(ia.error)return{side:"b",basis:"gen",text:"A 没生成出来"};
+  if(ib.error)return{side:"a",basis:"gen",text:"B 没生成出来"};
+  const star=x=>typeof x.stars==="number"&&x.stars>0?x.stars:0,sa=star(ia),sb=star(ib);
+  if(sa&&sb)return{side:sa===sb?"tie":sa>sb?"a":"b",basis:"stars",text:`人工评分 A ${sa} 星，B ${sb} 星`};
+  const ja=ia.judge_score,jb=ib.judge_score;
+  if(typeof ja==="number"&&typeof jb==="number"){
+    const d=ja-jb;
+    return{side:Math.abs(d)<GEN_JUDGE_TIE?"tie":d>0?"a":"b",basis:"judge",text:`AI 打分 A ${fmt(ja,0)} 分，B ${fmt(jb,0)} 分`};
+  }
+  const ma=(ia.eval&&ia.eval.method)||"legacy",mb=(ib.eval&&ib.eval.method)||"legacy";
+  if(ma!==mb)return{side:"none",basis:"checks",text:"检查方式不同（一边实际运行，一边只看了代码），不比较"};
+  if(!ia.total||!ib.total)return{side:"none",basis:"checks",text:"还没有检查结果"};
+  const ra=ia.pass/ia.total,rb=ib.pass/ib.total,label=ma==="browser"?"运行检查":"代码关键词";
+  return{side:Math.abs(ra-rb)<1e-9?"tie":ra>rb?"a":"b",basis:"checks",text:`${label}通过 A ${ia.pass}/${ia.total}，B ${ib.pass}/${ib.total}`};
+}
+function genWinLabel(w){return !w?"":({a:"A 更好",b:"B 更好",tie:"差不多"}[w.side]||"没法比")}
+
+/* 整次测试共同的情况(没在浏览器里运行、旧版检查)只在页面顶部说一次; 卡片上只写这件作品自己的问题 */
+function genStaticWhy(ev,items){return ev.browser_error||(items.map(x=>x.eval&&x.eval.notes&&x.eval.notes[0]).find(Boolean))||"后台浏览器没有启动"}
+function genRunCtx(s,ev,items){
+  return{v2:!!s.v2,mode:s.mode,shared:s.v2&&(s.mode==="static"||s.mode==="mixed")?genStaticWhy(ev||{},items||[]):""};
 }
 const STRIP_CLOSED=new Set();
 function genStrip(a,s,ev,items){
   if(!(s.v2&&(s.mode==="static"||s.mode==="mixed"))||STRIP_CLOSED.has(a.run_id))return "";
-  const why=ev.browser_error||(items.map(x=>x.eval&&x.eval.notes&&x.eval.notes[0]).find(Boolean))||"后台浏览器没有启动";
+  const why=genStaticWhy(ev,items);
   return `<div class="strip is-bad" role="status">${icon("x-circle")}<span class="strip-text"><b>${s.mode==="static"?"这些作品没有在浏览器里实际运行":`有 ${s.staticN} 件作品没有在浏览器里实际运行`}</b>，只检查了代码里的关键词，通过率不能代表作品真的能用。
       <span class="faint" title="${esc(why)}">原因：${esc(why)}</span></span>
     <button class="btn btn-secondary btn-sm" data-online-only onclick="genReeval()">${icon("scan-check")}重新检查</button>
     <button class="btn btn-ghost btn-icon btn-sm" data-strip-close="${esc(a.run_id)}" aria-label="收起提示" title="收起提示">${icon("x")}</button></div>`;
+}
+function genFailList(it){return it.eval?(it.eval.checks||[]).filter(c=>!c.pass):[]}
+function genFailNote(fails){return fails.slice(0,2).map(failText).join("；")+(fails.length>2?`，还有 ${fails.length-2} 项`:"")}
+/* 卡片上的状态标签和「自己的问题」:
+   - 整次测试都只看了代码 / 都是旧版检查: 状态标签不写(每张都一样, 顶部写过了), 有没找到的代码关键词才写;
+   - 一部分只看了代码: 标「没有实际运行」, 原因和顶部警示带一样就不再写;
+   - 其余(报错、白屏、没写完、陷入重复、生成失败、部分功能没反应)都是这件作品自己的问题, 原样写一句。 */
+function genCardInfo(it,v,ctx){
+  const meta=VERDICT_META[v.key]||{tone:"neutral",name:""};
+  let badge={tone:meta.tone,text:meta.name},note="";
+  if(v.key==="static"){
+    const common=!ctx.v2||ctx.mode==="static";
+    const fails=genFailList(it),why=(it.eval&&it.eval.notes&&it.eval.notes[0])||"";
+    note=fails.length?genFailNote(fails):(!common&&why&&why!==ctx.shared?why:"");
+    if(common)badge=null;
+    else if(!it.eval)badge={tone:"neutral",text:"还没有检查"};
+  }else if(v.key!=="pass")note=v.text;
+  return{key:v.key,tone:meta.tone,name:meta.name,badge,note};
+}
+/* 检查结果: 「运行检查 5/6」「代码关键词 3/5」, 旧版本(没有 eval)也是关键词 */
+function genScore(it){
+  const e=it.eval;
+  if(it.error||!(it.total>0))return null;
+  const label=!e||e.method==="static"?"代码关键词":"运行检查";
+  const pct=typeof it.exec_score==="number"?it.exec_score:100*it.pass/it.total;
+  return{label,text:`${label} ${it.pass}/${it.total}`,cls:scoreCls(pct)};
+}
+function genCheckSegs(it){
+  const e=it.eval;
+  if(e&&Array.isArray(e.checks))return e.checks.map(c=>({pass:!!c.pass,tip:(c.pass?"通过："+plainCheck(c):"没通过："+failText(c))+(c.detail?"\n"+c.detail:"")}));
+  if(Array.isArray(it.checks))return it.checks.map((p,i)=>{const f=(it.features||[])[i];return{pass:!!p,tip:(p?"通过":"没通过")+(f?"：代码里"+(p?"有":"没有")+"「"+f+"」":"")}});
+  return[];
+}
+function genDataLine(it){
+  return[it.lines?`${fmtInt(it.lines)} 行`:"",it.continuations?`接着写 ${it.continuations} 轮`:"",it.out_tokens?`${fmtInt(it.out_tokens)} token`:""].filter(Boolean).join(" · ");
+}
+
+/* 筛选: 状态标签 × 难度 × 名称搜索。row = {it, v, ib, vb, win} */
+function genMatchStatus(f,row){
+  if(f==="all")return true;
+  if(f==="issues")return row.v.key!=="pass";
+  if(f==="win-a"||f==="tie"||f==="win-b")return !!row.win&&row.win.side===({"win-a":"a","tie":"tie","win-b":"b"})[f];
+  return row.v.key===f;
+}
+function genMatchTier(t,row){return t==="all"||(row.it.tags||[]).includes(t)}
+function genMatchName(q,row){
+  q=String(q||"").trim().toLowerCase();
+  return !q||[row.it.name,row.it.id].some(x=>String(x||"").toLowerCase().includes(q));
+}
+function genFilterRows(rows,{status="all",tier="all",q=""}={}){
+  return rows.filter(r=>genMatchStatus(status,r)&&genMatchTier(tier,r)&&genMatchName(q,r));
+}
+/* 标签上的数字: 状态标签按「难度 + 搜索」算, 难度标签按「状态 + 搜索」算, 和点下去看到的件数一样 */
+function genCounts(rows,st,statuses,tiers){
+  const by={},byTier={};
+  statuses.forEach(k=>by[k]=genFilterRows(rows,{status:k,tier:st.tier,q:st.q}).length);
+  tiers.forEach(t=>byTier[t]=genFilterRows(rows,{status:st.status,tier:t,q:st.q}).length);
+  return{by,byTier};
+}
+/* 翻页: 页码夹在 [0, 最后一页] */
+function pageWindow(total,size,page){
+  const pages=Math.max(1,Math.ceil(total/size)),p=Math.min(Math.max(0,parseInt(page,10)||0),pages-1);
+  return{pages,page:p,start:p*size,end:Math.min(total,(p+1)*size)};
+}
+/* 「同一个测试、同一组筛选」的签名: 变了就回到第 1 页; 一样(刷新页面)就停在记住的那一页 */
+function genViewSig(){return[GW.mainId,GW.pairId,GEN_FILTER,GEN_TIER,GEN_Q,GEN_SORT].join("|")}
+function genSavePos(){lsSet(GEN_LS,{size:GEN_SIZE,page:GEN_PAGE,sig:genViewSig()})}
+function genRows(a,b){
+  const itB=id=>b?(b.items||[]).find(x=>x.id===id)||null:null;
+  return(a.items||[]).map(it=>{const ib=itB(it.id);
+    return{it,v:genVerdict(it),ib,vb:ib?genVerdict(ib):null,win:ib?genWinner(it,ib):null}});
+}
+/* 换了测试: 回到第 1 页(A 换了连筛选、搜索一起清掉); B 换了只回到第 1 页 */
+function genViewSync(a,b){
+  const main=a.run_id,pair=b?b.run_id:"",first=!GW.mainId;
+  if(GW.mainId&&GW.mainId!==main){GEN_FILTER="all";GEN_TIER="all";GEN_Q="";GEN_PAGE=0}
+  else if(!first&&GW.pairId!==pair)GEN_PAGE=0;
+  if(!b&&/^(win-a|tie|win-b)$/.test(GEN_FILTER))GEN_FILTER="all";
+  GW.mainId=main;GW.pairId=pair;
+  if(first&&GEN_PREF.sig===genViewSig()&&GEN_PREF.page>0)GEN_PAGE=GEN_PREF.page;
+}
+
+/* ---------- 缩略图与卡片 ---------- */
+const GEN_CATS={anim:"clapperboard",game:"gamepad",d3:"box",page:"layout",app:"app-window"};
+const TASK_BY_ID=Object.fromEntries(TASK_CATALOG.map(t=>[t.id,t]));
+function genTierIdx(it){const i=TIER_ORDER.findIndex(t=>(it.tags||[]).includes(t));return i<0?0:i}
+/* 没有截图时的占位: 按难度换淡色底(data-t 0–3), 图标按题目类别(动画 / 游戏 / 3D / 网页 / 应用) */
+function genPhHTML(it,msg,ic,sub){
+  const cat=(TASK_BY_ID[it.id]||{}).cat;
+  return `<span class="work-ph" data-t="${genTierIdx(it)}">${icon(ic||GEN_CATS[cat]||GEN_CATS.page,"icon-lg")}<span>${esc(msg)}</span>${sub?`<span class="work-ph-sub">${esc(sub)}</span>`:""}</span>`;
+}
+function genThumbHTML(run,it,tag){
+  const ref=`data-run="${esc(run.run_id)}" data-item="${esc(it.id)}"`;
+  if(!it.file||it.error){
+    const msg=it.error?"没有生成出来":"没有作品文件";
+    return `<div class="work-thumb is-static" title="${esc(it.error?msg+"："+it.error:msg)}">${genPhHTML(it,msg,it.error?"x-circle":"ban")}</div>`;
+  }
+  const shot=genPickShot(it),src=shot?workUrl(shot.path):"";
+  const inner=src?`<img class="work-shot" src="${esc(src)}" alt="" width="768" height="480" loading="lazy" decoding="async" data-shot="${esc(shot.path)}">`
+    :genPhHTML(it,shot?"报告里没有这张截图 · 点击预览":"没有截图 · 点击预览");
+  return `<button type="button" class="work-thumb${src?" skeleton":""}" data-gen="preview" ${ref} tabindex="-1" aria-label="预览：${esc(it.name)}${tag?"（"+tag+"）":""}" title="预览「${esc(it.name)}」">${inner}<span class="work-thumb-hint" aria-hidden="true"><span>${icon("play")}预览</span></span></button>`;
+}
+function genFlagHTML(info){
+  if(!info.badge)return "";
+  const ic={good:"check",bad:"x",warn:"alert",neutral:"ban"}[info.badge.tone]||"minus",tone=info.badge.tone==="neutral"?"plain":info.badge.tone;
+  return `<span class="work-flag"><span class="badge is-${tone}">${icon(ic)}${esc(info.badge.text)}</span></span>`;
+}
+function genActionsHTML(run,it){
+  const can=!!it.file&&!it.error,e=it.eval,hasTrace=!!it.trace||!!it.rounds;
+  const ref=`data-run="${esc(run.run_id)}" data-item="${esc(it.id)}"`,nm=esc(it.name);
+  const prev=can?`<button type="button" class="btn btn-secondary btn-sm act-preview" data-gen="preview" ${ref} aria-label="预览：${nm}" title="预览：在隔离的沙箱里运行这件作品">${icon("play")}<span>预览</span></button>`:"";
+  const open=workOpenLink(it,{label:true});
+  const detail=e?`<button type="button" class="btn btn-ghost btn-sm" data-gen="detail" ${ref} aria-label="详情：${nm}" title="看截图和每一项检查">${icon("image")}<span>详情</span></button>`:"";
+  const trace=hasTrace?`<button type="button" class="btn btn-ghost btn-sm" data-gen="trace" ${ref} aria-label="生成过程：${nm}" title="看模型每一轮的原始输出">${icon("layers")}<span>过程</span></button>`:"";
+  const menu=(open?`<a class="menu-item" role="menuitem" href="${esc(workOpenUrl(it.file))}" target="_blank" rel="noopener noreferrer">${icon("external")}新标签页打开</a>`:"")+
+    (detail?`<button type="button" class="menu-item" role="menuitem" data-gen="detail" ${ref}>${icon("image")}详情（截图和每项检查）</button>`:"")+
+    (trace?`<button type="button" class="menu-item" role="menuitem" data-gen="trace" ${ref}>${icon("layers")}生成过程</button>`:"");
+  const more=menu?`<details class="dropdown act-more"><summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作：${nm}" title="更多操作">${icon("more")}</summary><div class="dropdown-panel menu" role="menu">${menu}</div></details>`:"";
+  if(!prev&&!menu&&it.error)return `<div class="work-acts"></div>`;   /* 什么操作都没有(没生成出来又没有过程记录): 留空位, 不画分隔线 */
+  return `<div class="work-acts"><div class="work-acts-in">${prev}<span class="act-inline">${open}${detail}${trace}</span>${more}${it.error?"":starsHTML(run,it)}</div></div>`;
+}
+/* 作品卡: 六行固定位置 —— 缩略图 / 标题行 / 这件作品自己的问题(没有就是空的) / 检查结果 / 数据 / 操作(含打星); 一排卡片用 subgrid 逐行对齐 */
+function genCard(run,it,v,ctx,{tag="",inPair=false}={}){
+  const info=genCardInfo(it,v,ctx),e=it.eval,j=e&&e.judge,sc=genScore(it),segs=genCheckSegs(it);
+  const ref=`data-run="${esc(run.run_id)}" data-item="${esc(it.id)}"`;
+  const judge=j&&j.score!=null?`<span class="badge" title="AI 看图打分${j.stale?"（基于旧截图）":""}">${icon("sparkle")}<b class="score ${scoreCls(j.score)}">${fmt(j.score,0)}</b></span>`:(j&&j.error?`<span class="badge is-bad">打分失败</span>`:"");
+  const head=inPair
+    ?`<header class="work-head"><span class="run-tag" style="background:${tag==="A"?C.a:C.b}">${tag}</span><span class="work-name" title="${esc(genLabel(run))}">${esc([run.model||"?",runFw(run)].filter(Boolean).join(" · "))}</span>${judge}</header>`
+    :`<header class="work-head"><h3 class="work-name" title="${esc(it.name)}">${esc(it.name)}</h3><span class="badge">${esc(tierOf(it)||"—")}</span>${judge}</header>`;
+  const note=info.note?`<p class="work-note is-${info.tone==="bad"?"bad":"warn"}" title="${esc(info.note)}">${icon(info.tone==="bad"?"x-circle":"alert","icon-sm")}<span>${esc(info.note)}</span></p>`:`<p class="work-note"></p>`;
+  const bar=segs.length?`<span class="checkbar">${segs.map(s=>`<i class="${s.pass?"":"fail"}" title="${esc(s.tip)}"></i>`).join("")}</span>`:"",score=sc?`<span class="work-score score ${sc.cls}">${esc(sc.text)}</span>`:"";
+  const checks=!bar&&!score?`<div class="work-checks"></div>`
+    :e?`<button type="button" class="work-checks" data-gen="detail" ${ref} tabindex="-1" title="点一下看每一项检查和截图" aria-label="${esc(sc?sc.text:"检查结果")}，点开看每一项检查">${bar}${score}</button>`
+    :`<div class="work-checks">${bar}${score}</div>`;
+  return `<article class="work" data-item="${esc(it.id)}"><div class="work-media">${genThumbHTML(run,it,tag)}${genFlagHTML(info)}</div>${head}${note}${checks}<p class="work-data">${esc(genDataLine(it))}</p>${genActionsHTML(run,it)}</article>`;
+}
+/* 一道题的 A / B 并排: 行首标出谁更好, 两半按行对齐(缩略图并排); 判断规则在悬停提示里 */
+function genPairHead(a,b,it,ib,win){
+  const cls=!ib?"flat":{a:"up",b:"down"}[win.side]||"flat",ic={up:"arrow-up",down:"arrow-down"}[cls]||"minus";
+  const label=!ib?"B 没有这道题":genWinLabel(win);
+  const tip=GEN_WIN_RULE+(win?"\n\n这道题："+genWinLabel(win)+"（"+win.text+"）":"");
+  const side=ib&&!ib.error&&!it.error&&it.file&&ib.file?`<button type="button" class="btn btn-ghost btn-sm pair-side" data-gen="compare" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}" aria-label="并排预览：${esc(it.name)}" title="A 和 B 两件作品并排运行">${icon("columns")}<span>并排预览</span></button>`:"";
+  return `<div class="pair-head"><span class="delta ${cls} pair-win" title="${esc(tip)}">${icon(ic)}${esc(label)}</span><h3 class="pair-name" title="${esc(it.name)}">${esc(it.name)}</h3><span class="badge">${esc(tierOf(it)||"—")}</span><span class="pair-why">${esc(win?win.text:"")}</span>${side}</div>`;
+}
+function genPairHTML(a,b,row,ctx,ctxB){
+  const{it,v,ib,vb,win}=row;
+  return `<div class="work-pair" data-item="${esc(it.id)}">${genPairHead(a,b,it,ib,win)}${genCard(a,it,v,ctx,{tag:"A",inPair:true})}${ib?genCard(b,ib,vb,ctxB,{tag:"B",inPair:true}):`<div class="work is-empty">${emptyState("B 没有这道题","",{inline:true})}</div>`}</div>`;
+}
+/* 加载中: 与最终布局同形的骨架(概览 + 一屏卡片) */
+function genSkeleton(){
+  const line=(w,h=12,mt=0)=>`<div class="skeleton" style="height:${h}px;width:${w}%;margin-top:${mt}px"></div>`;
+  const card=`<div class="work is-sk" aria-hidden="true"><div class="work-media"><div class="work-thumb skeleton"></div></div><div class="work-head">${line(55,14)}</div><p class="work-note"></p><div class="work-checks">${line(70,10)}</div><div class="work-data">${line(45,10)}</div><div class="work-acts">${line(100,28)}</div></div>`;
+  return `<div class="ov"><div>${line(18)}${line(88,12,14)}${line(76,12,14)}${line(82,12,14)}</div>
+    <div class="ov-stats">${'<div class="stat"><div class="skeleton" style="height:10px;width:50%"></div><div class="skeleton" style="height:26px;width:66%;margin-top:12px"></div></div>'.repeat(4)}</div></div>
+    <div class="sec" aria-busy="true"><div class="skeleton" style="height:14px;width:12%"></div><div class="skeleton" style="height:36px;width:100%;margin-top:16px"></div><div class="work-grid" style="margin-top:16px">${card.repeat(6)}</div></div>`;
+}
+
+/* ---------- 这一节的渲染: 筛选标签 · 卡片(分页) · 翻页器 · 表格 ---------- */
+function genChipHTML(attr,val,label,n,pressed,tip){
+  return `<button type="button" class="filter-chip" ${attr}="${esc(val)}" aria-pressed="${pressed}"${tip?` title="${esc(tip)}"`:""}>${esc(label)} <b>${fmtInt(n)}</b></button>`;
+}
+function genRenderWorks(opt={}){
+  const{a,b,rows,ctx,ctxB}=GW,list=$("gwList");
+  if(!a||!list)return;
+  const st={status:GEN_FILTER,tier:GEN_TIER,q:GEN_Q};
+  /* 状态标签: 全部 / 有问题的 / 各类问题(整个测试里有的才列出, 选中的一直在) / 全部通过 / (对比时)A 更好 · 差不多 · B 更好 */
+  const has=k=>genFilterRows(rows,{status:k}).length>0;
+  const kinds=VERDICTS.map(([k])=>k).filter(k=>k!=="pass"&&(has(k)||k===GEN_FILTER));
+  const statuses=[["all","全部"],["issues","有问题的"],...kinds.map(k=>[k,VERDICT_META[k].name]),["pass","全部通过"]];
+  const wins=b?[["win-a","A 更好"],["tie","差不多"],["win-b","B 更好"]]:[];
+  const tiers=TIER_ORDER.filter(t=>rows.some(r=>(r.it.tags||[]).includes(t)));
+  const cnt=genCounts(rows,st,[...statuses,...wins].map(x=>x[0]),tiers);
+  const act=document.activeElement,fo=act&&act.closest&&act.closest("#gwChips [data-gen-filter],#gwTiers [data-gen-tier]");
+  const foSel=fo?(fo.dataset.genFilter!=null?`[data-gen-filter="${fo.dataset.genFilter}"]`:`[data-gen-tier="${fo.dataset.genTier}"]`):"";
+  $("gwChips").innerHTML=statuses.map(([k,n])=>genChipHTML("data-gen-filter",k,n,cnt.by[k],k===GEN_FILTER)).join("")+
+    (wins.length?`<span class="qb-sep" aria-hidden="true"></span>`+wins.map(([k,n])=>genChipHTML("data-gen-filter",k,n,cnt.by[k],k===GEN_FILTER,GEN_WIN_RULE)).join(""):"");
+  $("gwTiers").innerHTML=[["all","全部"],...tiers.map(t=>[t,tagName(t)])].map(([t,n])=>genChipHTML("data-gen-tier",t,n,t==="all"?genFilterRows(rows,{status:st.status,q:st.q}).length:cnt.byTier[t],t===GEN_TIER)).join("");
+  if(foSel){const c=document.querySelector("#gen-works "+foSel);if(c)c.focus({preventScroll:true})}
+  /* 筛选 → 排序 → 分页 */
+  const all=genSortRows(genFilterRows(rows,st),GEN_SORT),pw=pageWindow(all.length,GEN_SIZE,GEN_PAGE);
+  GEN_PAGE=pw.page;
+  list.removeAttribute("aria-busy");
+  if(!all.length){
+    const narrowed=GEN_FILTER!=="all"||GEN_TIER!=="all"||GEN_Q.trim();
+    list.innerHTML=!rows.length?emptyState("这个测试里还没有作品","",{inline:true})
+      :emptyState("没有符合条件的作品",GEN_Q.trim()?`没有找到「${GEN_Q.trim()}」，换个名字或筛选条件试试`:"换一个筛选条件看看",
+        {iconName:GEN_Q.trim()?"search":"inbox",inline:true,action:narrowed?`<button type="button" class="btn btn-secondary" data-gw-clear>${icon("x")}清除筛选</button>`:""});
+  }else list.innerHTML=all.slice(pw.start,pw.end).map(r=>b?genPairHTML(a,b,r,ctx,ctxB):genCard(a,r.it,r.v,ctx)).join("");
+  const unit=b?"题":"件";
+  $("gwPagerTop").innerHTML=pagerHTML("gw",{page:pw.page,pages:pw.pages,compact:true,keys:true});
+  $("gwPager").innerHTML=all.length?pagerHTML("gw",{page:pw.page,pages:pw.pages,total:all.length,unit,size:GEN_SIZE,sizes:all.length>GW_SIZES[0]?GW_SIZES:null,keys:true}):"";
+  $("gwLive").textContent=all.length?`第 ${pw.page+1} / ${pw.pages} 页，共 ${all.length} ${unit}`:"没有符合条件的作品";
+  /* 表格: 同一份筛选结果, 筛选或排序变了回到表格第一页 */
+  const sig=[GW.mainId,GW.pairId,GEN_FILTER,GEN_TIER,GEN_Q,GEN_SORT].join("|");
+  if(GW.sigTable!==sig||opt.table){
+    GW.sigTable=sig;
+    const specs=[genWorksTable(a,b,all,ctx),genCheckMatrix(a,all)];
+    specs.forEach(s=>{dtState(s.id,s).page=0});
+    $("gwTable").innerHTML=specs.map(dataTable).join("");
+  }
+  if(opt.focus){const el=document.querySelector("#gen-works "+opt.focus);if(el)el.focus({preventScroll:true})}
+}
+function genSetFilter(f,{scroll=false}={}){
+  GEN_FILTER=f;GEN_PAGE=0;genSavePos();genRenderWorks();
+  if(scroll){const w=$("gen-works");if(w)w.scrollIntoView({block:"start"})}
+}
+function genSetTier(t){GEN_TIER=t;GEN_PAGE=0;genSavePos();genRenderWorks()}
+function genSetPage(p){
+  const k=pagerFocusKey();
+  GEN_PAGE=p;genSavePos();genRenderWorks();
+  scrollTopIntoView($("gwChipRow"));
+  pagerRefocus($("gen-works"),k);
+}
+function genClearFilters(){
+  GEN_FILTER="all";GEN_TIER="all";GEN_Q="";GEN_PAGE=0;
+  const s=$("genSearch");if(s)s.value="";
+  genSavePos();genRenderWorks();
+  if(s)s.focus();
+}
+/* 缩略图打不开: 换成占位, 写明原因(先说「没能显示」, 再向服务端确认是文件不在还是文件坏了) */
+function genThumbFail(img){
+  const t=img.closest(".work-thumb");if(!t)return;
+  const r=GEN_RUNS[t.dataset.run],it=r&&(r.items||[]).find(x=>x.id===t.dataset.item);
+  if(!it)return;
+  t.classList.remove("skeleton");
+  const fill=why=>{
+    t.innerHTML=genPhHTML(it,"截图没能显示 · 点击预览","image-off",why)+`<span class="work-thumb-hint" aria-hidden="true"><span>${icon("play")}预览</span></span>`;
+    t.title=`预览「${it.name}」（截图没能显示：${why}）`;
+  };
+  fill(OFF?"报告里的这张截图读不出来":"正在确认原因…");
+  if(OFF)return;
+  fetch(img.getAttribute("src"),{cache:"no-store"}).then(x=>fill(x.status===404?"截图文件不存在，可能被删除或移走了":x.ok?"截图文件读不出来，可能已损坏":"加载失败（HTTP "+x.status+"）"))
+    .catch(e=>fill("连不上后端服务（"+e.message+"）"));
 }
 function renderGen(){
   if(!GEN_LOADED)return;
@@ -3433,15 +3730,13 @@ function renderGen(){
   const tierT={id:"gen-tier-t",title:"难度汇总",columns:[{key:"name",label:"难度",type:"text",sticky:true},{key:"n",label:"件数",type:"int"},
       {key:"avg",label:b?"A 平均通过率":"平均通过率",unit:"%",type:"bar",color:C.a,max:100},...(b?[{key:"avgB",label:"B 平均通过率",unit:"%",type:"bar",color:C.b,max:100}]:[]),
       {key:"pass",label:"全部通过",type:"int"},{key:"fail",label:"没生成出来",type:"int"},{key:"issues",label:"主要问题分布",type:"text",wrap:true}],rows:tierRows};
-  /* ---- 作品: 卡片 | 表格(作品表 + 检查矩阵) ---- */
-  const filters=[["all","全部",items.length],["issues","有问题的",items.length-passN],...VERDICTS.map(([k,n])=>[k,n,count(k)]).filter(x=>x[2]&&x[0]!=="pass"),["pass","全部通过",passN]];
-  if(!filters.some(f=>f[0]===GEN_FILTER&&f[2]))GEN_FILTER="all";
-  const shown=genSortItems(verdicts.filter(x=>GEN_FILTER==="all"||(GEN_FILTER==="issues"?x.v.key!=="pass":x.v.key===GEN_FILTER)));
-  const itB=id=>b?(b.items||[]).find(x=>x.id===id):null;
-  const cards=shown.map(({it,v})=>b?`<div class="work-pair">${genCard(a,b,it,v,"A")}${itB(it.id)?genCard(b,a,itB(it.id),genVerdict(itB(it.id)),"B"):`<div class="work is-empty">${emptyState("B 没有这道题","",{inline:true})}</div>`}</div>`:genCard(a,b,it,v)).join("");
+  /* ---- 作品: 卡片(分页) | 表格(作品表 + 检查矩阵); 筛选、搜索、排序、翻页只重画这一节 ---- */
+  GW.a=a;GW.b=b;GW.ctx=genRunCtx(s,ev,items);GW.ctxB=b?genRunCtx(genStats(b),b.eval||{},b.items||[]):null;
+  genViewSync(a,b);
+  GW.rows=genRows(a,b);
+  if(!GEN_SORTS.some(x=>x[0]===GEN_SORT))GEN_SORT="default";
   const worksMode=panelMode("gen-works");
-  const worksTools=`<div class="work-toolbar"><div class="filter-chips">${filters.map(([k,n,c])=>`<button type="button" class="filter-chip" data-gen-filter="${k}" aria-pressed="${k===GEN_FILTER}">${esc(n)} <b>${c}</b></button>`).join("")}</div>
-      <label class="work-sort"><span>排序</span><select class="select" id="genSort">${GEN_SORTS.map(([k,n])=>`<option value="${k}" ${k===GEN_SORT?"selected":""}>${esc(n)}</option>`).join("")}</select></label></div>`;
+  const onlyB=b?(b.items||[]).filter(x=>!items.some(y=>y.id===x.id)).length:0;
   el.innerHTML=genStrip(a,s,ev,items)+overview(concl,stats,{cols:2,meta:`${esc(a.model||"")} · ${a.thinking?"思考模式":"不思考"} · ${esc(samplingTextGen(a))} · ${esc(evalMethodText(ev))} · 开始于 ${esc(timeText(a.started_utc))}`+
       (missing.length?`<br>${missing.map(esc).join("；")}`:"")})+(alerts?`<div class="notes">${alerts}</div>`:"")+
     panel({id:"gen-why",title:"问题出在哪",jump:"问题归因",desc:"每件作品只按最主要的一个问题归类；红色是作品/模型的问题，灰色是评测环境的问题。点一行可以筛选下面的作品",
@@ -3453,17 +3748,25 @@ function renderGen(){
     panel({id:"gen-tier",title:"各难度的表现",jump:"难度",desc:`${s.mode==="static"?"只看代码的命中率（没有实际运行，仅供参考）":"实际运行检查的通过率"}，每张卡里按分数从高到低排列${b?"；右侧数字是 A / B":""}`,
       chart:dataTable(tierT)+tierCards(a,b,s.mode),tables:[tierT,genTaskTable(a,b)],tcols:1})+
     `<section class="sec" id="gen-works" data-jump="作品" data-pv="${worksMode}">
-      <div class="sec-head"><div class="sec-head-text"><h2 class="sec-title">作品</h2><p class="sec-desc">点「预览」直接玩，「详情」看截图和每项检查，「过程」看模型的原始输出${b?"；每行左边是 A、右边是 B":""}</p></div>
+      <div class="sec-head"><div class="sec-head-text"><h2 class="sec-title">作品</h2><p class="sec-desc">点缩略图或「预览」直接玩，点检查结果或「详情」看截图和每一项检查，「过程」看模型的原始输出${b?"；每道题 A 在左、B 在右，题名前写着谁更好（先比人工星级，再比 AI 打分，最后比检查通过的比例）":""}${onlyB?`。B 里还有 ${onlyB} 道 A 没做的题，这里不显示`:""}</p></div>
         <div class="sec-tools">${segHTML("data-pv-set",worksMode,[["chart","卡片","layers"],["table","表格","table"]])}
           <button type="button" class="btn btn-ghost btn-icon btn-sm" data-pv-export title="导出作品表与检查矩阵（CSV）" aria-label="导出作品表">${icon("download")}</button></div></div>
-      ${worksTools}
-      <div class="pv-chart"><div class="${b?"work-pairs":"work-grid"}">${cards||emptyState("没有符合条件的作品","",{inline:true})}</div></div>
-      <div class="pv-table"><div class="dt-grid" style="--tcols:1">${dataTable(genWorksTable(a,b,shown))}${dataTable(genCheckMatrix(a,shown))}</div></div>
+      <div class="work-tools">
+        <div class="qb-bar"><label class="qb-search">${icon("search")}<input class="input" id="genSearch" type="search" placeholder="按名称搜索作品" value="${esc(GEN_Q)}" aria-label="按名称搜索作品" autocomplete="off"></label>
+          <label class="work-sort"><span>排序</span><select class="select" id="genSort">${GEN_SORTS.map(([k,n])=>`<option value="${k}" ${k===GEN_SORT?"selected":""}>${esc(n)}</option>`).join("")}</select></label></div>
+        <div class="qb-chiprow" id="gwChipRow"><div class="filter-chips gw-chips" id="gwChips" role="group" aria-label="按状态筛选"></div><div class="qb-pager-top" id="gwPagerTop"></div></div>
+        <div class="work-tier-row"><span class="work-tier-label" id="gwTierLabel">难度</span><div class="filter-chips gw-chips" id="gwTiers" role="group" aria-labelledby="gwTierLabel"></div></div>
+      </div>
+      <div class="pv-chart"><div class="${b?"work-pairs":"work-grid"}" id="gwList"></div><div class="qb-pager" id="gwPager"></div></div>
+      <div class="pv-table" id="gwTable"></div>
+      <span class="sr-only" id="gwLive" role="status" aria-live="polite"></span>
     </section>`;
   disposeDetached();
   drawGenCharts(a,b,verdicts,ck);
   buildJump("genJump",el);
   const gs=$("genSort");if(gs)CSelect.enhance(gs);
+  GW.sigTable="";
+  genRenderWorks();
 }
 function samplingTextGen(r){
   const sm=r.sampling;
@@ -3473,48 +3776,41 @@ function samplingTextGen(r){
 }
 function tierOf(it){const t=(it.tags||[]).find(x=>TIER_NAME[x]);return t?tagName(t):""}
 function starsHTML(run,it){
-  return `<span class="stars" role="group" aria-label="人工评分">${[1,2,3,4,5].map(i=>`<button type="button" class="star ${i<=(it.stars||0)?"on":""}" data-rate="${i}" data-run="${esc(run.run_id)}" data-item="${esc(it.id)}" aria-label="${i} 分" aria-pressed="${i===it.stars}">${icon("star")}</button>`).join("")}</span>`;
+  const off=OFF?` tabindex="-1" aria-disabled="true"`:"";   /* 离线报告里星级只读 */
+  return `<span class="stars" role="group" aria-label="人工评分：${esc(it.name)}">${[1,2,3,4,5].map(i=>`<button type="button" class="star ${i<=(it.stars||0)?"on":""}" data-rate="${i}" data-run="${esc(run.run_id)}" data-item="${esc(it.id)}" aria-label="${i} 分" aria-pressed="${i===it.stars}"${off}>${icon("star")}</button>`).join("")}</span>`;
 }
-function workActions(run,b,it,compact){
-  const e=it.eval,hasTrace=!!it.trace||!!it.rounds;
-  return [it.file&&!it.error?`<button class="btn btn-secondary btn-sm" data-gen="preview" data-run="${esc(run.run_id)}" data-item="${esc(it.id)}">${icon("play")}预览</button>`:"",
-    workOpenLink(it),
-    e?`<button class="btn btn-ghost btn-sm" data-gen="detail" data-run="${esc(run.run_id)}" data-item="${esc(it.id)}">${icon("image")}详情</button>`:"",
-    hasTrace?`<button class="btn btn-ghost btn-sm" data-gen="trace" data-run="${esc(run.run_id)}" data-item="${esc(it.id)}">${icon("layers")}过程</button>`:"",
-    !compact&&b&&!it.error?`<button class="btn btn-ghost btn-sm" data-gen="compare" data-run="${esc(run.run_id)}" data-item="${esc(it.id)}">${icon("columns")}并排</button>`:""].join("");
+/* 作品表(与卡片共用筛选和排序; 信息与卡片一致, 多一个可选的缩略图列) */
+function genMiniHTML(run,it){
+  const shot=genPickShot(it),src=shot&&it.file&&!it.error?workUrl(shot.path):"";
+  if(!src)return `<span class="work-mini is-ph" aria-hidden="true">${icon("image","icon-sm")}</span>`;
+  return `<button type="button" class="work-mini" data-gen="preview" data-run="${esc(run.run_id)}" data-item="${esc(it.id)}" aria-label="预览：${esc(it.name)}"><img src="${esc(src)}" alt="" width="64" height="40" loading="lazy" decoding="async" data-shot="${esc(shot.path)}"></button>`;
 }
-/* 作品卡: 标题行(名称 + 难度 + 状态) / 一行问题摘要 / 检查细条 / 操作与星级 */
-function genCard(a,b,it,v,tag){
-  const meta=VERDICT_META[v.key]||{tone:"neutral"};
-  const tone=meta.tone==="neutral"?"plain":meta.tone;
-  const ic={good:"check",bad:"x",warn:"alert",neutral:"ban"}[meta.tone]||"minus";
-  const e=it.eval,checks=e?e.checks||[]:[],j=e&&e.judge;
-  const judgeBadge=j&&j.score!=null?`<span class="badge" title="AI 看图打分${j.stale?"（基于旧截图）":""}">${icon("sparkle")}<b class="score ${scoreCls(j.score)}">${fmt(j.score,0)}</b></span>`:(j&&j.error?`<span class="badge is-bad">打分失败</span>`:"");
-  const metaLine=[it.lines?`${fmtInt(it.lines)} 行`:"",it.continuations?`接着写 ${it.continuations} 轮`:"",it.out_tokens?`${fmtInt(it.out_tokens)} token`:""].filter(Boolean).join(" · ");
-  return `<div class="work"><div class="work-head">${tag?`<span class="run-tag" style="background:${tag==="A"?C.a:C.b}">${tag}</span>`:""}<span class="work-name">${esc(it.name)}</span>
-      <span class="badge">${esc(tierOf(it)||"—")}</span>${judgeBadge}<span class="badge is-${tone} work-status">${icon(ic)}${esc(meta.name||"")}</span></div>
-    <div class="work-verdict" title="${esc(v.text)}">${esc(v.text)}</div>
-    ${it.error?"":`<div class="work-checks"><span class="checkbar">${checks.map(c=>`<i class="${c.pass?"":"fail"}" title="${esc((c.pass?"通过："+plainCheck(c):"没通过："+failText(c))+(c.detail?"\n"+c.detail:""))}"></i>`).join("")}</span>
-      ${e?`<span class="score ${scoreCls(it.exec_score)}">${e.method==="static"?"代码关键词":"运行检查"} ${it.pass}/${it.total}</span>`:""}<span class="faint">${metaLine}</span></div>`}
-    <div class="work-actions">${workActions(a,b,it)}${it.error?"":starsHTML(a,it)}</div></div>`;
+function genTableActions(run,it){
+  const can=!!it.file&&!it.error,hasTrace=!!it.trace||!!it.rounds,ref=`data-run="${esc(run.run_id)}" data-item="${esc(it.id)}"`,nm=esc(it.name);
+  return `<span class="dt-actions">${can?`<button type="button" class="btn btn-secondary btn-sm" data-gen="preview" ${ref} aria-label="预览：${nm}">${icon("play")}预览</button>`:""}${workOpenLink(it,{label:true})}`+
+    `${it.eval?`<button type="button" class="btn btn-ghost btn-sm" data-gen="detail" ${ref} aria-label="详情：${nm}">${icon("image")}详情</button>`:""}`+
+    `${hasTrace?`<button type="button" class="btn btn-ghost btn-sm" data-gen="trace" ${ref} aria-label="生成过程：${nm}">${icon("layers")}过程</button>`:""}</span>`;
 }
-/* 作品表(与卡片共用筛选和排序) */
-function genWorksTable(a,b,shown){
-  const itB=id=>b?(b.items||[]).find(x=>x.id===id):null;
+function genWorksTable(a,b,shown,ctx){
+  ctx=ctx||GW.ctx||{v2:true,mode:"browser",shared:""};
   const vStatus=(it)=>{const v=genVerdict(it),m=VERDICT_META[v.key]||{tone:"neutral",name:""};return{tone:m.tone==="neutral"?"neutral":m.tone,text:m.name,tip:v.text}};
+  const WIN_RANK={a:2,tie:1,none:0,b:-1};
   return{id:"gen-works-t",title:"作品表",pageSize:100,rowKey:x=>x.it.id,
-    columns:[{key:"name",label:"作品",type:"text",sticky:true,get:x=>x.it.name},{key:"tier",label:"难度",type:"text",get:x=>tierOf(x.it)},
+    columns:[{key:"thumb",label:"截图",type:"html",noSort:true,hidden:true,get:x=>genMiniHTML(a,x.it),text:(v,x)=>genPickShot(x.it)?"有":"没有",tip:"列表里用的缩略图（在「列」里勾选显示）"},
+      {key:"name",label:"作品",type:"text",sticky:true,get:x=>x.it.name},{key:"tier",label:"难度",type:"text",get:x=>tierOf(x.it)},
       {key:"status",label:b?"A 主要问题":"主要问题",type:"status",get:x=>vStatus(x.it)},
-      {key:"pass",label:b?"A 检查通过":"检查通过",type:"html",get:x=>x.it.error||!x.it.eval?"—":`<span class="dt-barcell"><span class="dt-meter"><i style="width:${x.it.total?100*x.it.pass/x.it.total:0}%;background:${x.it.pass===x.it.total?C.goodMark:C.a}"></i></span><span class="dt-num">${x.it.pass}/${x.it.total}</span></span>`,
+      {key:"note",label:b?"A 自己的问题":"这件作品自己的问题",type:"text",wrap:true,get:x=>genCardInfo(x.it,x.v,ctx).note||"—",tip:"整次测试共同的情况（比如没在浏览器里运行）在页面顶部说明，这里只写这件作品自己的问题"},
+      {key:"pass",label:b?"A 检查通过":"检查通过",type:"html",get:x=>x.it.error||!x.it.total?"—":`<span class="dt-barcell"><span class="dt-meter"><i style="width:${x.it.total?100*x.it.pass/x.it.total:0}%;background:${x.it.pass===x.it.total?C.goodMark:C.a}"></i></span><span class="dt-num">${x.it.pass}/${x.it.total}</span></span>`,
         sortValue:x=>x.it.error||!x.it.total?null:x.it.pass/x.it.total,text:(v,x)=>x.it.total?`${x.it.pass}/${x.it.total}`:""},
-      ...(b?[{key:"statusB",label:"B 主要问题",type:"status",get:x=>{const y=itB(x.it.id);return y?vStatus(y):{tone:"neutral",text:"没有这题"}}},
-        {key:"passB",label:"B 检查通过",type:"text",align:"right",get:x=>{const y=itB(x.it.id);return y&&y.total?`${y.pass}/${y.total}`:"—"},sortValue:x=>{const y=itB(x.it.id);return y&&y.total?y.pass/y.total:null}},
-        {key:"dpass",label:"A 比 B 多过",unit:"项",type:"int",get:x=>{const y=itB(x.it.id);return y&&!y.error&&!x.it.error&&y.total&&x.it.total?x.it.pass-y.pass:null}}]:[]),
+      ...(b?[{key:"statusB",label:"B 主要问题",type:"status",get:x=>{const y=x.ib;return y?vStatus(y):{tone:"neutral",text:"没有这题"}}},
+        {key:"passB",label:"B 检查通过",type:"text",align:"right",get:x=>{const y=x.ib;return y&&y.total?`${y.pass}/${y.total}`:"—"},sortValue:x=>{const y=x.ib;return y&&y.total?y.pass/y.total:null}},
+        {key:"dpass",label:"A 比 B 多过",unit:"项",type:"int",get:x=>{const y=x.ib;return y&&!y.error&&!x.it.error&&y.total&&x.it.total?x.it.pass-y.pass:null}},
+        {key:"win",label:"这道题谁更好",type:"text",get:x=>x.ib?genWinLabel(x.win):"B 没有这道题",sortValue:x=>x.win?WIN_RANK[x.win.side]:null,tip:GEN_WIN_RULE}]:[]),
       {key:"lines",label:"行数",type:"int",get:x=>x.it.lines||null},{key:"rounds",label:"接着写",unit:"轮",type:"int",get:x=>x.it.continuations||0},
       {key:"tok",label:"输出",unit:"token",type:"int",get:x=>x.it.out_tokens||null},
       {key:"judge",label:"AI 分",type:"num",digits:0,get:x=>typeof x.it.judge_score==="number"?x.it.judge_score:null},
       {key:"stars",label:"人工星级",type:"html",get:x=>x.it.error?"—":starsHTML(a,x.it),sortValue:x=>x.it.stars||0,text:(v,x)=>x.it.stars?String(x.it.stars):""},
-      {key:"act",label:"",type:"html",noSort:true,get:x=>`<span class="dt-actions">${workActions(a,null,x.it,true)}</span>`}],
+      {key:"act",label:"",type:"html",noSort:true,get:x=>genTableActions(a,x.it),text:()=>""}],
     rows:shown,note:b?"B 列按同一道题对齐":""};
 }
 /* 检查矩阵: 作品 × 通用检查项(✓ / ✗ / —), 题目专属的交互与功能检查合成一列 */
@@ -3566,7 +3862,7 @@ function drawGenCharts(a,b,verdicts,ck){
   meterChart("genWhy",{rows:vRows,max:total,nameWidth:140,tip:r=>{const names=verdicts.filter(x=>x.v.key===r.k).map(x=>x.it.name);
     return tt(r.name,[[r.colors[0],VERDICT_META[r.k].why,r.right]],names.slice(0,10).join("、")+(names.length>10?" …":"")+" · 点击筛选")}});
   const why=CHARTS.get("genWhy");
-  if(why){why.off("click");why.on("click",q=>{const r=vRows[q.dataIndex];if(!r)return;GEN_FILTER=r.k;renderGen();const w=$("gen-works");if(w)w.scrollIntoView({block:"start"})})}
+  if(why){why.off("click");why.on("click",q=>{const r=vRows[q.dataIndex];if(!r)return;GEN_TIER="all";GEN_Q="";const sb=$("genSearch");if(sb)sb.value="";genSetFilter(r.k,{scroll:true})})}
   /* 框架处理 */
   const kc={raw:C.goodMark,trimmed:C.series[0],stitched:C.series[4],rescued:C.warnMark,legacy:C.axis};
   const cRows=CHANGE_KINDS.filter(([k])=>ck[k]).map(([k,n])=>({name:n,values:[ck[k]],colors:[kc[k]],right:`${ck[k]} 件 · ${Math.round(100*ck[k]/total)}%`}));
@@ -3589,13 +3885,54 @@ function drawGenCharts(a,b,verdicts,ck){
   });
 }
 $("genResult").addEventListener("change",e=>{
-  if(e.target.id==="genSort"){GEN_SORT=e.target.value;renderGen()}
+  if(e.target.id==="genSort"){GEN_SORT=e.target.value;GEN_PAGE=0;genSavePos();genRenderWorks()}
+  else if(e.target.matches("[data-gw-size]")){
+    const first=GEN_PAGE*GEN_SIZE;GEN_SIZE=+e.target.value;GEN_PAGE=Math.floor(first/GEN_SIZE);genSavePos();
+    genRenderWorks();const z=$("gwPager").querySelector("[data-gw-size]");if(z)z.focus()}
+  else if(e.target.matches(".is-compact [data-gw-jump]")){const t=pagerTarget(e.target);if(t!=null&&t!==GEN_PAGE)genSetPage(t);else e.target.value=GEN_PAGE+1}
+});
+let genQT=null;
+$("genResult").addEventListener("input",e=>{
+  if(e.target.id!=="genSearch")return;
+  clearTimeout(genQT);
+  genQT=setTimeout(()=>{GEN_Q=e.target.value.trim().slice(0,80);GEN_PAGE=0;genSavePos();genRenderWorks()},200);
+});
+$("genResult").addEventListener("keydown",e=>{
+  if(e.key==="Enter"&&e.target.matches("[data-gw-jump]")){e.preventDefault();const t=pagerTarget(e.target);if(t!=null)genSetPage(t)}
+});
+/* 缩略图: 加载完去掉骨架; 打不开换成占位并写明原因 */
+$("genResult").addEventListener("load",e=>{
+  const img=e.target;if(!img||!img.matches||!img.matches("img.work-shot"))return;
+  const t=img.closest(".work-thumb");if(t)t.classList.remove("skeleton");
+},true);
+$("genResult").addEventListener("error",e=>{
+  const img=e.target;if(!img||!img.matches||!img.matches("img.work-shot"))return;
+  genThumbFail(img);
+},true);
+/* 键盘 ← → 翻作品卡片: 卡片在屏幕上、焦点不在输入框里、没有打开面板或弹窗时才生效 */
+document.addEventListener("keydown",e=>{
+  if(VIEW!=="gen"||(e.key!=="ArrowLeft"&&e.key!=="ArrowRight")||e.altKey||e.ctrlKey||e.metaKey||e.shiftKey||e.defaultPrevented)return;
+  if(e.target.closest&&e.target.closest("input,select,textarea,[contenteditable=true],details[open]"))return;
+  if(!$("modal").hidden||document.querySelector(".drawer:not([hidden])"))return;
+  const sec=$("gen-works"),list=$("gwList");
+  if(!sec||!list||sec.dataset.pv==="table"||!list.offsetParent)return;
+  const r=list.getBoundingClientRect();if(r.bottom<80||r.top>innerHeight-80)return;
+  const b=$("gwPagerTop")&&$("gwPagerTop").querySelector(`[data-dir=${e.key==="ArrowLeft"?"prev":"next"}]`);
+  if(!b||b.disabled)return;
+  e.preventDefault();genSetPage(+b.dataset.gwPage);
 });
 $("genResult").addEventListener("click",e=>{
   const sc=e.target.closest("[data-strip-close]");
   if(sc){STRIP_CLOSED.add(sc.dataset.stripClose);const st=sc.closest(".strip");if(st)st.remove();return}
   const f=e.target.closest("[data-gen-filter]");
-  if(f){GEN_FILTER=f.dataset.genFilter;renderGen();const w=$("gen-works");if(w)w.scrollIntoView({block:"start"});return}
+  if(f){genSetFilter(f.dataset.genFilter);return}
+  const tr=e.target.closest("[data-gen-tier]");
+  if(tr){genSetTier(tr.dataset.genTier);return}
+  const pg=e.target.closest("[data-gw-page]");
+  if(pg){genSetPage(+pg.dataset.gwPage);return}
+  const jb=e.target.closest("[data-gw-jumpbtn]");
+  if(jb){const t=pagerTarget(jb.parentElement.querySelector("[data-gw-jump]"));if(t!=null)genSetPage(t);return}
+  if(e.target.closest("[data-gw-clear]")){genClearFilters();return}
   const rate=!OFF&&e.target.closest("[data-rate]");  /* 离线报告里星级只读 */
   if(rate){rateStars(rate.dataset.run,rate.dataset.item,+rate.dataset.rate);return}
   const act=e.target.closest("[data-gen]");if(!act)return;
@@ -3618,6 +3955,7 @@ function rateStars(runId,itemId,n){
     if(it._rateSeq!==seq)return;  /* 之后又点过, 以最后一次为准 */
     if(!d.ok){it.stars=prev;renderGen();toast("评分保存失败："+d.error,"error")}
   });
+  if(GW.b&&$("gwList"))genRenderWorks({focus:`[data-rate="${n}"][data-run="${CSS.escape(runId)}"][data-item="${CSS.escape(itemId)}"]`});
 }
 const GEN_SANDBOX="allow-scripts allow-pointer-lock allow-forms allow-modals"; /* 无 same-origin/top-navigation/popups: 作品代码碰不到本页和接口; localStorage 由服务端 /works 垫片提供(否则游戏脚本一启动就崩) */
 const SANDBOX_BADGE=`<span class="badge" title="作品在隔离的沙箱里运行，碰不到本页面和后端接口；本地存储用内存代替（刷新就清空）">${icon("ban")}隔离运行</span>`;
@@ -5660,7 +5998,7 @@ function renderStyleguide(){
    导出报告(离线 HTML) / 打开离线报告
    ============================================================ */
 /* 导出: 当前页面(同一套界面)连同数据打包成一个 HTML 文件, 双击就能打开, 和这里看到的一样 */
-const EXPORT_LS=["llm-bench-pro-viewmode","llm-bench-pro-dt","llm-bench-pro-ctab","llm-bench-pro-qb","llm-bench-pro-density","llm-bench-pro-rail"];
+const EXPORT_LS=["llm-bench-pro-viewmode","llm-bench-pro-dt","llm-bench-pro-ctab","llm-bench-pro-qb","llm-bench-pro-gen-works","llm-bench-pro-density","llm-bench-pro-rail"];
 const PAGE_NAME={dash:"速度测试",cmp:"速度对比",iq:"能力测试",gen:"代码生成"};
 function exportSel(page){
   if(page==="dash")return[$("runA").value,[$("runB").value]];
@@ -5678,7 +6016,7 @@ async function exportHtml(page){
   if(!id){toast("请先选择要导出的测试","warning");return}
   const btn=document.querySelector(`[data-export="${page}"]`);
   const ls={};EXPORT_LS.forEach(k=>{const v=LS.get(k);if(v!=null)ls[k]=v});
-  const ui={panels:[...PANEL_OVR],qb:{subj:QB.subj,filter:QB.filter,q:QB.q,vs:QB.vs},genFilter:GEN_FILTER,genSort:GEN_SORT};
+  const ui={panels:[...PANEL_OVR],qb:{subj:QB.subj,filter:QB.filter,q:QB.q,vs:QB.vs},genFilter:GEN_FILTER,genSort:GEN_SORT,genView:{tier:GEN_TIER,q:GEN_Q,page:GEN_PAGE,size:GEN_SIZE}};
   const title=exportTitle(page,id,cmp);
   setBusy(btn,true);
   try{
@@ -5710,6 +6048,12 @@ function offlineInit(){
   if(U.qb){Object.assign(QB,{subj:U.qb.subj||"",filter:U.qb.filter||"all",q:U.qb.q||"",vs:U.qb.vs||""});QB.main=S.a||""}
   if(U.genFilter)GEN_FILTER=U.genFilter;
   if(U.genSort)GEN_SORT=U.genSort;
+  if(U.genView){
+    if(typeof U.genView.tier==="string")GEN_TIER=U.genView.tier;
+    if(typeof U.genView.q==="string")GEN_Q=U.genView.q;
+    if(Number.isInteger(U.genView.page))GEN_PAGE=U.genView.page;
+    if(GW_SIZES.includes(U.genView.size))GEN_SIZE=U.genView.size;
+  }
   showView(page);
   if(page==="dash"||page==="cmp")refresh();
 }
