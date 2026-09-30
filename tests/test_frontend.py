@@ -8,6 +8,7 @@
    ECharts 渲染与交互仍以浏览器验证为准(README 有说明), 这里守住的是逻辑与回归锚点。
 """
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -15,6 +16,13 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "js")
+
+
+def i18n_scripts():
+    """index.html 里加载的翻译脚本 (i18n.js 和各区域的英文词典), 按页面里的顺序; app.js 之前拼进测试脚本。"""
+    with open(os.path.join(ROOT, "web", "index.html"), encoding="utf-8") as f:
+        names = re.findall(r'<script src="/static/(i18n(?:\.en\.[A-Za-z0-9_-]+)?\.js)"></script>', f.read())
+    return [os.path.join(ROOT, "web", "static", n) for n in names]
 
 
 def _run(cmd, timeout=90):
@@ -30,14 +38,14 @@ class TestFrontendJS(unittest.TestCase):
             raise unittest.SkipTest("node 不可用, 跳过前端 JS 单测 (安装 Node.js 后自动启用)")
 
     def test_syntax(self):
-        rc, _, err = _run([self.node, "--check", os.path.join(ROOT, "web", "static", "app.js")])
-        self.assertEqual(rc, 0, "app.js 语法错误:\n" + err)
+        for path in [os.path.join(ROOT, "web", "static", "app.js")] + i18n_scripts():
+            rc, _, err = _run([self.node, "--check", path])
+            self.assertEqual(rc, 0, "%s 语法错误:\n%s" % (os.path.basename(path), err))
 
     def test_logic(self):
         parts = []
-        for path in (os.path.join(JS_DIR, "harness.js"),
-                     os.path.join(ROOT, "web", "static", "app.js"),
-                     os.path.join(JS_DIR, "checks.js")):
+        for path in ([os.path.join(JS_DIR, "harness.js")] + i18n_scripts() +
+                     [os.path.join(ROOT, "web", "static", "app.js"), os.path.join(JS_DIR, "checks.js")]):
             with open(path, encoding="utf-8") as f:
                 parts.append(f.read())
         fd, path = tempfile.mkstemp(suffix=".js", prefix="llmbench-frontend-")

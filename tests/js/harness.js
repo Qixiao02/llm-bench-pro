@@ -49,7 +49,7 @@ globalThis.location = { hash: "", pathname: "/", search: "", host: "", hostname:
                         origin: "http://x", href: "http://x/", protocol: "http:" };
 try {  /* Node 21+ 自带只读 navigator, 覆盖失败则保留原生(boot 路径不触它) */
   Object.defineProperty(globalThis, "navigator", {
-    value: { userAgent: "node-harness", clipboard: { writeText() { return Promise.resolve(); } } },
+    value: { userAgent: "node-harness", language: "zh-CN", clipboard: { writeText() { return Promise.resolve(); } } },
     configurable: true,
   });
 } catch (e) { /* keep native */ }

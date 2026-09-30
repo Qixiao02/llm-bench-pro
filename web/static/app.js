@@ -1,6 +1,7 @@
 "use strict";
 /* LLM Bench Pro 前端逻辑 (零依赖经典脚本; 图表用本地内置的 ECharts) */
 const UI_VERSION="3.8.0";  /* 与 llm_bench_pro/version.py 保持一致 */
+I18N.boot();  /* 翻译框架 (i18n.js) 先加载: 记下页面上原有的静态节点, 英文模式下先把 index.html 的静态文字翻成英文, 再往下跑 */
 /* ============================================================
    基础工具
    ============================================================ */
@@ -8,12 +9,12 @@ const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const icon=(name,cls="")=>`<svg class="icon ${cls}"><use href="#i-${name}"/></svg>`;
 function fmt(v,d=1){return v==null||!isFinite(v)?"—":Number(v).toFixed(d)}
-function fmtInt(v){return v==null||!isFinite(v)?"—":Math.round(v).toLocaleString()}
+function fmtInt(v){return v==null||!isFinite(v)?"—":Math.round(v).toLocaleString(I18N.locale())}
 function fmtAxis(v){
   const a=Math.abs(v);
   if(a>=1e6)return (v/1e6).toFixed(1).replace(/\.0$/,"")+"M";
   if(a>=1e4)return (v/1e3).toFixed(1).replace(/\.0$/,"")+"k";
-  if(a>=100||v===0)return Math.round(v).toLocaleString();
+  if(a>=100||v===0)return Math.round(v).toLocaleString(I18N.locale());
   if(a>=10)return v.toFixed(0);
   return v.toFixed(a<1?2:1).replace(/\.?0+$/,"");
 }
@@ -31,19 +32,28 @@ function toDate(iso){if(!iso)return null;let s=String(iso);if(!/[zZ]$|[+-]\d\d:?
 const pad2=n=>String(n).padStart(2,"0");
 function timeText(iso){const d=toDate(iso);return d?`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`:"—"}
 function shortTime(iso){const d=toDate(iso);return d?`${pad2(d.getMonth()+1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`:""}
-function durationText(s){s=Math.max(0,Math.round(s||0));if(s<3600)return Math.max(1,Math.round(s/60))+" 分钟";if(s<86400)return (s/3600).toFixed(1).replace(/\.0$/,"")+" 小时";return (s/86400).toFixed(1).replace(/\.0$/,"")+" 天"}
-const STATUS_NAME={running:"进行中",done:"已完成",failed:"失败",interrupted:"已中断",cancelled:"已停止"};
+function durationText(s){
+  s=Math.max(0,Math.round(s||0));
+  if(s<3600)return tn("{n} 分钟",Math.max(1,Math.round(s/60)));
+  const h=s<86400,x=(h?s/3600:s/86400).toFixed(1).replace(/\.0$/,"");  /* 小时 / 天: 最多一位小数, 单复数按数值判断 */
+  return h?tn("{n} 小时",+x,{n:x}):tn("{n} 天",+x,{n:x});
+}
+/* 常量表里的中文不能在定义时翻译 (会固定成加载时的语言): 用 getter, 每次取值时才翻译, 用到 STATUS_NAME[…] 的地方不用改 */
+const STATUS_NAME={get running(){return t("进行中")},get done(){return t("已完成")},get failed(){return t("失败")},
+  get interrupted(){return t("已中断")},get cancelled(){return t("已停止")}};
 /* 离线报告(「导出报告」生成的 HTML): window.LLMB_OFFLINE 里带着页面要用的数据, 页面照常渲染, 只是不连后端、不能改数据 */
 const OFF=window.LLMB_OFFLINE||null;
+/* 发给后端的请求都带上当前界面语言 (请求头 X-Lang: zh | en), 后端据此决定接口错误提示和后台任务日志的语言; 换语言后马上生效 */
+const apiHeaders=extra=>Object.assign({"X-Lang":I18N.lang},extra);
 async function getJSON(url){
   if(OFF)return offlineApi(OFF,url);
-  const r=await fetch(url,{cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);return r.json();
+  const r=await fetch(url,{cache:"no-store",headers:apiHeaders()});if(!r.ok)throw new Error("HTTP "+r.status);return r.json();
 }
 async function postJSON(url,body){
-  if(OFF)return{ok:false,error:"这是导出的离线报告，不能修改数据"};
-  try{const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  if(OFF)return{ok:false,error:t("这是导出的离线报告，不能修改数据")};
+  try{const r=await fetch(url,{method:"POST",headers:apiHeaders({"Content-Type":"application/json"}),body:JSON.stringify(body)});
     try{return await r.json()}catch(e){return{ok:false,error:"HTTP "+r.status}}}
-  catch(e){return{ok:false,error:"无法连接后端服务（"+e.message+"）"}}
+  catch(e){return{ok:false,error:t("无法连接后端服务（{msg}）",{msg:e.message})}}
 }
 /* 本地偏好: 在线时存浏览器里; 离线报告用导出那一刻的偏好, 改了只在这次打开有效(不写进看报告的人的浏览器) */
 const LS=(()=>{
@@ -57,7 +67,7 @@ function lsSet(key,val){LS.set(key,JSON.stringify(val))}
 function offlineApi(B,url){
   const u=new URL(url,"http://offline.local/"),p=decodeURIComponent(u.pathname),q=k=>u.searchParams.get(k)||"",A=(B&&B.api)||{};
   const copy=x=>x==null?null:JSON.parse(JSON.stringify(x));
-  const none=()=>{throw new Error("离线报告里没有这部分数据")};
+  const none=()=>{throw new Error(t("离线报告里没有这部分数据"))};
   const list=s=>s.split(",").filter(Boolean);
   switch(p){
     case "/api/version":return copy(A.version||{});
@@ -73,7 +83,7 @@ function offlineApi(B,url){
     case "/api/iq-compare":return copy((A.iqCompare||{})[q("a")+"|"+q("b")]);
     case "/api/iq-answer":{
       const e=(A.iqAnswers||{})[q("sid")+"|"+q("idx")];
-      if(!e)return{ok:false,error:"离线报告里没有这道题的回答"};
+      if(!e)return{ok:false,error:t("离线报告里没有这道题的回答")};
       const answers={};list(q("ids")).forEach(id=>{if(e.answers&&e.answers[id])answers[id]=e.answers[id]});
       return copy({ok:true,sid:q("sid"),idx:+q("idx"),type:e.type,prompt:e.prompt,answers});
     }
@@ -98,7 +108,7 @@ function workUrl(path){
 function workFrameSrc(path){
   if(!OFF)return `src="/${esc(path)}"`;
   const f=(OFF.files||{})[path];
-  if(typeof f!=="string")return `srcdoc="${esc("<p style='font:14px sans-serif;padding:24px'>离线报告里没有这个作品</p>")}"`;
+  if(typeof f!=="string")return `srcdoc="${esc("<p style='font:14px sans-serif;padding:24px'>"+esc(t("离线报告里没有这个作品"))+"</p>")}"`;
   const meta=`<meta http-equiv="Content-Security-Policy" content="${esc(OFF.worksCsp||"")}">`;
   return `srcdoc="${esc(f.replace(/^(\s*<!doctype[^>]*>)?/i,m=>m+meta))}"`;
 }
@@ -106,8 +116,8 @@ function workFrameSrc(path){
 function workOpenUrl(path){return OFF?workUrl(path):"/"+path+"?open=1"}
 function workOpenLink(it,{text=false,label=false}={}){
   if(!it||!it.file||it.error)return "";
-  const tip="新标签页打开：像普通网页一样运行（可以加载外部字体和脚本），仍然隔离，碰不到本系统的数据";
-  return `<a class="btn ${text?"btn-secondary btn-sm":"btn-ghost btn-icon btn-sm"} work-open" href="${esc(workOpenUrl(it.file))}" target="_blank" rel="noopener noreferrer" title="${tip}"${text?"":` aria-label="${esc("新标签页打开"+(label?"："+it.name:""))}"`}>${icon("external")}${text?"新标签页打开":""}</a>`;
+  const tip=t("新标签页打开：像普通网页一样运行（可以加载外部字体和脚本），仍然隔离，碰不到本系统的数据");
+  return `<a class="btn ${text?"btn-secondary btn-sm":"btn-ghost btn-icon btn-sm"} work-open" href="${esc(workOpenUrl(it.file))}" target="_blank" rel="noopener noreferrer" title="${esc(tip)}"${text?"":` aria-label="${esc(label?t("新标签页打开：{name}",{name:td(it.name)}):t("新标签页打开"))}"`}>${icon("external")}${text?esc(t("新标签页打开")):""}</a>`;
 }
 /* 图表卡里的标签页(条形 / 能力形状、折线 / 散点)记住上次选的 */
 const CTAB=Object.assign({subj:"bars",tok:"line"},lsGet("llm-bench-pro-ctab"));
@@ -131,14 +141,14 @@ function toast(text,type="info",ms=5000,action){
   el.className="toast is-"+type;
   el.innerHTML=icon({error:"x-circle",success:"check-circle",warning:"alert"}[type]||"info")+`<span>${esc(text)}</span>`+
     (action?`<button class="btn btn-secondary btn-sm">${esc(action.label)}</button>`:"")+
-    `<button class="btn btn-ghost btn-icon btn-sm" aria-label="关闭">${icon("x")}</button>`;
+    `<button class="btn btn-ghost btn-icon btn-sm" aria-label="${esc(t("关闭"))}">${icon("x")}</button>`;
   const btns=el.querySelectorAll("button"),close=btns[btns.length-1];
   close.onclick=()=>el.remove();
   if(action&&btns.length>1)btns[0].onclick=()=>{el.remove();action.onClick()};
   $("toasts").appendChild(el);
   if(ms)setTimeout(()=>el.remove(),ms);
 }
-window.addEventListener("error",e=>toast(`页面脚本出错：${e.message}（第 ${e.lineno} 行），请刷新页面后重试`,"error",0));
+window.addEventListener("error",e=>toast(t("页面脚本出错：{msg}（第 {line} 行），请刷新页面后重试",{msg:e.message,line:e.lineno}),"error",0));
 function setBusy(btn,busy){
   btn=typeof btn==="string"?$(btn):btn;if(!btn)return;
   btn.disabled=busy;btn.classList.toggle("is-loading",busy);
@@ -334,11 +344,11 @@ function readTheme(){
      heatHi:v("--heat-hi"),font:v("--font-sans"),mono:v("--font-mono")||v("--font-sans")};
 }
 function withAlpha(hex,a){const h=String(hex).replace("#","");return h.length===6?"#"+h+Math.round(a*255).toString(16).padStart(2,"0"):hex}
-function applyTheme(t,persist){
-  document.documentElement.dataset.theme=t;
-  if(persist)LS.set("llm-bench-pro-theme",t);
-  $("themeBtn").querySelector("use").setAttribute("href",t==="dark"?"#i-sun":"#i-moon");
-  $("themeBtn").setAttribute("aria-label",t==="dark"?"切换为亮色":"切换为暗色");
+function applyTheme(theme,persist){
+  document.documentElement.dataset.theme=theme;
+  if(persist)LS.set("llm-bench-pro-theme",theme);
+  $("themeBtn").querySelector("use").setAttribute("href",theme==="dark"?"#i-sun":"#i-moon");
+  $("themeBtn").setAttribute("aria-label",theme==="dark"?t("切换为亮色"):t("切换为暗色"));
   readTheme();
   return redrawVisible();
 }
@@ -353,7 +363,7 @@ function toggleTheme(ev){
     vt.ready.then(()=>document.documentElement.animate(
       {clipPath:[`circle(0px at ${x}px ${y}px)`,`circle(${r}px at ${x}px ${y}px)`]},
       {duration:480,easing:"cubic-bezier(.4,0,.2,1)",pseudoElement:"::view-transition-new(root)"})).catch(()=>{});
-    vt.updateCallbackDone.catch(e=>console.error("切换主题失败:",e));
+    vt.updateCallbackDone.catch(e=>console.error(t("切换主题失败:"),e));
     return;
   }
   const html=document.documentElement;
@@ -374,7 +384,7 @@ $("themeBtn").onclick=toggleTheme;
 function applyRailPin(on,persist){
   document.querySelector(".app").classList.toggle("is-pinned",on);
   const b=$("railPin");b.setAttribute("aria-pressed",String(on));
-  b.title=b.ariaLabel=on?"收起侧栏":"固定展开侧栏";
+  b.title=b.ariaLabel=on?t("收起侧栏"):t("固定展开侧栏");
   if(persist)LS.set("llm-bench-pro-rail",on?"1":"0");
 }
 $("railPin").onclick=()=>applyRailPin(!document.querySelector(".app").classList.contains("is-pinned"),true);
@@ -385,6 +395,34 @@ function applyDensity(d,persist){
   if(persist)LS.set("llm-bench-pro-density",d);
   for(const inst of CHARTS.values()){try{inst.resize()}catch(e){}}
 }
+
+/* ============================================================
+   界面语言: 中文 / English (翻译框架在 i18n.js, 词典在 i18n.en.<区域>.js; 约定见 CONTRIBUTING.md「界面文字与翻译」)
+   ============================================================ */
+/* 侧栏的语言按钮: 图标按钮里写当前语言的缩写 (中 / EN); 悬停提示「语言：中文 / English」在两种语言下都一样, 方便找回 */
+function paintLangBtn(){$("langAbbr").textContent=I18N.lang==="en"?"EN":"中"}
+/* 切换语言: 先写本地偏好 (离线报告里只在这次打开有效), 再 I18N.set: 改 <html lang>、文档标题、静态文字, 然后调用 I18N.onChange 登记的重画函数 */
+function setLang(x){
+  x=x==="en"?"en":"zh";
+  LS.set(I18N.KEY,x);
+  I18N.set(x);
+}
+/* 换了语言: 页面上动态生成的文字都是「画的时候翻译的」, 不重画还是旧语言。每个区域把自己要重画的东西, 用 I18N.onChange 登记在自己的代码旁边;
+   这里是通用的部分: 语言按钮、侧栏、当前页面 (图表、表格、结论都用缓存的数据重新生成, 不重新请求)、打开着的抽屉和名词解释 */
+I18N.onChange(()=>{
+  paintLangBtn();
+  paintConn();
+  applyRailPin(document.querySelector(".app").classList.contains("is-pinned"),false);
+  for(const id of DRAWERS)if($(id)&&!$(id).hidden)launcherSum(id);
+  if(VIEW==="tasks")tsRender();      /* 任务集、模型管理: 列表 / 详情整页重画 (换主题只需要重画图表) */
+  if(VIEW==="models")mdRender();
+  applyTheme(document.documentElement.dataset.theme||"dark",false);  /* 主题按钮的提示文字, 再 redrawVisible() 重画当前页面 */
+  if(!$("modal").hidden&&$("glList")){  /* 打开着的名词解释: 用新语言重新打开, 搜索词和定位的词保留 */
+    const q=$("glQ")?$("glQ").value:"",hit=document.querySelector("#glList .is-hit");
+    showGlossary(hit?hit.id.slice(3):undefined);
+    if(q){$("glQ").value=q;$("glQ").dispatchEvent(new Event("input"))}
+  }
+});
 
 /* ============================================================
    导航 / 抽屉 / 弹窗 / 通用点击
@@ -426,11 +464,13 @@ const DRAWERS=["launcher","iqLauncher","genLauncher"];
 function closeDrawers(except){
   DRAWERS.forEach(id=>{if(id!==except&&$(id)&&!$(id).hidden)toggleLauncher(id,false)});
 }
+/* 抽屉底部的摘要 (「这次将测 …」): 打开时和换语言时重新生成 */
+function launcherSum(id){try{({launcher:launcherSummary,iqLauncher:iqLauncherSummary,genLauncher:genLauncherSummary}[id]||(()=>{}))()}catch(e){}}
 function toggleLauncher(id,force){
   if(OFF)return;  /* 离线报告不能新建测试 */
   const el=$(id);if(!el)return;
   const open=force==null?el.hidden:force;
-  if(open){try{({launcher:launcherSummary,iqLauncher:iqLauncherSummary,genLauncher:genLauncherSummary}[id]||(()=>{}))()}catch(e){}}
+  if(open)launcherSum(id);
   if(open)closeDrawers(id);
   el.hidden=!open;
   $("drawerBackdrop").hidden=!DRAWERS.some(d=>$(d)&&!$(d).hidden);
@@ -460,16 +500,17 @@ document.addEventListener("click",e=>{
   if(e.target.closest("[data-density-toggle]")){applyDensity(document.documentElement.dataset.density==="compact"?"normal":"compact",true);closeMenus();return}
   if(e.target.closest("[data-theme-toggle]")){toggleTheme(e);closeMenus();return}
   if(e.target.closest("[data-terms-toggle],#termsBtn")){setTermMode(TERM_MODE==="pro"?"plain":"pro",true);closeMenus();return}
+  if(e.target.closest("[data-lang-toggle]")){setLang(I18N.lang==="en"?"zh":"en");closeMenus();return}
   const rt=e.target.closest(".bar-runs-toggle");
   if(rt){const bar=rt.closest(".bar"),on=!bar.classList.contains("show-runs");bar.classList.toggle("show-runs",on);rt.setAttribute("aria-expanded",String(on));return}
   if(e.target.closest(".menu .menu-item"))setTimeout(()=>closeMenus(),0);
   const tg=e.target.closest("[data-toggle]");if(tg){toggleLauncher(tg.dataset.toggle);return}
   const jump=e.target.closest("[data-jumpto]");
-  if(jump){e.preventDefault();const t=$(jump.dataset.jumpto);if(t)t.scrollIntoView({behavior:"smooth",block:"start"});return}
+  if(jump){e.preventDefault();const to=$(jump.dataset.jumpto);if(to)to.scrollIntoView({behavior:"smooth",block:"start"});return}
   const flip=e.target.closest("[data-flip]");
   if(flip){const card=flip.closest(".ccard");const on=!card.classList.contains("is-table");
     card.classList.toggle("is-table",on);flip.setAttribute("aria-pressed",String(on));
-    flip.innerHTML=on?icon("gauge")+"图表":icon("table")+"数据";
+    flip.innerHTML=on?icon("gauge")+esc(t("图表",null,"切换按钮")):icon("table")+esc(t("数据"));  /* 「图表」在页头是「Charts」、这里是「Chart」: 用语境区分 */
     if(!on){const ch=card.querySelector(".chart");if(ch&&ch._ec)ch._ec.resize()}return}
   const row=e.target.closest("tr[data-expand]");
   if(row){const d=row.nextElementSibling;const open=d.hidden;d.hidden=!open;row.setAttribute("aria-expanded",String(open));return}
@@ -501,12 +542,12 @@ const Modal={
     if(cb)cb();
   }
 };
-function confirmDialog({title,message,confirmText="确定",danger=false}){
+function confirmDialog({title,message,confirmText=t("确定"),danger=false}){
   return new Promise(resolve=>{
     let settled=false;
     const finish=v=>{if(settled)return;settled=true;Modal.onClose=null;Modal.close();resolve(v)};
     Modal.open(title,`<p class="dialog-text">${esc(message)}</p><div class="dialog-actions">
-      <button type="button" class="btn btn-secondary" data-dialog="no">取消</button>
+      <button type="button" class="btn btn-secondary" data-dialog="no">${esc(t("取消"))}</button>
       <button type="button" class="btn ${danger?"btn-danger-solid":"btn-primary"}" data-dialog="yes">${esc(confirmText)}</button></div>`,{dialog:true});
     Modal.onClose=()=>{if(!settled){settled=true;resolve(false)}};
     $("modalBody").onclick=e=>{const b=e.target.closest("[data-dialog]");if(b)finish(b.dataset.dialog==="yes")};
@@ -517,7 +558,7 @@ function confirmDialog({title,message,confirmText="确定",danger=false}){
 async function postWithConflict(url,body){
   let d=await postJSON(url,body);
   if(!d.ok&&d.code==="endpoint_busy"){
-    const go=await confirmDialog({title:"这个模型服务正在被使用",message:d.error+"\n\n同时测试会互相影响结果。仍要同时开始吗？",confirmText:"仍要开始"});
+    const go=await confirmDialog({title:t("这个模型服务正在被使用"),message:tm(d.error)+"\n\n"+t("同时测试会互相影响结果。仍要同时开始吗？"),confirmText:t("仍要开始")});
     if(!go)return null;
     d=await postJSON(url,{...body,force:true,conflict_with:d.conflict});
   }
@@ -561,13 +602,13 @@ document.addEventListener("keydown",e=>{
 const CSelect=(()=>{
   const panel=document.createElement("div");
   panel.className="cselect-panel";panel.hidden=true;panel.tabIndex=-1;
-  panel.innerHTML=`<div class="cselect-search-wrap" hidden>${icon("search","icon-sm")}<input class="cselect-search" placeholder="搜索" aria-label="搜索选项" autocomplete="off"></div>
+  panel.innerHTML=`<div class="cselect-search-wrap" hidden>${icon("search","icon-sm")}<input class="cselect-search" placeholder="${esc(t("搜索"))}" aria-label="${esc(t("搜索选项"))}" autocomplete="off"></div>
     <div class="cselect-list" role="listbox"></div>`;
   document.body.appendChild(panel);
   const searchWrap=panel.querySelector(".cselect-search-wrap"),search=panel.querySelector(".cselect-search"),listEl=panel.querySelector(".cselect-list");
   let cur=null;  /* {kind:"select"|"combo", el, anchor, items:[{value,text,disabled,selected}], view:[idx], active} */
 
-  function splitText(t){const p=String(t).split(" · ");return p.length>2?[p[0],p.slice(1).join(" · ")]:[t,""]}
+  function splitText(s){const p=String(s).split(" · ");return p.length>2?[p[0],p.slice(1).join(" · ")]:[s,""]}
   function itemsOf(c){
     /* 选项可以用 data-sub 给第二行的小字(比如保存的模型: 名称一行, 模型名和地址一行) */
     if(c.kind==="select")return[...c.el.options].map((o,i)=>({value:o.value,text:o.textContent,sub:o.dataset.sub,disabled:o.disabled,selected:i===c.el.selectedIndex}));
@@ -583,8 +624,8 @@ const CSelect=(()=>{
       const it=c.items[i];const [main,sub]=it.sub!=null?[it.text,it.sub]:splitText(it.text);
       return `<div class="cselect-option${it.selected?" is-selected":""}${i===c.active?" is-active":""}${it.disabled?" is-disabled":""}" role="option" id="cso-${i}" data-i="${i}" aria-selected="${it.selected}">
         <span class="cselect-check">${it.selected?icon("check"):""}</span>
-        <span class="cselect-text"><span class="cselect-main">${esc(main||"（空）")}</span>${sub?`<span class="cselect-sub">${esc(sub)}</span>`:""}</span></div>`;
-    }).join(""):`<div class="cselect-empty">${c.items.length?"无匹配项":"暂无选项"}</div>`;
+        <span class="cselect-text"><span class="cselect-main">${esc(main||t("（空）"))}</span>${sub?`<span class="cselect-sub">${esc(sub)}</span>`:""}</span></div>`;
+    }).join(""):`<div class="cselect-empty">${c.items.length?t("无匹配项"):t("暂无选项")}</div>`;
     if(c.kind==="select")c.anchor.setAttribute("aria-activedescendant",c.active>=0?"cso-"+c.active:"");
   }
   function position(){
@@ -660,7 +701,7 @@ const CSelect=(()=>{
   function renderLabel(sel){
     const cs=sel._cs;if(!cs)return;
     const o=sel.options[sel.selectedIndex],txt=o?o.textContent:"";
-    cs.value.textContent=txt||"暂无选项";
+    cs.value.textContent=txt||t("暂无选项");
     cs.value.classList.toggle("is-placeholder",!txt);
     cs.trigger.title=txt;
     cs.trigger.disabled=sel.disabled;
@@ -709,6 +750,17 @@ const CSelect=(()=>{
     });
     input.addEventListener("blur",()=>setTimeout(()=>{if(cur&&cur.el===input&&!panel.contains(document.activeElement))close(false)},120));
   }
+  /* 换语言后: 搜索框的提示文字、每个下拉的读屏名称和「暂无选项」这样的占位文字重新生成 */
+  function relabel(){
+    search.placeholder=t("搜索");search.setAttribute("aria-label",t("搜索选项"));
+    document.querySelectorAll("select").forEach(sel=>{
+      const cs=sel._cs;if(!cs)return;
+      const lbl=sel.getAttribute("aria-label")||(sel.id&&document.querySelector(`label[for="${sel.id}"]`)||{}).textContent;
+      if(lbl)cs.trigger.setAttribute("aria-label",lbl.trim());
+      renderLabel(sel);
+    });
+  }
+  I18N.onChange(relabel);
   return{enhance,combo,close};
 })();
 
@@ -844,7 +896,7 @@ function sBar(name,color,data,o={}){
 /* 同一条轴统一数字格式: 最大值过万时全部用 k, 否则用千分位 */
 function axisFmtFor(series){
   const mx=Math.max(0,...series.flatMap(s=>s.data.map(v=>Math.abs(Array.isArray(v)?v[1]:v)||0)));
-  return mx>=10000?(v=>v===0?"0":(v/1000).toFixed(v%1000?1:0)+"k"):(v=>Math.abs(v)>=1000?Math.round(v).toLocaleString():fmtAxis(v));
+  return mx>=10000?(v=>v===0?"0":(v/1000).toFixed(v%1000?1:0)+"k"):(v=>Math.abs(v)>=1000?Math.round(v).toLocaleString(I18N.locale()):fmtAxis(v));
 }
 /* 两色按比例混合(得到不透明的中间色), 用于同一色相由浅到深的顺序色 */
 function mix(c1,c2,t){
@@ -877,7 +929,7 @@ function meterChart(id,{rows,series,max,nameWidth=150,tip}){
 }
 function chartEmpty(id,text){
   const inst=chartInst(id);if(!inst)return;
-  inst.setOption({graphic:{type:"text",left:"center",top:"middle",style:{text:text||"没有数据",fill:C.text3,fontSize:13,fontFamily:C.font}},
+  inst.setOption({graphic:{type:"text",left:"center",top:"middle",style:{text:text||t("没有数据"),fill:C.text3,fontSize:13,fontFamily:C.font}},
     xAxis:{show:false},yAxis:{show:false},series:[]},true);
 }
 function setChart(id,opt){
@@ -931,7 +983,7 @@ function stripTags(h){return String(h).replace(/<[^>]*>/g,"")}
 /* 图表卡: 右上角「数据」切换到同内容的表格(不靠悬停也能读到每个数) */
 function ccard(id,title,{desc="",h=280,table="",span=false}={}){
   return `<div class="ccard${span?" span-all":""}"><div class="ccard-head"><div><h3 class="ccard-title">${title}</h3>${desc?`<p class="ccard-desc">${desc}</p>`:""}</div>
-    ${table?`<button type="button" class="btn btn-ghost btn-sm" data-flip aria-pressed="false" title="切换为数据表">${icon("table")}数据</button>`:""}</div>
+    ${table?`<button type="button" class="btn btn-ghost btn-sm" data-flip aria-pressed="false" title="${esc(t("切换为数据表"))}">${icon("table")}${esc(t("数据"))}</button>`:""}</div>
     <div class="chart" id="${id}" style="height:${h}px" role="img" aria-label="${esc(stripTags(title))}"></div>
     ${table?`<div class="ccard-table">${table}</div>`:""}</div>`;
 }
@@ -1085,7 +1137,7 @@ function scrollTopIntoView(el){
   if(r.top<pad-4||r.top>innerHeight*.6)el.scrollIntoView({block:"start"});
 }
 /* 数字: 千分位 + 固定小数位; 空值 "—" */
-function numText(v,d=1){return v==null||!isFinite(v)?"—":Number(v).toLocaleString("zh-CN",{minimumFractionDigits:d,maximumFractionDigits:d})}
+function numText(v,d=1){return v==null||!isFinite(v)?"—":Number(v).toLocaleString(I18N.locale(),{minimumFractionDigits:d,maximumFractionDigits:d})}
 function dtDigits(col){return col.digits??(col.type==="int"?0:col.type==="sec"?2:1)}
 function dtVal(col,row){return col.get?col.get(row):row[col.key]}
 const TONE_RANK={bad:3,warn:2,neutral:1,info:1,good:0};
@@ -1770,34 +1822,40 @@ function genLauncherSummary(){
 });
 
 /* ---------- 导出离线报告 ---------- */
+/* 页头里的测试下拉 (速度测试页的 A / B, 速度对比页的 A / B): 选项文字按当前语言生成; 换语言时用缓存的 RUNS 重新生成 */
+function fillRunSelects(fresh){
+  const names=Object.keys(RUNS).sort().reverse();
+  const opts=(keep)=>names.map(n=>`<option value="${esc(n)}" ${n===keep?"selected":""}>${esc(label(RUNS[n]))}</option>`).join("");
+  const keepA=fresh||(RUNS[$("runA").value]?$("runA").value:names[0]);
+  const keepB=RUNS[$("runB").value]?$("runB").value:"";
+  $("runA").innerHTML=opts(keepA);
+  $("runB").innerHTML=`<option value="">${esc(t("不对比"))}</option>`+opts(keepB);
+  const cA=RUNS[$("cmpA").value]?$("cmpA").value:names[0],cB=RUNS[$("cmpB").value]?$("cmpB").value:(names[1]||"");
+  $("cmpA").innerHTML=opts(cA);
+  $("cmpB").innerHTML=`<option value="">${esc(t("选择测试 B"))}</option>`+opts(cB);
+}
+const runCountText=()=>{const n=Object.keys(RUNS).length;return n?tn("共 {n} 次测试",n):""};  /* 「更多」菜单里的一行小字 */
+I18N.onChange(()=>{if(RUNS_LOADED){fillRunSelects();status(runCountText())}});
 async function refresh(focusNew){
-  status("加载中…");
+  status(t("加载中…"));
   if(!RUNS_LOADED)$("dashEmpty").innerHTML=skeletonPage();
   try{
     const list=await getJSON("/api/results?summary=1");
-    if(!SERVER.version)setConn(true,"服务已连接");
+    if(!SERVER.version){CONN_OK=true;paintConn()}
     const prev=new Set(Object.keys(RUNS));
     RUNS={};list.forEach(r=>RUNS[r.run_id]=r);
     Object.keys(FULL).forEach(id=>{const m=RUNS[id];  /* 已删除或状态变化的测试重新加载详情 */
       if(!m||m.status!==FULL[id].status||m.finished_utc!==FULL[id].finished_utc)delete FULL[id]});
     RUNS_LOADED=true;
     const names=Object.keys(RUNS).sort().reverse();
-    const fresh=focusNew?names.find(n=>!prev.has(n)):null;
-    const opts=(keep)=>names.map(n=>`<option value="${esc(n)}" ${n===keep?"selected":""}>${esc(label(RUNS[n]))}</option>`).join("");
-    const keepA=fresh||(RUNS[$("runA").value]?$("runA").value:names[0]);
-    const keepB=RUNS[$("runB").value]?$("runB").value:"";
-    $("runA").innerHTML=opts(keepA);
-    $("runB").innerHTML=`<option value="">不对比</option>`+opts(keepB);
-    const cA=RUNS[$("cmpA").value]?$("cmpA").value:names[0],cB=RUNS[$("cmpB").value]?$("cmpB").value:(names[1]||"");
-    $("cmpA").innerHTML=opts(cA);
-    $("cmpB").innerHTML=`<option value="">选择测试 B</option>`+opts(cB);
-    status(names.length?`共 ${names.length} 次测试`:"");
+    fillRunSelects(focusNew?names.find(n=>!prev.has(n)):null);
+    status(runCountText());
     if(!names.length&&VIEW==="dash")toggleLauncher("launcher",true);
     if(VIEW==="dash"||VIEW==="cmp")redrawVisible();
   }catch(e){
-    setConn(false,"服务未连接");
+    CONN_OK=false;paintConn();
     status("");
-    $("dashEmpty").innerHTML=emptyState("连不上后端服务","请确认 python run.py 正在运行（"+e.message+"）",{iconName:"alert"});
+    $("dashEmpty").innerHTML=emptyState(t("连不上后端服务"),t("请确认 python run.py 正在运行（{msg}）",{msg:e.message}),{iconName:"alert"});
     $("dashBody").hidden=true;
   }
 }
@@ -1942,10 +2000,10 @@ function perfConclusions(a,b){
     else if(m.cLast&&m.cLast.ttft_p95_s!=null)out.push({tone:"good",html:termHtml(`同时 ${m.cLast.conc} 个请求时，{ttft}{p95}也只要 <b>${fmtSec(m.cLast.ttft_p95_s)}</b> 秒，没有明显变慢。`)});
   }
   if(m.pLast&&m.pLast.ttft_med_s!=null){
-    const t=m.pLast.ttft_med_s;
-    out.push({tone:t>10?"warn":"info",html:`输入 ${esc(m.pLast.label)}（约 ${fmtInt(m.pLast.in_tokens)} token${m.pLast.label_nominal?`，原来标的是 ${esc(m.pLast.label_nominal)}`:""}）时要等 <b>${fmtSec(t)}</b> 秒才开始回答，${term("prefill")} ${fmtInt(m.pLast.prefill_tps_med)} token/秒。`});
+    const wait=m.pLast.ttft_med_s;
+    out.push({tone:wait>10?"warn":"info",html:`输入 ${esc(m.pLast.label)}（约 ${fmtInt(m.pLast.in_tokens)} token${m.pLast.label_nominal?`，原来标的是 ${esc(m.pLast.label_nominal)}`:""}）时要等 <b>${fmtSec(wait)}</b> 秒才开始回答，${term("prefill")} ${fmtInt(m.pLast.prefill_tps_med)} token/秒。`});
   }
-  if(m.succ!=null&&m.succ<100)out.push({tone:"bad",html:`有 <b>${m.fails}</b> 个请求失败（成功率 ${fmt(m.succ,1)}%）。`});
+  if(m.succ!=null&&m.succ<100)out.push({tone:"bad",html:tn("有 <b>{n}</b> 个请求失败（成功率 {rate}%）。",m.fails,{rate:fmt(m.succ,1)})});  /* 带数量 + HTML + 插值: 英文词条是 [单数, 复数] */
   scnPhases(a).forEach(ph=>{const f=scnFails(ph),name=(ph.task&&ph.task.label)||SCN_LABEL[(ph.id||"").slice(4)]||ph.id;
     if(f.total&&!f.ok)out.push({tone:"bad",html:`「${esc(name)}」场景的 <b>${f.total}</b> 个请求全部失败${esc(f.why)}${esc(f.hint)}。`})});
   if(b){
@@ -1956,8 +2014,9 @@ function perfConclusions(a,b){
     const worse=rows.filter(x=>x.d*x.k.dir<=-1).sort((p,q)=>Math.abs(q.d)-Math.abs(p.d));
     const fmtD=x=>`${esc(metricLabel(x.k,m))} ${x.d>=0?"+":""}${fmt(x.d,1)}%`;
     if(!rows.length)out.push({tone:"info",html:`B 和 A 没有可以直接比较的指标（B 可能没有测完，或者两次测试的档位都不一样）。`});
-    else out.push({tone:worse.length>better.length?"warn":"good",html:`A 比 B：<b>${better.length}</b> 项更好、<b>${worse.length}</b> 项更差、${rows.length-better.length-worse.length} 项基本持平。`+
-      (better.length?`更好：${better.slice(0,2).map(fmtD).join("；")}。`:"")+(worse.length?`更差：${worse.slice(0,2).map(fmtD).join("；")}。`:"")});
+    else out.push({tone:worse.length>better.length?"warn":"good",  /* 带插值和 HTML (fmtD 已转义): 占位符按名字写, 英文里可以换位置 */
+      html:t("A 比 B：<b>{better}</b> 项更好、<b>{worse}</b> 项更差、{same} 项基本持平。",{better:better.length,worse:worse.length,same:rows.length-better.length-worse.length})+
+      (better.length?t("更好：{list}。",{list:better.slice(0,2).map(fmtD).join(t("；"))}):"")+(worse.length?t("更差：{list}。",{list:worse.slice(0,2).map(fmtD).join(t("；"))}):"")});
   }
   return out;
 }
@@ -4299,8 +4358,8 @@ function tsShort(v){const s=typeof v==="string"?v:JSON.stringify(v);return s.len
 function tsAgo(iso,now){
   const d=toDate(iso);if(!d)return "—";
   const s=Math.max(0,((now||Date.now())-d.getTime())/1000);
-  if(s<60)return "刚刚";if(s<3600)return Math.floor(s/60)+" 分钟前";if(s<86400)return Math.floor(s/3600)+" 小时前";
-  if(s<30*86400)return Math.floor(s/86400)+" 天前";
+  if(s<60)return t("刚刚");if(s<3600)return tn("{n} 分钟前",Math.floor(s/60));if(s<86400)return tn("{n} 小时前",Math.floor(s/3600));
+  if(s<30*86400)return tn("{n} 天前",Math.floor(s/86400));
   return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
 }
 /* 搜到的文字标出来: 先转义再标, 不分大小写 */
@@ -4327,7 +4386,7 @@ function tsMtSummary(dist,unset){
 async function tsApi(url){
   if(OFF)throw new Error("离线报告里没有任务集");
   let r;
-  try{r=await fetch(url,{cache:"no-store"})}catch(e){const err=new Error("连不上后端服务（"+e.message+"）");err.status=0;throw err}
+  try{r=await fetch(url,{cache:"no-store",headers:apiHeaders()})}catch(e){const err=new Error("连不上后端服务（"+e.message+"）");err.status=0;throw err}
   let d=null;try{d=await r.json()}catch(e){}
   if(!r.ok||!d||d.ok===false){const err=new Error((d&&d.error)||("HTTP "+r.status));err.status=r.status;throw err}
   return d;
@@ -6108,8 +6167,8 @@ function renderStyleguide(){
    导出报告(离线 HTML) / 打开离线报告
    ============================================================ */
 /* 导出: 当前页面(同一套界面)连同数据打包成一个 HTML 文件, 双击就能打开, 和这里看到的一样 */
-const EXPORT_LS=["llm-bench-pro-viewmode","llm-bench-pro-dt","llm-bench-pro-ctab","llm-bench-pro-qb","llm-bench-pro-gen-works","llm-bench-pro-density","llm-bench-pro-rail",TERM_LS];
-const PAGE_NAME={dash:"速度测试",cmp:"速度对比",iq:"能力测试",gen:"代码生成"};
+const EXPORT_LS=["llm-bench-pro-viewmode","llm-bench-pro-dt","llm-bench-pro-ctab","llm-bench-pro-qb","llm-bench-pro-gen-works","llm-bench-pro-density","llm-bench-pro-rail",TERM_LS,"llm-bench-pro-lang"];
+const PAGE_NAME={get dash(){return t("速度测试")},get cmp(){return t("速度对比")},get iq(){return t("能力测试")},get gen(){return t("代码生成")}};
 function exportSel(page){
   if(page==="dash")return[$("runA").value,[$("runB").value]];
   if(page==="cmp")return[$("cmpA").value,[$("cmpB").value]];
@@ -6123,20 +6182,21 @@ function exportTitle(page,id,cmp){
 }
 async function exportHtml(page){
   const [id,raw]=exportSel(page),cmp=raw.filter(x=>x&&x!==id);
-  if(!id){toast("请先选择要导出的测试","warning");return}
+  if(!id){toast(t("请先选择要导出的测试"),"warning");return}
   const btn=document.querySelector(`[data-export="${page}"]`);
   const ls={};EXPORT_LS.forEach(k=>{const v=LS.get(k);if(v!=null)ls[k]=v});
+  ls[I18N.KEY]=I18N.lang;  /* 报告用导出时界面的语言 (用户没有点过语言按钮时本地没有这一项, 按浏览器语言选的也要带上) */
   const ui={panels:[...PANEL_OVR],qb:{subj:QB.subj,filter:QB.filter,q:QB.q,vs:QB.vs},genFilter:GEN_FILTER,genSort:GEN_SORT,genView:{tier:GEN_TIER,q:GEN_Q,page:GEN_PAGE,size:GEN_SIZE}};
   const title=exportTitle(page,id,cmp);
   setBusy(btn,true);
   try{
-    const r=await fetch("/api/export-html",{method:"POST",headers:{"Content-Type":"application/json"},
+    const r=await fetch("/api/export-html",{method:"POST",headers:apiHeaders({"Content-Type":"application/json"}),
       body:JSON.stringify({page,id,cmp,title,state:{theme:document.documentElement.dataset.theme,ls},ui})});
     if(!r.ok){let m="HTTP "+r.status;try{m=(await r.json()).error||m}catch(e){}throw new Error(m)}
     const blob=await r.blob();
     downloadBlob(safeName(title.replace(/ · /g,"_"))+".html",blob);
-    toast(`已导出「${title}」（${(blob.size/1048576).toFixed(1)} MB）：一个网页文件，双击就能打开，和这里看到的一样`,"success",5000);
-  }catch(e){toast("导出失败："+e.message,"error")}
+    toast(t("已导出「{title}」（{size} MB）：一个网页文件，双击就能打开，和这里看到的一样",{title,size:(blob.size/1048576).toFixed(1)}),"success",5000);
+  }catch(e){toast(t("导出失败：{msg}",{msg:tm(e.message)}),"error")}
   finally{setBusy(btn,false)}
 }
 /* 打开离线报告: 只显示导出的那一页, 选中导出时的测试和筛选, 隐藏需要后端的操作 */
@@ -6144,15 +6204,15 @@ function offlineInit(){
   document.documentElement.classList.add("is-offline");
   SERVER=Object.assign({},(OFF.api||{}).version||{});
   $("conn").className="conn is-offline";
-  $("connText").textContent="离线报告";
-  $("conn").title=`从 LLM Bench Pro v${SERVER.version||"?"} 导出的离线报告（${timeText(OFF.exported_at)}）：数据是导出那一刻的样子，不会更新，也不能修改`;
+  paintConn();
   const page=VIEWS[OFF.page]&&OFF.page!=="styleguide"?OFF.page:"dash";
   document.querySelectorAll(".nav-item[data-view]").forEach(b=>{if(b.dataset.view!==page)b.hidden=true});
   const S=OFF.sel||{},cmp=S.cmp||[],opt=x=>x?`<option value="${esc(x)}" selected></option>`:"";
-  if(page==="dash"){$("runA").innerHTML=opt(S.a);$("runB").innerHTML=`<option value="">不对比</option>`+opt(cmp[0])}
+  if(page==="dash"){$("runA").innerHTML=opt(S.a);$("runB").innerHTML=`<option value="">${esc(t("不对比"))}</option>`+opt(cmp[0])}
   if(page==="cmp"){$("cmpA").innerHTML=opt(S.a);$("cmpB").innerHTML=opt(cmp[0])}
   if(page==="iq"){$("iqMainSel").innerHTML=opt(S.a);cmp.forEach(x=>IQ_CMP.add(x))}
-  if(page==="gen"){$("genMainSel").innerHTML=opt(S.a);$("genCmpSel").innerHTML=`<option value="">不对比</option>`+opt(cmp[0])}
+  if(page==="gen"){$("genMainSel").innerHTML=opt(S.a);$("genCmpSel").innerHTML=`<option value="">${esc(t("不对比"))}</option>`+opt(cmp[0])}
+  I18N.onChange(()=>{document.title=exportTitle(page,S.a||"",cmp)});  /* 报告的标题 (浏览器标签页上) 也跟着语言走 */
   const U=OFF.ui||{};
   (U.panels||[]).forEach(([k,v])=>PANEL_OVR.set(k,v));
   if(U.qb){Object.assign(QB,{subj:U.qb.subj||"",filter:U.qb.filter||"all",q:U.qb.q||"",vs:U.qb.vs||""});QB.main=S.a||""}
@@ -6171,30 +6231,46 @@ function offlineInit(){
    启动
    ============================================================ */
 let SERVER={};
+let CONN_OK=null;  /* 最近一次连后端的结果: true / false; null = 还没连过 (侧栏显示 index.html 里写的「连接中…」) */
 const VERSION_WARNED={};
+/* 侧栏的连接状态和悬停提示。换语言时也调用: 用最近一次取到的 SERVER 重新生成, 不重新请求 */
+function paintConn(){
+  if(OFF){
+    $("connText").textContent=t("离线报告");
+    $("conn").title=t("从 LLM Bench Pro v{version} 导出的离线报告（{time}）：数据是导出那一刻的样子，不会更新，也不能修改",{version:SERVER.version||"?",time:timeText(OFF.exported_at)});
+    return;
+  }
+  if(CONN_OK===false){setConn(false,t("服务未连接"));return}
+  if(CONN_OK!==true)return;
+  const v=SERVER;
+  if(!v.version){setConn(true,t("服务已连接"));return}  /* 速度测试列表先于版本接口拿到结果 */
+  setConn(true,t("服务正常 · 已运行 {time}",{time:durationText(v.uptime_s)}));
+  $("conn").title=[
+    t("后端 v{version} · 进程 {pid} · 启动于 {time}",{version:v.version,pid:v.pid,time:timeText(v.started_at)})+(v.commit?t(" · 提交 {commit}",{commit:v.commit}):""),
+    t("数据库 {db}",{db:v.db}),
+    t("评测程序：速度 {bench} · 能力 {iq} · 代码生成 {gen}",{bench:v.bench_version,iq:v.iq_version,gen:v.gen_version})].join("\n");
+}
 async function checkVersion(){
   try{
     const v=await getJSON("/api/version");
-    SERVER=v;
-    setConn(true,`服务正常 · 已运行 ${durationText(v.uptime_s)}`);
-    $("conn").title=`后端 v${v.version} · 进程 ${v.pid} · 启动于 ${timeText(v.started_at)}${v.commit?" · 提交 "+v.commit:""}\n数据库 ${v.db}\n评测程序：速度 ${v.bench_version} · 能力 ${v.iq_version} · 代码生成 ${v.gen_version}`;
+    SERVER=v;CONN_OK=true;paintConn();
     if(v.version!==UI_VERSION&&!VERSION_WARNED.ver){
       VERSION_WARNED.ver=1;
-      toast(`页面（v${UI_VERSION}）和后端服务（v${v.version}）版本不一致：页面可能还是旧的，功能可能不正常。`,"warning",0,
-        {label:"刷新页面",onClick:()=>location.reload()});
+      toast(t("页面（v{ui}）和后端服务（v{server}）版本不一致：页面可能还是旧的，功能可能不正常。",{ui:UI_VERSION,server:v.version}),"warning",0,
+        {label:t("刷新页面"),onClick:()=>location.reload()});
     }
     if(v.code_changed&&!VERSION_WARNED.code){
       VERSION_WARNED.code=1;
-      toast("后端代码已经更新，但服务还在运行旧代码。请重启 python run.py 让修改生效。","warning",0);
+      toast(t("后端代码已经更新，但服务还在运行旧代码。请重启 python run.py 让修改生效。"),"warning",0);
     }
-  }catch(e){setConn(false,"服务未连接")}
+  }catch(e){CONN_OK=false;paintConn()}
 }
 async function resumeRunning(){
   const jobs=[
-    ["/api/status","perf",()=>watchPerf("进行中（刷新页面后继续跟踪）")],
-    ["/api/iq-status","iq",()=>watchIq("进行中（刷新页面后继续跟踪）")],
-    ["/api/gen-status","gen",()=>watchGen("进行中（刷新页面后继续跟踪）")],
-    ["/api/bank-status","bank",()=>watchBank("更新题集（刷新页面后继续跟踪）")],
+    ["/api/status","perf",()=>watchPerf(t("进行中（刷新页面后继续跟踪）"))],
+    ["/api/iq-status","iq",()=>watchIq(t("进行中（刷新页面后继续跟踪）"))],
+    ["/api/gen-status","gen",()=>watchGen(t("进行中（刷新页面后继续跟踪）"))],
+    ["/api/bank-status","bank",()=>watchBank(t("更新题集（刷新页面后继续跟踪）"))],
   ];
   for(const [url,,watch] of jobs){
     try{const s=await getJSON(url);if(s.running)watch()}catch(e){}
@@ -6211,6 +6287,7 @@ CSelect.combo($("fModel"));
 readTheme();
 applyTheme(document.documentElement.dataset.theme||"dark",false);
 applyRailPin(LS.get("llm-bench-pro-rail")==="1",false);
+paintLangBtn();
 document.querySelectorAll("[data-vm-page]").forEach(g=>g.querySelectorAll("[data-vm]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.vm===(VIEWMODE[g.dataset.vmPage]||"chart")))));
 applyDensity(LS.get("llm-bench-pro-density")==="compact"?"compact":"normal",false);
 applyTermUI(TERM_MODE);
