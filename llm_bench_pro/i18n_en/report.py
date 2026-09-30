@@ -17,13 +17,6 @@ ENTRIES = {
     "单流解码吞吐": "Single-stream decode throughput",
     "最高并发 TTFT p95": "TTFT p95 at max concurrency",
     "Prefill 吞吐(峰值中位)": "Prefill throughput (peak median)",
-    # ---- 场景名: 结果里存的是中文原名 (bench.SCN_TEMPLATES), 英文报告按场景类型换成这里的名字 (用词和页面上的场景名一致)
-    "场景名|对话问答": "Chat Q&A",
-    "场景名|代码生成": "Coding",
-    "场景名|结构化抽取": "JSON extraction",
-    "场景名|RAG 问答": "Document Q&A",
-    "场景名|图片理解": "Image Q&A",
-    "场景名|自定义任务集": "Custom task set",
     # ---- 结论要点
     "章节|结论要点": "Key findings",
     "并发 {conc} 下聚合吞吐: {who} 更高 {pct:.1f}%（{a} vs {b} tok/s）":

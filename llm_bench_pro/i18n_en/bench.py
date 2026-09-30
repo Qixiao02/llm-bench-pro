@@ -64,12 +64,6 @@ ENTRIES = {
     "阶段名|场景 · {label}": "Scenario · {label}",
     "阶段名|回放·闭环": "Replay · closed-loop",
     "阶段名|回放·开环 (泊松到达)": "Replay · open-loop (Poisson arrivals)",
-    "场景名|对话问答": "Chat Q&A",
-    "场景名|代码生成": "Code generation",
-    "场景名|结构化抽取": "Structured extraction",
-    "场景名|RAG 问答": "RAG Q&A",
-    "场景名|图片理解": "Image understanding",
-    "场景名|自定义任务集": "Custom task set",
     # ---- 日志: 回放开环每档一行 (键里的对齐格式和以前的 %-6g / %6.2f 一样)
     "  rate={rate:<6g} sent={sent} shed={shed} ok={ok}/{total}  完成={rps:6.2f} rps  ttft_p95={ttft:6.2f}s  "
     "in-flight_max={inflight}":

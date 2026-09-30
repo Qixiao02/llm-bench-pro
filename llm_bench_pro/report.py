@@ -222,22 +222,23 @@ def _kpi_cards(docs):
     return '<div class="kpis">%s</div>' % "".join(cards)
 
 
-def _scn_names():
-    """内置场景的显示名 (函数, 不是常量: 要到调用时才知道语言)。结果里存的 task.label 是当时写下的中文原名 (bench.SCN_TEMPLATES),
-    报告按当前语言换成对应的名字, 见 _scn_label。"""
-    return {"chat": t("对话问答", ctx="场景名"), "code": t("代码生成", ctx="场景名"),
-            "json": t("结构化抽取", ctx="场景名"), "rag": t("RAG 问答", ctx="场景名"),
-            "vision": t("图片理解", ctx="场景名"), "custom": t("自定义任务集", ctx="场景名")}
+def _builtin_scn_names(tpl):
+    """内置场景 tpl 在中英文下的显示名 (bench.scenario_label): 结果里存的 task.label 是任务当时的语言写下的, 可能是中文也可能是英文。"""
+    out = set()
+    for lang in ("zh", "en"):
+        with i18n.use_lang(lang):
+            out.add(bench.scenario_label(tpl))
+    return out
 
 
 def _scn_label(p, fallback):
-    """场景 (阶段 p) 的显示名。结果里存的 label 就是 bench.SCN_TEMPLATES 里的内置原名时, 换成当前语言的名字
-    (中文模式下就是原名, 输出不变); 用户自己起的名字、旧结果里别的写法原样显示。fallback: 没有 label 时用什么。"""
+    """场景 (阶段 p) 的显示名。结果里存的 label 是内置场景的显示名 (中文或英文) 时, 换成当前语言的名字
+    (中文模式下中文结果就是原名, 输出不变); 用户自己起的名字、旧结果里别的写法原样显示。fallback: 没有 label 时用什么。"""
     task = p.get("task") or {}
     label = task.get("label") or fallback
     tpl = task.get("tpl", (p.get("id") or "")[4:])
-    if isinstance(tpl, str) and label == (bench.SCN_TEMPLATES.get(tpl) or {}).get("label"):
-        return _scn_names().get(tpl, label)
+    if isinstance(tpl, str) and tpl in bench.SCN_TEMPLATES and label in _builtin_scn_names(tpl):
+        return bench.scenario_label(tpl)
     return label
 
 

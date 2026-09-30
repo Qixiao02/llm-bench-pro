@@ -18,4 +18,11 @@ ENTRIES = {
     # geneval.py (i18n-py-geneval): 列表里几项之间的分隔 (中文用全角逗号 / 顿号, 英文都是逗号加空格): t("，").join(...) / t("、").join(...)
     "，": ", ",
     "、": ", ",
+    # bench.py / report.py: 内置场景的显示名 (存进结果的 task.label 和旧版报告里用同一套名字; 带语境, 免得和别处同名的词撞键)
+    "场景名|对话问答": "Chat Q&A",
+    "场景名|代码生成": "Code generation",
+    "场景名|结构化抽取": "Structured extraction",
+    "场景名|RAG 问答": "RAG Q&A",
+    "场景名|图片理解": "Image understanding",
+    "场景名|自定义任务集": "Custom task set",
 }

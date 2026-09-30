@@ -122,7 +122,7 @@ class TestReportPage(ReportCase):
     def test_english_page_headings_and_tables(self):
         html = html_lib.unescape(report.render(self.a, self.b, lang="en"))
         for want in ("Key findings", "Concurrency ladder", "Prefill ladder", "Single-stream decode",
-                     "Scenario · JSON extraction", "Scenario · Document Q&A", "Real-request replay · closed-loop",
+                     "Scenario · Structured extraction", "Scenario · RAG Q&A", "Real-request replay · closed-loop",
                      "Real-request replay · open-loop (Poisson arrivals)", "Failures and reruns", "Methodology",
                      "<th>Concurrency</th>", "<th>Aggregate throughput tok/s</th>", "<th>Per-stream throughput tok/s</th>",
                      "<th>Input length</th>", "<th>Prefill throughput tok/s (A / B)</th>", "<th>E2E p95 s</th>",
@@ -236,7 +236,7 @@ class TestReportSentences(ReportCase):
         bad = [{"conc": 2, "total": 6, "ok": 6, "fail": 0, "json_total": 6, "json_ok": 3, "json_rate": 0.5}]
         doc = doc_of(scn_phase("json", "结构化抽取", bad))
         self.pair(report._findings, "⚠ 场景「结构化抽取」JSON 合法率最低 50% (并发 2): 结构化输出稳定性需关注",
-                  "⚠ Scenario \"JSON extraction\" has a JSON validity rate as low as 50% (concurrency 2); "
+                  "⚠ Scenario \"Structured extraction\" has a JSON validity rate as low as 50% (concurrency 2); "
                   "structured-output stability needs attention.", [doc])
         custom = doc_of(scn_phase("json", "我的场景", bad))       # 用户自己起的名字: 原样 (它是数据)
         self.assertIn("⚠ 场景「我的场景」JSON 合法率最低 50%", in_lang("zh", report._findings, [custom]))
@@ -337,7 +337,7 @@ class TestReportSentences(ReportCase):
             doc = doc_of(scn_phase("vision", "图片理解", **task))
             got_zh, got_en = self.pair(report._scenarios_sec, " · 图片 2 张/请求" + zh, " · images per request 2" + en, [doc])
             self.assertIn("场景 · 图片理解", got_zh)
-            self.assertIn("Scenario · Image Q&A", html_lib.unescape(got_en))
+            self.assertIn("Scenario · Image understanding", html_lib.unescape(got_en))
         for size, zh, en in ((1, " · 任务集 1 条", " · task set size 1"), (300, " · 任务集 300 条", " · task set size 300")):
             self.pair(report._scenarios_sec, zh, en, [doc_of(scn_phase("custom", "自定义任务集", pool_size=size))])
 
@@ -353,7 +353,7 @@ class TestReportSentences(ReportCase):
                                  ("<th>输出 tokens 均值–p90</th>", "<th>Out tokens avg–p90</th>"),
                                  ("<th>最大在途</th>", "<th>Max in-flight</th>"), ("<th>JSON 合法</th>", "<th>JSON valid</th>"),
                                  ("5 (80%) <span class=\"tag warn\">重跑×2</span>", "5 (80%) <span class=\"tag warn\">Rerun ×2</span>"),
-                                 ("场景 · RAG 问答", "Scenario · Document Q&A")):
+                                 ("场景 · RAG 问答", "Scenario · RAG Q&A")):
             self.assertIn(want_zh, zh)
             self.assertIn(want_en, en)
 
@@ -446,23 +446,25 @@ class TestScenarioNames(ReportCase):
         """结果里存的 label 是 bench.SCN_TEMPLATES 的中文原名; 报告在中文下显示原名 (输出不变), 在英文下按场景类型换名字。
         以后 bench 新增 / 改名场景模板, 这里会提醒同步 report._scn_names()。"""
         with i18n.use_lang("zh"):
-            zh_names = report._scn_names()
-        self.assertEqual(sorted(zh_names), sorted(bench.SCN_TEMPLATES))
-        for tpl, spec in bench.SCN_TEMPLATES.items():
-            self.assertEqual(zh_names[tpl], spec["label"], tpl)
+            zh_names = dict((tpl, bench.scenario_label(tpl)) for tpl in bench.SCN_TEMPLATES)
+        self.assertEqual(zh_names, {"chat": "对话问答", "code": "代码生成", "json": "结构化抽取", "rag": "RAG 问答",
+                                    "vision": "图片理解", "custom": "自定义任务集"})
         with i18n.use_lang("en"):
-            en_names = report._scn_names()
+            en_names = dict((tpl, bench.scenario_label(tpl)) for tpl in bench.SCN_TEMPLATES)
         base.assert_english(self, en_names)
-        self.assertEqual(en_names, {"chat": "Chat Q&A", "code": "Coding", "json": "JSON extraction", "rag": "Document Q&A",
-                                    "vision": "Image Q&A", "custom": "Custom task set"})
+        self.assertEqual(en_names, {"chat": "Chat Q&A", "code": "Code generation", "json": "Structured extraction",
+                                    "rag": "RAG Q&A", "vision": "Image understanding", "custom": "Custom task set"})
         self.assertEqual(i18n.MISSING, set())
 
     def test_names_that_are_not_the_builtin_label_are_kept_as_they_are(self):
         def label(lang, task, fallback="chat"):
             return in_lang(lang, report._scn_label, {"id": "scn_" + fallback, "task": task}, fallback)
-        builtin = {"tpl": "chat", "label": bench.SCN_TEMPLATES["chat"]["label"]}
+        builtin = {"tpl": "chat", "label": "对话问答"}
         self.assertEqual((label("zh", builtin), label("en", builtin)), ("对话问答", "Chat Q&A"))
-        for task in ({"tpl": "chat", "label": "我的场景"}, {"tpl": "chat", "label": "Chat Q&A"},
+        # 英文任务存的是英文名: 中文报告里换成中文名, 英文报告里还是英文名
+        english = {"tpl": "chat", "label": "Chat Q&A"}
+        self.assertEqual((label("zh", english), label("en", english)), ("对话问答", "Chat Q&A"))
+        for task in ({"tpl": "chat", "label": "我的场景"}, {"tpl": "chat", "label": "My scenario"},
                      {"tpl": "rag", "label": "对话问答"}, {"tpl": ["x"], "label": "对话问答"}):
             with self.subTest(task=task):
                 self.assertEqual((label("zh", task), label("en", task)), (task["label"], task["label"]))
