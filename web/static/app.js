@@ -1,6 +1,6 @@
 "use strict";
 /* LLM Bench Pro 前端逻辑 (零依赖经典脚本; 图表用本地内置的 ECharts) */
-const UI_VERSION="3.7.0";  /* 与 llm_bench_pro/version.py 保持一致 */
+const UI_VERSION="3.8.0";  /* 与 llm_bench_pro/version.py 保持一致 */
 /* ============================================================
    基础工具
    ============================================================ */
@@ -159,57 +159,165 @@ function alertBox(tone,html,action=""){
 }
 
 /* ============================================================
-   名词解释: 页面上用大白话, 悬停可看专业说法; 左侧「名词解释」列出全部
+   名词解释与术语写法
+   页面上的名词有两种写法, 由「术语」模式决定(侧栏底部的按钮、各页「更多」菜单切换, 记在本地偏好里):
+     大白话(plain, 默认)  读入速度、首字等待、出字间隔…  悬停显示专业说法和解释
+     专业(pro)            Prefill、TTFT、ITL…           悬停显示对应的大白话和解释
+   所有把这些词当标签用的地方(指标卡、表头、图表标题、坐标轴、图例、结论句)都只按词的 key 取, 走下面的函数,
+   不在调用处手写词; 以后要改写法只改这里的 TERMS / WORDS:
+     term(key, 显示文字?)   HTML: 带虚线下划线、悬停解释, 点击打开名词解释
+     termHtml(模板)         HTML 字符串里有词的地方(标题、说明、结论句)
+     termText(模板)         纯文本(表头、图表的坐标轴 / 图例 / 浮层、CSV、title 属性、提示条)
+   模板里用 {key} 写词:  {key}  当前模式的写法(HTML 里带虚线下划线);  {!key}  同样的词, 但不带下划线和悬停;
+                        {key|文字}  大白话模式显示这段文字、专业模式显示专业词(如 {agg|总速度}, 和 term("agg","总速度") 一样)。
+   key 在 TERMS(进名词解释的词)或 WORDS(只在标签里出现的词: 分位词、句子里换个说法的词)里找;
+   句子里放不进词条名字的地方, 也在 WORDS 里加一条(大白话、专业写法各写一遍), 不在调用处写专业文字。
+   专业词是英文时, 和前后的汉字之间自动补一个空格; 大白话模式下模板怎么写就怎么显示。
+   以后加英文界面(语言 × 模式)时, 词条里加 en:{name,pro,tech,desc}, 只改 termField, 调用处不用动。
    ============================================================ */
 const TERMS={
   token:{name:"token",tech:"token",desc:"模型读写文字的最小单位。中文里 1 个 token 大约是 1 个汉字，英文里大约是 3/4 个单词。"},
-  decode:{name:"生成速度",tech:"解码速度（Decode），单位 token/秒",desc:"模型每秒能写出多少个 token。越高越好。"},
-  agg:{name:"总生成速度",tech:"聚合吞吐（Throughput）",desc:"同时处理多个请求时，所有请求加起来每秒写出多少 token，反映服务器的总能力。越高越好。"},
-  per:{name:"单个请求的速度",tech:"单流吞吐",desc:"同时处理多个请求时，每个请求分到的生成速度。同时请求越多，通常越慢。"},
-  ttft:{name:"首字等待",tech:"TTFT（Time To First Token）",desc:"从发出请求到收到第一个字要等多久。输入越长、同时请求越多，通常要等越久。越短越好。"},
-  itl:{name:"出字间隔",tech:"ITL（Inter-Token Latency）/ TPOT",desc:"相邻两次收到新内容隔了多久，决定看起来“打字”流不流畅。越短越好。"},
-  prefill:{name:"读入速度",tech:"Prefill 吞吐",desc:"模型读取你发过去的内容（提示词、资料）的速度，决定长输入要等多久才开始回答。越高越好。"},
-  pct:{name:"一般 / 较慢 / 最慢",tech:"p50 / p95 / p99 分位数",desc:"把所有请求从快到慢排好：“一般”是正中间那个（p50）；“较慢”表示 95% 的请求都比它快（p95）；“最慢”是 99%（p99）。"},
-  conc:{name:"同时请求数",tech:"并发（Concurrency）",desc:"同一时刻有多少个请求在等模型回答。"},
-  rps:{name:"每秒完成请求数",tech:"req/s（QPS）",desc:"每秒能完整回答多少个请求。越高越好。"},
-  e2e:{name:"完整响应时间",tech:"端到端延迟（E2E）",desc:"从发出请求到收到最后一个字的总时间。越短越好。"},
-  burst:{name:"每次返回的 token 数",tech:"Burst（投机解码）",desc:"服务每次推送几个 token。明显大于 1 通常说明开启了投机解码（一次猜好几个字）来加速。"},
-  jitter:{name:"出字波动",tech:"ITL 抖动",desc:"出字间隔忽快忽慢的程度。越小越平稳。"},
-  kv:{name:"显存缓存占用",tech:"KV Cache 使用率",desc:"服务端存放对话上下文的显存用了多少。接近 100% 时新请求要排队。"},
-  prefix:{name:"重复内容复用率",tech:"前缀缓存命中率",desc:"请求开头与之前请求相同的部分可以直接复用、不用重读，复用得越多越快。"},
-  open:{name:"按固定速率发送",tech:"开环（泊松到达）",desc:"不管前面的请求有没有回完，按设定速率随机间隔地发新请求，模拟真实用户陆续到来。处理中的请求越积越多，说明服务跟不上。"},
-  closed:{name:"固定同时请求数",tech:"闭环",desc:"始终保持固定数量的请求在处理，一个回完马上发下一个。"},
-  inflight:{name:"处理中的请求",tech:"在途请求",desc:"已经发出、还没回完的请求数量。"},
-  fixed:{name:"生成满指定长度",tech:"ignore_eos",desc:"让模型每次都写满规定的长度，避免有的模型提前结束让速度看起来偏高。"},
-  ci:{name:"误差范围",tech:"95% 置信区间（Wilson）",desc:"题目数量有限，分数会有随机波动。真实水平有 95% 的把握落在这个范围内。两个分数的范围重叠很多时，差距可能只是运气。"},
-  sig:{name:"差异可信",tech:"McNemar 配对检验，p < 0.05",desc:"两次测试用同一套题，逐题比较谁对谁错。“差异可信”表示差距不太可能是随机波动；“差异不明显”表示可能只是运气。"},
-  macro:{name:"各科平均",tech:"宏平均",desc:"每科先算正确率再求平均，题多的科目不会占更大比重。"},
-  trunc:{name:"没答完",tech:"截断（finish_reason = length）",desc:"回答写到长度上限被强行停止，常见于思考太久或上限太小，这些题记为答错。"},
-  run:{name:"实际运行检查",tech:"无头浏览器运行检测",desc:"在后台浏览器里真正打开模型写的网页，检查能否加载、有没有报错、是不是白屏，并按题目模拟操作看功能是否生效。"},
-  static:{name:"只看了代码",tech:"源码检查（降级）",desc:"后台浏览器不可用时只检查代码里有没有相关关键词，不能代表作品真的能用。"},
-  judge:{name:"AI 看图打分",tech:"视觉评审（VLM Judge）",desc:"让一个能看图的模型看截图和代码，按题目要求逐项打 0–10 分，汇总成百分制。"},
-  repeat:{name:"陷入重复输出",tech:"退化重复（degenerate repetition）",desc:"模型不停地重复同一段内容直到长度上限，这是模型自身的问题。检测到后会立即停止并标记。"},
-  cont:{name:"接着写",tech:"续写",desc:"作品太长一次写不完时，把已写好的部分交给模型让它接着写，再拼起来。每次拼接做了什么都记在「生成过程」里。"},
-  control:{name:"对照运行",tech:"干净环境复现",desc:"作品报错时，在不加任何检测代码的干净页面里按同样步骤再运行一遍。同样报错，说明是作品本身的问题。"},
-  sampling:{name:"随机性",tech:"采样参数 temperature / top_p / top_k",desc:"控制模型每次选词有多随机。太低时小模型容易反复写同一段；官方推荐值是模型厂商给出的最佳设置。"},
+  decode:{name:"生成速度",pro:"Decode",tech:"解码速度（Decode），单位 token/秒",desc:"模型每秒能写出多少个 token。越高越好。"},
+  agg:{name:"总生成速度",pro:"Throughput",tech:"聚合吞吐（Throughput）",desc:"同时处理多个请求时，所有请求加起来每秒写出多少 token，反映服务器的总能力。越高越好。"},
+  per:{name:"单个请求的速度",pro:"Per-stream TPS",tech:"单流吞吐（Per-stream TPS）",desc:"同时处理多个请求时，每个请求分到的生成速度。同时请求越多，通常越慢。"},
+  ttft:{name:"首字等待",pro:"TTFT",tech:"TTFT（Time To First Token）",desc:"从发出请求到收到第一个字要等多久。输入越长、同时请求越多，通常要等越久。越短越好。"},
+  itl:{name:"出字间隔",pro:"ITL",tech:"ITL（Inter-Token Latency）/ TPOT",desc:"相邻两次收到新内容隔了多久，决定看起来“打字”流不流畅。越短越好。"},
+  prefill:{name:"读入速度",pro:"Prefill",tech:"Prefill 吞吐",desc:"模型读取你发过去的内容（提示词、资料）的速度，决定长输入要等多久才开始回答。越高越好。"},
+  pct:{name:"一般 / 较慢 / 最慢",pro:"P50 / P95 / P99",tech:"P50 / P95 / P99 分位数",desc:"把所有请求从快到慢排好：“一般”是正中间那个（P50）；“较慢”表示 95% 的请求都比它快（P95）；“最慢”是 99%（P99）。"},
+  conc:{name:"同时请求数",pro:"并发",tech:"并发（Concurrency）",desc:"同一时刻有多少个请求在等模型回答。"},
+  rps:{name:"每秒完成请求数",pro:"req/s",tech:"req/s（QPS）",desc:"每秒能完整回答多少个请求。越高越好。"},
+  e2e:{name:"完整响应时间",pro:"E2E",tech:"端到端延迟（E2E）",desc:"从发出请求到收到最后一个字的总时间。越短越好。"},
+  burst:{name:"每次返回的 token 数",pro:"Burst",tech:"Burst（投机解码）",desc:"服务每次推送几个 token。明显大于 1 通常说明开启了投机解码（一次猜好几个字）来加速。"},
+  jitter:{name:"出字波动",pro:"Jitter",tech:"ITL 抖动（Jitter）",desc:"出字间隔忽快忽慢的程度。越小越平稳。"},
+  kv:{name:"显存缓存占用",pro:"KV Cache 使用率",tech:"KV Cache 使用率",desc:"服务端存放对话上下文的显存用了多少。接近 100% 时新请求要排队。"},
+  prefix:{name:"重复内容复用率",pro:"Prefix Cache 命中率",tech:"前缀缓存命中率（Prefix Cache Hit Rate）",desc:"请求开头与之前请求相同的部分可以直接复用、不用重读，复用得越多越快。"},
+  open:{name:"按固定速率发送",pro:"Open-loop",tech:"开环（Open-loop，泊松到达）",desc:"不管前面的请求有没有回完，按设定速率随机间隔地发新请求，模拟真实用户陆续到来。处理中的请求越积越多，说明服务跟不上。"},
+  closed:{name:"固定同时请求数",pro:"Closed-loop",tech:"闭环（Closed-loop）",desc:"始终保持固定数量的请求在处理，一个回完马上发下一个。"},
+  inflight:{name:"处理中的请求",pro:"In-flight",tech:"在途请求（In-flight）",desc:"已经发出、还没回完的请求数量。"},
+  fixed:{name:"生成满指定长度",pro:"ignore_eos",tech:"ignore_eos",desc:"让模型每次都写满规定的长度，避免有的模型提前结束让速度看起来偏高。"},
+  ci:{name:"误差范围",pro:"95% CI",tech:"95% 置信区间（95% CI，Wilson）",desc:"题目数量有限，分数会有随机波动。真实水平有 95% 的把握落在这个范围内。两个分数的范围重叠很多时，差距可能只是运气。"},
+  sig:{name:"差异可信",pro:"McNemar",tech:"McNemar 配对检验，p < 0.05",desc:"两次测试用同一套题，逐题比较谁对谁错。“差异可信”表示差距不太可能是随机波动；“差异不明显”表示可能只是运气。"},
+  macro:{name:"各科平均",pro:"宏平均",tech:"宏平均（Macro-average）",desc:"每科先算正确率再求平均，题多的科目不会占更大比重。"},
+  trunc:{name:"没答完",pro:"截断",tech:"截断（finish_reason = length）",desc:"回答写到长度上限被强行停止，常见于思考太久或上限太小，这些题记为答错。"},
+  run:{name:"实际运行检查",pro:"Headless 运行检测",tech:"无头浏览器运行检测（Headless）",desc:"在后台浏览器里真正打开模型写的网页，检查能否加载、有没有报错、是不是白屏，并按题目模拟操作看功能是否生效。"},
+  static:{name:"只看了代码",pro:"源码检查",tech:"源码检查（降级）",desc:"后台浏览器不可用时只检查代码里有没有相关关键词，不能代表作品真的能用。"},
+  judge:{name:"AI 看图打分",pro:"VLM Judge",tech:"视觉评审（VLM Judge）",desc:"让一个能看图的模型看截图和代码，按题目要求逐项打 0–10 分，汇总成百分制。"},
+  repeat:{name:"陷入重复输出",pro:"退化重复",tech:"退化重复（degenerate repetition）",desc:"模型不停地重复同一段内容直到长度上限，这是模型自身的问题。检测到后会立即停止并标记。"},
+  cont:{name:"接着写",pro:"续写",tech:"续写",desc:"作品太长一次写不完时，把已写好的部分交给模型让它接着写，再拼起来。每次拼接做了什么都记在「生成过程」里。"},
+  control:{name:"对照运行",pro:"干净环境复现",tech:"干净环境复现",desc:"作品报错时，在不加任何检测代码的干净页面里按同样步骤再运行一遍。同样报错，说明是作品本身的问题。"},
+  sampling:{name:"随机性",pro:"采样参数",tech:"采样参数 temperature / top_p / top_k",desc:"控制模型每次选词有多随机。太低时小模型容易反复写同一段；官方推荐值是模型厂商给出的最佳设置。"},
 };
-/* 页面上的名词: 大白话 + 悬停显示专业说法 */
+/* 只在标签和句子里出现、不单独进名词解释的词(只有 name / pro; of = 点击时打开名词解释里的哪一条)。
+   分位词「一般 / 较慢 / 最慢」的说明在 pct 那一条;
+   v90 / v95 是「单个请求的生成速度」的 90 / 95 分位: 原来就写成「较慢 / 最慢」(速度越高越好, 这两个数其实是偏快的那一头, 和延迟类的写法相反),
+   大白话模式照旧显示, 专业模式如实写 P90 / P95 */
+const WORDS={
+  p50:{name:"一般",pro:"P50"},
+  p95:{name:"较慢",pro:"P95"},
+  p99:{name:"最慢",pro:"P99"},
+  v90:{name:"较慢",pro:"P90"},
+  v95:{name:"最慢",pro:"P95"},
+  preagg:{name:"总读入速度",pro:"Prefill 总吞吐"},            /* 长输入并发表里所有请求加起来的读入速度 */
+  rerun:{of:"control",name:"重新运行",pro:"复现"},            /* 结论句里「在干净环境里重新运行也同样报错」 */
+  sigtest:{name:"McNemar 检验",pro:"配对检验"},                /* 说明句里「（McNemar 检验）」: 专业模式前面已经是 McNemar, 这里换个说法免得重复 */
+};
+const TERM_LANG="zh";   /* 界面语言, 现在只有中文 */
+const TERM_LS="llm-bench-pro-terms";
+const termModeOf=v=>v==="pro"?"pro":"plain";   /* 本地偏好里只认 plain / pro, 其他一律按大白话 */
+let TERM_MODE=termModeOf(LS.get(TERM_LS));
+/* 词条的某个字段(name / pro / tech / desc): 以后有英文界面时按语言取, 取不到用中文 */
+function termField(t,f){return (t[TERM_LANG]&&t[TERM_LANG][f])||t[f]}
+/* 一个词在当前模式下的显示文字: custom 是大白话模式下想显示的文字(默认词条的名字), 专业模式一律用专业词;
+   没有专业写法的词(如 token)两种模式都显示大白话那一栏 */
+function termShown(entry,custom){
+  const f=n=>termField(entry,n);
+  if(TERM_MODE==="pro")return f("pro")||custom||f("name");
+  return custom||f("name");
+}
+/* 一个词在当前模式下的写法(纯文本); 不认识的 key 返回 null */
+function termWord(key){const e=TERMS[key]||WORDS[key];return e?termShown(e):null}
+/* 悬停提示: 大白话模式给专业说法和解释, 专业模式给对应的大白话和解释;
+   withName = 指标卡用的写法(把词本身放在最前面) */
+function termTip(key,withName){
+  const t=TERMS[key];if(!t)return "";
+  const f=n=>termField(t,n),pro=TERM_MODE==="pro"&&f("pro");
+  if(withName)return pro?`${f("pro")}（大白话：${f("name")}）：${f("desc")}`:`${f("name")}（${f("tech")}）：${f("desc")}`;
+  return pro?`大白话：${f("name")}。${f("desc")}`:`${f("tech")}：${f("desc")}`;
+}
+function termSpan(key,text){
+  return `<span class="term" data-term="${esc(key)}" title="${esc(termTip(key)+"（点击查看名词解释）")}">${esc(text)}</span>`;
+}
+/* 页面上的名词(HTML): 带虚线下划线, 悬停看解释, 点一下打开名词解释并定位到这个词 */
 function term(key,label){
   const t=TERMS[key];if(!t)return esc(label||key);
-  return `<span class="term" data-term="${esc(key)}" title="${esc(t.tech+"：" +t.desc+"（点击查看名词解释）")}">${esc(label||t.name)}</span>`;
+  return termSpan(key,termShown(t,label));
 }
+/* 把模板里的 {key} 换成当前模式的词; html=true 时词是带下划线的 <span>(其余文字原样, 要转义的调用前转义好) */
+const TERM_SLOT=/\{(!?)([a-z][a-z0-9]*)(?:\|([^{}|]*))?\}/g;
+const isCJK=c=>/[\u3400-\u9fff]/.test(c||""),isLatin=c=>/[A-Za-z0-9]/.test(c||"");
+function termFill(tpl,html){
+  tpl=String(tpl??"");
+  const pro=TERM_MODE==="pro",vis=s=>html?s.replace(/<[^>]*>/g,""):s,re=new RegExp(TERM_SLOT.source,"g");
+  let out="",at=0,m;
+  while((m=re.exec(tpl))){
+    const key=m[2],entry=TERMS[key]||WORDS[key];
+    if(!entry)continue;                                   /* 不认识的 {…} 原样留着 */
+    out+=tpl.slice(at,m.index);at=re.lastIndex;
+    const text=termShown(entry,m[3]),gl=entry.of||(TERMS[key]?key:"");   /* gl: 点击 / 悬停对应名词解释里的哪一条(纯分位词没有) */
+    let pre="",post="";
+    if(pro&&text){                                        /* 专业词是英文时, 和前后的汉字(或另一个英文词)之间留一个空格 */
+      const b=vis(out).slice(-1),a=vis(tpl.slice(at))[0],first=text[0],last=text[text.length-1];
+      if((isCJK(b)&&isLatin(first))||(isLatin(b)&&(isLatin(first)||isCJK(first))))pre=" ";
+      if((isLatin(last)&&isCJK(a))||(isCJK(last)&&isLatin(a)))post=" ";
+    }
+    out+=pre+(html?(gl&&!m[1]?termSpan(gl,text):esc(text)):text)+post;
+  }
+  return out+tpl.slice(at);
+}
+const termHtml=tpl=>termFill(tpl,true),termText=tpl=>termFill(tpl,false);
 /* 名词解释: 左边词、右边解释; 顶部搜索; 从页面上的词点进来时定位并高亮 */
+const GL={open:false};
+function glossaryItems(){
+  return Object.entries(TERMS).map(([k,t])=>{
+    const f=n=>termField(t,n);
+    return `<div class="glossary-item" id="gl-${esc(k)}" data-gl="${esc([f("name"),f("pro"),f("tech"),f("desc")].filter(Boolean).join(" ").toLowerCase())}"><div><div class="glossary-name">${esc(f("name"))}</div>
+      <div class="glossary-tech">${esc(f("tech"))}</div></div><div class="glossary-desc">${esc(f("desc"))}</div></div>`}).join("");
+}
+function glossaryFilter(){
+  const q=$("glQ"),v=q?q.value.trim().toLowerCase():"";let n=0;
+  document.querySelectorAll("#glList .glossary-item").forEach(x=>{const on=!v||x.dataset.gl.includes(v);x.hidden=!on;n+=on});
+  const e=$("glEmpty");if(e)e.hidden=!!n;
+}
 function showGlossary(focus){
   Modal.open("名词解释",`<div class="gl-top"><label class="qb-search">${icon("search")}<input class="input" id="glQ" type="search" placeholder="搜索名词、专业说法或解释"></label>
       <span class="faint">页面上带虚线下划线的词，点一下就能跳到这里</span></div>
-    <div class="glossary" id="glList">${Object.entries(TERMS).map(([k,t])=>`<div class="glossary-item" id="gl-${esc(k)}" data-gl="${esc((t.name+" "+t.tech+" "+t.desc).toLowerCase())}"><div><div class="glossary-name">${esc(t.name)}</div>
-      <div class="glossary-tech">${esc(t.tech)}</div></div><div class="glossary-desc">${esc(t.desc)}</div></div>`).join("")}</div>
+    <div class="glossary" id="glList">${glossaryItems()}</div>
     <div class="gl-empty" id="glEmpty" hidden>${emptyState("没有找到这个词","换个说法试试",{iconName:"search",inline:true})}</div>`,{wide:true});
-  const q=$("glQ");
-  q.addEventListener("input",()=>{const v=q.value.trim().toLowerCase();let n=0;
-    document.querySelectorAll("#glList .glossary-item").forEach(x=>{const on=!v||x.dataset.gl.includes(v);x.hidden=!on;n+=on});$("glEmpty").hidden=!!n});
+  GL.open=true;Modal.onClose=()=>{GL.open=false};
+  $("glQ").addEventListener("input",glossaryFilter);
   if(focus&&TERMS[focus]){const it=$("gl-"+focus);if(it){it.classList.add("is-hit");setTimeout(()=>it.scrollIntoView({block:"center"}),30)}}
-  else setTimeout(()=>q.focus(),30);
+  else setTimeout(()=>$("glQ").focus(),30);
+}
+/* 换了术语模式: 已经打开的名词解释按当前状态重画(保留搜索的字) */
+function refreshGlossary(){
+  const l=$("glList");if(!GL.open||!l)return;
+  l.innerHTML=glossaryItems();glossaryFilter();
+}
+/* 术语模式: 按钮和菜单项的状态; 页面和图表的重画在 setTermMode 里 */
+function applyTermUI(mode){
+  const pro=termModeOf(mode)==="pro";
+  document.documentElement.dataset.terms=pro?"pro":"plain";
+  document.querySelectorAll("#termsBtn").forEach(b=>b.setAttribute("aria-pressed",String(pro)));
+  document.querySelectorAll("[data-terms-toggle]").forEach(b=>b.setAttribute("title",pro?"现在是专业模式，点一下换回大白话":"现在是大白话模式，点一下换成专业词"));
+}
+/* 切换术语模式: 记下选择, 立即重画当前页面(其他页面下次进入时按新模式生成) */
+function setTermMode(mode,persist){
+  TERM_MODE=termModeOf(mode);
+  if(persist)LS.set(TERM_LS,TERM_MODE);
+  applyTermUI(TERM_MODE);
+  refreshGlossary();
+  if(VIEW==="models")mdRender();
+  return redrawVisible();
 }
 
 /* ============================================================
@@ -351,6 +459,7 @@ document.addEventListener("click",e=>{
   const nav=e.target.closest(".nav-item");if(nav&&nav.dataset.view){showView(nav.dataset.view);return}
   if(e.target.closest("[data-density-toggle]")){applyDensity(document.documentElement.dataset.density==="compact"?"normal":"compact",true);closeMenus();return}
   if(e.target.closest("[data-theme-toggle]")){toggleTheme(e);closeMenus();return}
+  if(e.target.closest("[data-terms-toggle],#termsBtn")){setTermMode(TERM_MODE==="pro"?"plain":"pro",true);closeMenus();return}
   const rt=e.target.closest(".bar-runs-toggle");
   if(rt){const bar=rt.closest(".bar"),on=!bar.classList.contains("show-runs");bar.classList.toggle("show-runs",on);rt.setAttribute("aria-expanded",String(on));return}
   if(e.target.closest(".menu .menu-item"))setTimeout(()=>closeMenus(),0);
@@ -1726,33 +1835,34 @@ function perfCtx(r){
 }
 /* 长输入并发这几项是整个长度阶梯的汇总: 阶梯的长度范围或同时请求数不同, 两次测试就不可比 */
 function ladderRef(m){const p=m.pcp,q=p&&p.points;return q&&q.length?`${q[0].label}–${q[q.length-1].label}、同时 ${p.conc} 个请求`:null}
+/* 指标的 label / sub 都是纯文本, 词按 key 写在 {…} 里, 由 termText 按当前术语模式换成大白话或专业词 */
 const PERF_METRICS=[
-  {key:"zh",label:()=>"单个请求生成速度 · 中文",term:"decode",unit:"token/秒",dir:1,val:m=>m.zh&&m.zh.decode_tps_med,
-    sub:m=>m.zh?`每次写 ${m.zh.out_tokens} token · 出字间隔 ${fmt(m.zh.itl_p50_ms_med)} 毫秒`:""},
-  {key:"en",label:()=>"单个请求生成速度 · 英文",term:"decode",unit:"token/秒",dir:1,val:m=>m.en&&m.en.decode_tps_med,
-    sub:m=>m.en?`每次写 ${m.en.out_tokens} token · 出字间隔 ${fmt(m.en.itl_p50_ms_med)} 毫秒`:""},
-  {key:"peak",label:()=>"最高总生成速度",term:"agg",unit:"token/秒",dir:1,val:m=>m.peak&&m.peak.agg_tps,
+  {key:"zh",label:()=>termText("单个请求{decode} · 中文"),term:"decode",unit:"token/秒",dir:1,val:m=>m.zh&&m.zh.decode_tps_med,
+    sub:m=>m.zh?termText(`每次写 ${m.zh.out_tokens} token · {!itl} ${fmt(m.zh.itl_p50_ms_med)} 毫秒`):""},
+  {key:"en",label:()=>termText("单个请求{decode} · 英文"),term:"decode",unit:"token/秒",dir:1,val:m=>m.en&&m.en.decode_tps_med,
+    sub:m=>m.en?termText(`每次写 ${m.en.out_tokens} token · {!itl} ${fmt(m.en.itl_p50_ms_med)} 毫秒`):""},
+  {key:"peak",label:()=>termText("最高{agg}"),term:"agg",unit:"token/秒",dir:1,val:m=>m.peak&&m.peak.agg_tps,
     sub:m=>m.peak?`同时 ${m.peak.conc} 个请求时${m.c1&&m.c1.agg_tps&&m.peak.conc!==m.c1.conc?`，是 1 个请求时的 ${fmt(m.peak.agg_tps/m.c1.agg_tps,1)} 倍`:""}`:""},
-  {key:"ttft",label:()=>"首字等待 · 请求最多时（较慢）",term:"ttft",unit:"秒",dir:-1,digits:2,val:m=>m.cLast&&m.cLast.ttft_p95_s,ref:m=>m.cLast&&m.cLast.conc,
-    sub:m=>m.cLast?`同时 ${m.cLast.conc} 个请求 · 一般 ${fmtSec(m.cLast.ttft_p50_s)} 秒`:""},
-  {key:"pmax",label:m=>`读入速度 · 输入 ${m.pLast?m.pLast.label:"最长"}`,term:"prefill",unit:"token/秒",dir:1,digits:0,val:m=>m.pLast&&m.pLast.prefill_tps_med,ref:m=>m.pLast&&m.pLast.label,
-    sub:m=>m.pLast?`首字等待 ${fmtSec(m.pLast.ttft_med_s)} 秒`:""},
-  {key:"mpre",label:m=>`长输入同时 ${m.pcp?m.pcp.conc:"多"} 个请求 · 平均读入速度`,term:"prefill",unit:"token/秒",dir:1,digits:0,val:m=>m.s&&m.s.prefill_avg,ref:ladderRef,
+  {key:"ttft",label:()=>termText("{ttft} · 请求最多时（{p95}）"),term:"ttft",unit:"秒",dir:-1,digits:2,val:m=>m.cLast&&m.cLast.ttft_p95_s,ref:m=>m.cLast&&m.cLast.conc,
+    sub:m=>m.cLast?termText(`同时 ${m.cLast.conc} 个请求 · {p50} ${fmtSec(m.cLast.ttft_p50_s)} 秒`):""},
+  {key:"pmax",label:m=>termText(`{prefill} · 输入 ${m.pLast?m.pLast.label:"最长"}`),term:"prefill",unit:"token/秒",dir:1,digits:0,val:m=>m.pLast&&m.pLast.prefill_tps_med,ref:m=>m.pLast&&m.pLast.label,
+    sub:m=>m.pLast?termText(`{ttft} ${fmtSec(m.pLast.ttft_med_s)} 秒`):""},
+  {key:"mpre",label:m=>termText(`长输入同时 ${m.pcp?m.pcp.conc:"多"} 个请求 · 平均{prefill}`),term:"prefill",unit:"token/秒",dir:1,digits:0,val:m=>m.s&&m.s.prefill_avg,ref:ladderRef,
     sub:m=>m.s?`范围 ${fmtInt(m.s.prefill_min)}–${fmtInt(m.s.prefill_max)}`:""},
-  {key:"mdec",label:m=>`长输入同时 ${m.pcp?m.pcp.conc:"多"} 个请求 · 平均总生成速度`,term:"agg",unit:"token/秒",dir:1,val:m=>m.s&&m.s.decode_avg,ref:ladderRef,
-    sub:m=>m.s?`单个请求一般 ${fmt(m.s.per_stream_decode_p50)} · 较慢 ${fmt(m.s.per_stream_decode_p95)}`:""},
+  {key:"mdec",label:m=>termText(`长输入同时 ${m.pcp?m.pcp.conc:"多"} 个请求 · 平均{agg}`),term:"agg",unit:"token/秒",dir:1,val:m=>m.s&&m.s.decode_avg,ref:ladderRef,
+    sub:m=>m.s?termText(`单个请求{p50} ${fmt(m.s.per_stream_decode_p50)} · {p95} ${fmt(m.s.per_stream_decode_p95)}`):""},
   {key:"succ",label:()=>"请求成功率",unit:"%",dir:1,val:m=>m.succ,sub:m=>m.fails?`失败 ${m.fails} 个`:"同时请求测试中全部成功"},
 ];
 const CMP_EXTRA=[
-  {key:"itl",label:()=>"出字间隔 · 英文（一般）",term:"itl",unit:"毫秒",dir:-1,val:m=>m.en&&m.en.itl_p50_ms_med},
-  {key:"burst",label:()=>"每次返回的 token 数 · 中文",term:"burst",unit:"个",dir:1,digits:2,val:m=>m.zh&&m.zh.spec_burst_med},
-  {key:"ttftmax",label:m=>`首字等待 · 输入 ${m.pLast?m.pLast.label:"最长"}`,term:"ttft",unit:"秒",dir:-1,digits:2,val:m=>m.pLast&&m.pLast.ttft_med_s,ref:m=>m.pLast&&m.pLast.label},
-  {key:"p50",label:()=>"长输入时单个请求生成速度（一般）",term:"per",unit:"token/秒",dir:1,val:m=>m.s&&m.s.per_stream_decode_p50,ref:ladderRef},
-  {key:"scnreq",label:()=>"模拟业务 · 每秒完成请求数",term:"rps",unit:"个/秒",dir:1,digits:2,val:m=>m.scnLast&&m.scnLast.req_s,ref:m=>m.scnLast&&m.scnLast.conc,
+  {key:"itl",label:()=>termText("{itl} · 英文（{p50}）"),term:"itl",unit:"毫秒",dir:-1,val:m=>m.en&&m.en.itl_p50_ms_med},
+  {key:"burst",label:()=>termText("{burst} · 中文"),term:"burst",unit:"个",dir:1,digits:2,val:m=>m.zh&&m.zh.spec_burst_med},
+  {key:"ttftmax",label:m=>termText(`{ttft} · 输入 ${m.pLast?m.pLast.label:"最长"}`),term:"ttft",unit:"秒",dir:-1,digits:2,val:m=>m.pLast&&m.pLast.ttft_med_s,ref:m=>m.pLast&&m.pLast.label},
+  {key:"p50",label:()=>termText("长输入时单个请求{decode}（{p50}）"),term:"per",unit:"token/秒",dir:1,val:m=>m.s&&m.s.per_stream_decode_p50,ref:ladderRef},
+  {key:"scnreq",label:()=>termText("模拟业务 · {rps}"),term:"rps",unit:"个/秒",dir:1,digits:2,val:m=>m.scnLast&&m.scnLast.req_s,ref:m=>m.scnLast&&m.scnLast.conc,
     sub:m=>m.scnLast?`同时 ${m.scnLast.conc} 个请求${m.jsonRate!=null?" · JSON 合格 "+fmt(m.jsonRate,0)+"%":""}`:""},
-  {key:"rps",label:()=>"回放真实请求 · 每秒完成请求数",term:"rps",unit:"个/秒",dir:1,digits:2,val:m=>m.rpLast&&m.rpLast.req_s,ref:m=>m.rpLast&&m.rpLast.conc,
+  {key:"rps",label:()=>termText("回放真实请求 · {rps}"),term:"rps",unit:"个/秒",dir:1,digits:2,val:m=>m.rpLast&&m.rpLast.req_s,ref:m=>m.rpLast&&m.rpLast.conc,
     sub:m=>m.rpLast?`同时 ${m.rpLast.conc} 个 · 最多积压 ${fmtInt(m.rpLast.max_inflight)} 个`:""},
-  {key:"inf",label:m=>`按固定速率发送 · 最多积压${m.olLast?"（"+m.olLast.rate+" 个/秒）":""}`,term:"inflight",unit:"个",dir:-1,digits:0,val:m=>m.olMax,ref:m=>m.olLast&&m.olLast.rate,
+  {key:"inf",label:m=>termText(`{open} · 最多积压${m.olLast?"（"+m.olLast.rate+" 个/秒）":""}`),term:"inflight",unit:"个",dir:-1,digits:0,val:m=>m.olMax,ref:m=>m.olLast&&m.olLast.rate,
     sub:m=>m.olLast?`实际完成 ${fmt(m.olLast.completed_rps,2)} / 目标 ${m.olLast.rate} 个/秒`:""},
 ];
 /* 两次测试的参照档位是否一致(例如"请求最多时"一个是 64 个、一个是 16 个就不可比) */
@@ -1797,7 +1907,7 @@ function perfAnomalies(r){
     for(let i=1;i<pts.length;i++){
       const p0=pts[i-1],p1=pts[i];
       if(p0.agg_tps>0&&p1.agg_tps<p0.agg_tps*0.95)
-        out.push(`同时请求从 ${p0.conc} 个加到 ${p1.conc} 个时，总生成速度不升反降（${fmt(p0.agg_tps)} → ${fmt(p1.agg_tps)} token/秒），说明服务已到上限或在排队`);
+        out.push(termText(`同时请求从 ${p0.conc} 个加到 ${p1.conc} 个时，{!agg}不升反降（${fmt(p0.agg_tps)} → ${fmt(p1.agg_tps)} token/秒），说明服务已到上限或在排队`));
     }
     const c1=pts.find(p=>p.conc===1),c2=pts.find(p=>p.conc>1);
     const dp=phase(r,"decode"),zh=dp&&dp.cases.find(c=>c.lang==="zh");
@@ -1822,14 +1932,14 @@ function perfConclusions(a,b){
   if(m.peak&&m.c1){
     const x=m.c1.agg_tps?m.peak.agg_tps/m.c1.agg_tps:null;
     const drop=m.cLast&&m.cLast.conc>m.peak.conc&&m.cLast.agg_tps<m.peak.agg_tps*0.95;
-    out.push({tone:drop?"warn":"info",html:`同时 <b>${m.peak.conc}</b> 个请求时${term("agg","总速度")}最高，每秒 <b>${fmtInt(m.peak.agg_tps)}</b> token${x&&m.peak.conc>1?`，是 1 个请求时的 <b>${fmt(x,1)}</b> 倍`:""}`+
-      (drop?`；再加到 ${m.cLast.conc} 个反而降到 ${fmtInt(m.cLast.agg_tps)}，${m.peak.conc} 个左右就是上限。`:"。")});
+    out.push({tone:drop?"warn":"info",html:termHtml(`同时 <b>${m.peak.conc}</b> 个请求时{agg|总速度}最高，每秒 <b>${fmtInt(m.peak.agg_tps)}</b> token${x&&m.peak.conc>1?`，是 1 个请求时的 <b>${fmt(x,1)}</b> 倍`:""}`+
+      (drop?`；再加到 ${m.cLast.conc} 个反而降到 ${fmtInt(m.cLast.agg_tps)}，${m.peak.conc} 个左右就是上限。`:"。"))});
   }
   const cps=concPoints(a);
   if(cps&&cps.length){
     const knee=cps.find(q=>q.ttft_p95_s!=null&&q.ttft_p95_s>SLOW_TTFT);
-    if(knee)out.push({tone:knee.ttft_p95_s>10?"bad":"warn",html:`从同时 <b>${knee.conc}</b> 个请求开始明显变慢：${term("ttft")}较慢时 <b>${fmtSec(knee.ttft_p95_s)}</b> 秒${m.cLast&&m.cLast.conc!==knee.conc?`，${m.cLast.conc} 个时 ${fmtSec(m.cLast.ttft_p95_s)} 秒`:""}。`});
-    else if(m.cLast&&m.cLast.ttft_p95_s!=null)out.push({tone:"good",html:`同时 ${m.cLast.conc} 个请求时，${term("ttft")}较慢也只要 <b>${fmtSec(m.cLast.ttft_p95_s)}</b> 秒，没有明显变慢。`});
+    if(knee)out.push({tone:knee.ttft_p95_s>10?"bad":"warn",html:termHtml(`从同时 <b>${knee.conc}</b> 个请求开始明显变慢：{ttft}{p95}时 <b>${fmtSec(knee.ttft_p95_s)}</b> 秒${m.cLast&&m.cLast.conc!==knee.conc?`，${m.cLast.conc} 个时 ${fmtSec(m.cLast.ttft_p95_s)} 秒`:""}。`)});
+    else if(m.cLast&&m.cLast.ttft_p95_s!=null)out.push({tone:"good",html:termHtml(`同时 ${m.cLast.conc} 个请求时，{ttft}{p95}也只要 <b>${fmtSec(m.cLast.ttft_p95_s)}</b> 秒，没有明显变慢。`)});
   }
   if(m.pLast&&m.pLast.ttft_med_s!=null){
     const t=m.pLast.ttft_med_s;
@@ -1856,7 +1966,7 @@ function perfMetaLine(r){
   return [esc(r.model||"?"),runFw(r)&&esc(runFw(r)),`${esc(SUITE_NAME[r.suite]||r.suite||"")}规模`,esc(hostOf(r.url)),`开始于 ${esc(timeText(r.started_utc))}`,
     r.tag&&`标签 ${esc(r.tag)}`,ov.fixed_output!=null&&(ov.fixed_output?`${term("fixed","每次生成满指定长度")}`:"输出长度不固定")].filter(Boolean).join(" · ");
 }
-function metricTip(k){return k.term&&TERMS[k.term]?TERMS[k.term].name+"（"+TERMS[k.term].tech+"）："+TERMS[k.term].desc:""}
+function metricTip(k){return k.term?termTip(k.term,true):""}
 /* 概览带的 4 个关键数字; 其余指标在页面末尾的「全部指标」表里 */
 const PERF_KEY_STATS=["zh","peak","ttftmax","succ"];
 function perfStats(a,b){
@@ -1866,7 +1976,7 @@ function perfStats(a,b){
     const va=safeVal(k.val,ma),vb=mb?safeVal(k.val,mb):null;
     const same=!mb||sameRef(k,ma,mb);
     const delta=!mb?"":same?deltaPill(vb,va,k.dir,{prefix:"比 B "}):`<span class="delta flat" title="A 是${esc(refText(k,ma))}，B 是${esc(refText(k,mb))}">档位不同</span>`;
-    let sub=key==="zh"?(ma.en?`英文 ${fmt(ma.en.decode_tps_med)} token/秒 · 出字间隔 ${fmt(ma.zh&&ma.zh.itl_p50_ms_med)} 毫秒`:esc(safeSub(k,ma))):esc(safeSub(k,ma));
+    let sub=key==="zh"?(ma.en?esc(termText(`英文 ${fmt(ma.en.decode_tps_med)} token/秒 · {!itl} ${fmt(ma.zh&&ma.zh.itl_p50_ms_med)} 毫秒`)):esc(safeSub(k,ma))):esc(safeSub(k,ma));
     if(key==="ttftmax"&&ma.pLast)sub=`${term("prefill")} ${fmtInt(ma.pLast.prefill_tps_med)} token/秒`;
     if(mb)sub+=`<br>B：${metricVal(k,vb)} ${esc(k.unit)}${same?"":`（${esc(refText(k,mb))}，不可比）`}`;
     return stat(esc(metricLabel(k,ma)),metricVal(k,va),esc(k.unit),{tip:metricTip(k),delta,sub});
@@ -1887,18 +1997,18 @@ function concPoints(r){const p=phase(r,"concurrency");return p&&p.points.length?
 function concSection(a,b,p){
   const runs=runSeries(a,b,concPoints);if(!runs.length)return "";
   const concs=[...new Set(runs.flatMap(x=>x.ph.map(q=>q.conc)))].sort((x,y)=>x-y);
-  const M=[{key:"agg",label:"总生成速度",unit:"token/秒",dir:1,get:q=>q.agg_tps},{key:"per",label:"单个请求速度",unit:"token/秒",dir:1,get:q=>q.per_stream_tps_med},
-    {key:"t50",label:"首字等待 一般",unit:"秒",dir:-1,type:"sec",get:q=>q.ttft_p50_s},{key:"t95",label:"首字等待 较慢",unit:"秒",dir:-1,type:"sec",get:q=>q.ttft_p95_s}];
-  const spec=perfTable(p+"-conc-t","同时请求明细",runs,concs,(x,c)=>x.ph.find(z=>z.conc===c),M,{keyLabel:"同时请求数",keyType:"int",
-    cols:[{key:"agg",label:"总生成速度",unit:"token/秒",type:"bar",color:C.a},{key:"per",label:"单个请求速度",unit:"token/秒",type:"num"},
-      {key:"t50",label:"首字等待 一般",unit:"秒",type:"sec"},{key:"t95",label:"首字等待 较慢",unit:"秒",type:"heat",digits:2,tip:"颜色越深等得越久"},
+  const M=[{key:"agg",label:termText("{agg}"),unit:"token/秒",dir:1,get:q=>q.agg_tps},{key:"per",label:termText("{per|单个请求速度}"),unit:"token/秒",dir:1,get:q=>q.per_stream_tps_med},
+    {key:"t50",label:termText("{ttft} {p50}"),unit:"秒",dir:-1,type:"sec",get:q=>q.ttft_p50_s},{key:"t95",label:termText("{ttft} {p95}"),unit:"秒",dir:-1,type:"sec",get:q=>q.ttft_p95_s}];
+  const spec=perfTable(p+"-conc-t","同时请求明细",runs,concs,(x,c)=>x.ph.find(z=>z.conc===c),M,{keyLabel:termText("{conc}"),keyType:"int",
+    cols:[{key:"agg",label:termText("{agg}"),unit:"token/秒",type:"bar",color:C.a},{key:"per",label:termText("{per|单个请求速度}"),unit:"token/秒",type:"num"},
+      {key:"t50",label:termText("{ttft} {p50}"),unit:"秒",type:"sec"},{key:"t95",label:termText("{ttft} {p95}"),unit:"秒",type:"heat",digits:2,tip:"颜色越深等得越久"},
       {key:"ok",label:"成功",type:"text"},{key:"rate",label:"成功率",unit:"%",type:"num"}],
     row:q=>({agg:q.agg_tps,per:q.per_stream_tps_med,t50:q.ttft_p50_s,t95:q.ttft_p95_s,ok:`${q.ok} / ${q.ok+q.fail}`,rate:q.ok+q.fail?100*q.ok/(q.ok+q.fail):null})});
   return panel({id:p+"-conc",title:"同时请求越多，会怎样",jump:"同时请求",
-    desc:`横轴是${term("conc")}。总速度通常先涨后平；每个请求分到的速度和${term("ttft")}会随之变差。虚线是 ${SLOW_TTFT} 秒：超过它用户会觉得慢`,
+    desc:termHtml(`横轴是{conc}。{!agg|总速度}通常先涨后平；每个请求分到的速度和{ttft}会随之变差。虚线是 ${SLOW_TTFT} 秒：超过它用户会觉得慢`),
     chart:`<div class="grid-3">${ccard(p+"ConcAgg",term("agg"),{desc:"所有请求加起来每秒写多少 token · 越高越好",h:240})}
       ${ccard(p+"ConcPer",term("per"),{desc:"每个请求分到的生成速度 · 越高越好",h:240})}
-      ${ccard(p+"ConcTtft",term("ttft")+"（较慢的情况）",{desc:"95% 的请求比这更快拿到第一个字 · 越短越好",h:240})}</div>`,
+      ${ccard(p+"ConcTtft",termHtml("{ttft}（{!p95|较慢的情况}）"),{desc:"95% 的请求比这更快拿到第一个字 · 越短越好",h:240})}</div>`,
     tables:[spec]});
 }
 function drawConc(a,b,p){
@@ -1907,11 +2017,11 @@ function drawConc(a,b,p){
   const get=(x,c,k)=>{const q=x.ph.find(z=>z.conc===c);return q&&q[k]!=null?q[k]:null};
   const ser=k=>runs.map(x=>({name:x.tag,color:x.color,data:concs.map(c=>get(x,c,k))}));
   const title=i=>`同时 ${concs[i]} 个请求`;
-  lineChart(p+"ConcAgg",{cats:concs.map(String),xName:"同时请求数",unit:"token/秒",series:ser("agg_tps"),area:true,
+  lineChart(p+"ConcAgg",{cats:concs.map(String),xName:termText("{conc}"),unit:"token/秒",series:ser("agg_tps"),area:true,
     tip:{title,sub:i=>runs.map(x=>{const q=x.ph.find(z=>z.conc===concs[i]);return q?`${x.tag} 成功 ${q.ok}/${q.ok+q.fail}`:""}).filter(Boolean).join(" · ")}});
-  lineChart(p+"ConcPer",{cats:concs.map(String),xName:"同时请求数",unit:"token/秒",series:ser("per_stream_tps_med"),tip:{title}});
-  lineChart(p+"ConcTtft",{cats:concs.map(String),xName:"同时请求数",unit:"秒",digits:2,series:ser("ttft_p95_s"),
-    tip:{title,sub:i=>runs.map(x=>`${x.tag} 一般 ${fmtSec(get(x,concs[i],"ttft_p50_s"))} 秒`).join(" · ")}});
+  lineChart(p+"ConcPer",{cats:concs.map(String),xName:termText("{conc}"),unit:"token/秒",series:ser("per_stream_tps_med"),tip:{title}});
+  lineChart(p+"ConcTtft",{cats:concs.map(String),xName:termText("{conc}"),unit:"秒",digits:2,series:ser("ttft_p95_s"),
+    tip:{title,sub:i=>runs.map(x=>termText(`${x.tag} {p50} ${fmtSec(get(x,concs[i],"ttft_p50_s"))} 秒`)).join(" · ")}});
   /* 标出最高总速度、3 秒线 */
   const agg=CHARTS.get(p+"ConcAgg");
   if(agg)agg.setOption({series:[{markPoint:{symbol:"circle",symbolSize:9,itemStyle:{color:C.a,borderColor:C.surface,borderWidth:2},
@@ -1930,11 +2040,11 @@ function lenLabels(runs,key="label"){
 function prefillSection(a,b,p){
   const runs=runSeries(a,b,prefillPoints);if(!runs.length)return "";
   const labels=lenLabels(runs);
-  const M=[{key:"tps",label:"读入速度",unit:"token/秒",dir:1,digits:0,get:q=>q.prefill_tps_med},{key:"ttft",label:"首字等待",unit:"秒",dir:-1,type:"sec",get:q=>q.ttft_med_s}];
+  const M=[{key:"tps",label:termText("{prefill}"),unit:"token/秒",dir:1,digits:0,get:q=>q.prefill_tps_med},{key:"ttft",label:termText("{ttft}"),unit:"秒",dir:-1,type:"sec",get:q=>q.ttft_med_s}];
   const spec=perfTable(p+"-prefill-t","输入长度明细",runs,labels,(x,l)=>x.ph.find(z=>z.label===l),M,{keyLabel:"输入长度",
-    cols:[{key:"tok",label:"实际 token 数",type:"int"},{key:"tps",label:"读入速度",unit:"token/秒",type:"bar",digits:0,color:C.a},{key:"ttft",label:"首字等待",unit:"秒",type:"heat",digits:2}],
+    cols:[{key:"tok",label:"实际 token 数",type:"int"},{key:"tps",label:termText("{prefill}"),unit:"token/秒",type:"bar",digits:0,color:C.a},{key:"ttft",label:termText("{ttft}"),unit:"秒",type:"heat",digits:2}],
     row:q=>({tok:q.in_tokens,tps:q.prefill_tps_med,ttft:q.ttft_med_s})});
-  return panel({id:p+"-prefill",title:"输入越长，要等多久",jump:"输入长度",desc:`只有 1 个请求时，不同输入长度下的${term("prefill")}和${term("ttft")}`,
+  return panel({id:p+"-prefill",title:"输入越长，要等多久",jump:"输入长度",desc:termHtml(`只有 1 个请求时，不同输入长度下的{prefill}和{ttft}`),
     chart:`<div class="grid-2">${ccard(p+"PreTps",term("prefill"),{desc:"每秒读入多少 token · 越高越好",h:240})}
       ${ccard(p+"PreTtft",term("ttft"),{desc:"输入越长通常要等越久 · 越短越好",h:240})}</div>`,tables:[spec]});
 }
@@ -1955,10 +2065,10 @@ function matrixSection(a,b,p){
   const pa=phase(a,"prefill_conc"),pb=b?phase(b,"prefill_conc"):null;
   if(!pa||!pa.points.length)return "";
   const runs=runSeries(a,b,matrixPhase),labels=lenLabels(runs);
-  const M=[{key:"ttft",label:"首字等待 平均",unit:"秒",dir:-1,digits:2,get:q=>q.ttft_avg_ms!=null?q.ttft_avg_ms/1000:null},
-    {key:"itl",label:"出字间隔 平均",unit:"毫秒",dir:-1,get:q=>q.itl_avg_ms},
-    {key:"pre",label:"总读入速度",unit:"token/秒",dir:1,digits:0,get:q=>q.prefill_tps_agg},{key:"dec",label:"总生成速度",unit:"token/秒",dir:1,get:q=>q.decode_tps_agg}];
-  const det=(x,who)=>x?`<b>${who}</b> 每个请求的读入速度：${(x.stream_prefill_tps||[]).map(v=>fmtInt(v)).join(" / ")} token/秒；每个请求的生成速度：${(x.stream_decode_tps||[]).map(v=>fmt(v)).join(" / ")} token/秒`:"";
+  const M=[{key:"ttft",label:termText("{ttft} 平均"),unit:"秒",dir:-1,digits:2,get:q=>q.ttft_avg_ms!=null?q.ttft_avg_ms/1000:null},
+    {key:"itl",label:termText("{itl} 平均"),unit:"毫秒",dir:-1,get:q=>q.itl_avg_ms},
+    {key:"pre",label:termText("{preagg}"),unit:"token/秒",dir:1,digits:0,get:q=>q.prefill_tps_agg},{key:"dec",label:termText("{agg}"),unit:"token/秒",dir:1,get:q=>q.decode_tps_agg}];
+  const det=(x,who)=>x?termHtml(`<b>${who}</b> 每个请求的{!prefill}：${(x.stream_prefill_tps||[]).map(v=>fmtInt(v)).join(" / ")} token/秒；每个请求的{!decode}：${(x.stream_decode_tps||[]).map(v=>fmt(v)).join(" / ")} token/秒`):"";
   let heat;
   if(runs.length>1){
     const rows=compareRows(labels,runs,(x,l)=>x.ph.find(z=>z.label===l),M);
@@ -1977,14 +2087,14 @@ function matrixSection(a,b,p){
   if(runs.length===1)detail.expand=r=>det(pa.points.find(z=>z.label===r._key),"A");
   const sums=[[pa.summary,"A",C.a],pb&&[pb.summary,"B",C.b]].filter(x=>x&&x[0]);
   const sum={id:p+"-matrix-s",title:"汇总",columns:[{key:"_tag",label:"测试",type:"tag"},
-      {key:"pmin",label:"读入速度 最低",unit:"token/秒",type:"int"},{key:"pmax",label:"最高",unit:"token/秒",type:"int"},{key:"pavg",label:"平均",unit:"token/秒",type:"int"},
-      {key:"dmin",label:"总生成速度 最低",unit:"token/秒",type:"num"},{key:"dmax",label:"最高",unit:"token/秒",type:"num"},{key:"davg",label:"平均",unit:"token/秒",type:"num"},
-      {key:"s50",label:"单个请求生成 一般",unit:"token/秒",type:"num"},{key:"s90",label:"较慢",unit:"token/秒",type:"num"},{key:"s95",label:"最慢",unit:"token/秒",type:"num"}],
+      {key:"pmin",label:termText("{prefill} 最低"),unit:"token/秒",type:"int"},{key:"pmax",label:"最高",unit:"token/秒",type:"int"},{key:"pavg",label:"平均",unit:"token/秒",type:"int"},
+      {key:"dmin",label:termText("{agg} 最低"),unit:"token/秒",type:"num"},{key:"dmax",label:"最高",unit:"token/秒",type:"num"},{key:"davg",label:"平均",unit:"token/秒",type:"num"},
+      {key:"s50",label:termText("单个请求{decode|生成} {p50}"),unit:"token/秒",type:"num"},{key:"s90",label:termText("{v90}"),unit:"token/秒",type:"num"},{key:"s95",label:termText("{v95}"),unit:"token/秒",type:"num"}],
     rows:sums.map(([s,t,c])=>({_tag:t,_color:c,pmin:s.prefill_min,pmax:s.prefill_max,pavg:s.prefill_avg,dmin:s.decode_min,dmax:s.decode_max,davg:s.decode_avg,
       s50:s.per_stream_decode_p50,s90:s.per_stream_decode_p90,s95:s.per_stream_decode_p95}))};
   const s=pa.summary;
   return panel({id:p+"-matrix",title:`长输入时同时 ${pa.conc||""} 个请求`,jump:"长输入并发",
-    desc:`每种输入长度下同时发 ${pa.conc||"多"} 个请求，看要等多久、总速度多少`+(s?`。平均${term("prefill")} <b>${fmtInt(s.prefill_avg)}</b>、平均${term("agg")} <b>${fmt(s.decode_avg)}</b> token/秒`:""),
+    desc:termHtml(`每种输入长度下同时发 ${pa.conc||"多"} 个请求，看要等多久、{!agg|总速度}多少`+(s?`。平均{prefill} <b>${fmtInt(s.prefill_avg)}</b>、平均{agg} <b>${fmt(s.decode_avg)}</b> token/秒`:"")),
     chart:`<div class="side-row">${dataTable(heat)}${ccard(p+"MxTtft",term("ttft")+"（平均）随输入长度变化",{desc:"越短越好",h:Math.max(240,labels.length*38+96)})}</div>`,
     tables:[detail,...(sums.length?[sum]:[])],tcols:1});
 }
@@ -2014,16 +2124,16 @@ function decodeRows(a,b){
 function decodeSection(a,b,p){
   const da=phase(a,"decode");if(!da)return "";
   const rows=decodeRows(a,b);if(!rows.length)return "";
-  const spec={id:p+"-decode-t",title:`${term("itl")}与${term("decode")}`,columns:[{key:"_key",label:"内容",type:"text",sticky:true},
-    {key:"tps",label:"生成速度",unit:"token/秒",type:"num"},{key:"best",label:"最快一次",unit:"token/秒",type:"num"},{key:"tpot",label:"平均每个 token",unit:"毫秒",type:"num",digits:2},
-    {key:"p50",label:"出字间隔 一般",unit:"毫秒",type:"num",group:"出字间隔"},{key:"p95",label:"较慢",unit:"毫秒",type:"num",group:"出字间隔"},{key:"p99",label:"最慢",unit:"毫秒",type:"num",group:"出字间隔"},
-    {key:"jit",label:"波动",unit:"毫秒",type:"num",tip:TERMS.jitter.desc},{key:"burst",label:"每次返回的 token",type:"num",digits:2,tip:TERMS.burst.desc},{key:"out",label:"每次写",unit:"token",type:"int"}],rows};
+  const spec={id:p+"-decode-t",title:termHtml("{itl}与{decode}"),columns:[{key:"_key",label:"内容",type:"text",sticky:true},
+    {key:"tps",label:termText("{decode}"),unit:"token/秒",type:"num"},{key:"best",label:"最快一次",unit:"token/秒",type:"num"},{key:"tpot",label:"平均每个 token",unit:"毫秒",type:"num",digits:2},
+    {key:"p50",label:termText("{itl} {p50}"),unit:"毫秒",type:"num",group:termText("{itl}")},{key:"p95",label:termText("{p95}"),unit:"毫秒",type:"num",group:termText("{itl}")},{key:"p99",label:termText("{p99}"),unit:"毫秒",type:"num",group:termText("{itl}")},
+    {key:"jit",label:termText("{jitter|波动}"),unit:"毫秒",type:"num",tip:TERMS.jitter.desc},{key:"burst",label:termText("{burst|每次返回的 token}"),type:"num",digits:2,tip:TERMS.burst.desc},{key:"out",label:"每次写",unit:"token",type:"int"}],rows};
   const sp=["zh","en"].map(l=>{const s2=decodeStats(da.cases.find(c=>c.lang===l));return s2?`${l==="zh"?"中文":"英文"} <b>${fmt(s2.tps)}</b>`:""}).filter(Boolean).join("、");
   return panel({id:p+"-decode",title:"单个请求写得多快、稳不稳",jump:"单个请求",
-    desc:`只有 1 个请求时每秒能写 ${sp} 个 token。${term("itl")}越短、越集中，看起来越流畅；${term("burst")}明显大于 1 通常表示开了投机解码`,
+    desc:termHtml(`只有 1 个请求时每秒能写 ${sp} 个 token。{itl}越短、越集中，看起来越流畅；{burst}明显大于 1 通常表示开了投机解码`),
     chart:`<div class="side-row">${dataTable({id:p+"-decode-c",title:"关键数字",columns:[spec.columns[0],spec.columns[1],
-        {key:"p50",label:"出字间隔 一般",unit:"毫秒",type:"num"},{key:"p95",label:"较慢",unit:"毫秒",type:"num"},{key:"p99",label:"最慢",unit:"毫秒",type:"num"},spec.columns[8]],rows})}
-      ${ccard(p+"DecItl",term("itl")+"的分布（毫秒）",{desc:"● 一般　┃ 较慢　○ 最慢 · 越靠左越快、越短越稳",h:Math.max(150,rows.length*40+56)})}</div>`,
+        {key:"p50",label:termText("{itl} {p50}"),unit:"毫秒",type:"num"},{key:"p95",label:termText("{p95}"),unit:"毫秒",type:"num"},{key:"p99",label:termText("{p99}"),unit:"毫秒",type:"num"},spec.columns[8]],rows})}
+      ${ccard(p+"DecItl",termHtml("{itl}的分布（毫秒）"),{desc:termHtml("● {p50}　┃ {p95}　○ {p99} · 越靠左越快、越短越稳"),h:Math.max(150,rows.length*40+56)})}</div>`,
     tables:[spec]});
 }
 /* 区间点图: 每行一条细线从"一般"到"最慢", 实心点 = 一般, 竖线 = 较慢, 空心点 = 最慢 */
@@ -2034,7 +2144,7 @@ function rangeChart(id,rows,unit){
     grid:{left:4,right:30,top:26,bottom:4,containLabel:true},
     xAxis:axisValue({name:unit,min:0}),yAxis:axisCat(rows.map(r=>r._key),{inverse:true,labelColor:C.text2}),
     tooltip:Object.assign(baseOption().tooltip,{trigger:"item",formatter:q=>{const r=rows[q.dataIndex];
-      return tt(r._key,[[r._color,"一般",fmt(r.p50)+" "+unit],[r._color,"较慢",fmt(r.p95)+" "+unit],[r._color,"最慢",fmt(r.p99)+" "+unit]])}}),
+      return tt(r._key,[[r._color,termText("{p50}"),fmt(r.p50)+" "+unit],[r._color,termText("{p95}"),fmt(r.p95)+" "+unit],[r._color,termText("{p99}"),fmt(r.p99)+" "+unit]])}}),
     series:[{type:"custom",data:rows.map((r,i)=>[i,r.p50,r.p95,r.p99]),encode:{x:[1,2,3],y:0},
       renderItem:(params,api)=>{
         const i=api.value(0),r=rows[i],c=r._color||C.a;
@@ -2052,8 +2162,8 @@ function drawDecode(a,b,p){rangeChart(p+"DecItl",decodeRows(a,b),"毫秒")}
 /* ---------- 旧版测试的长上下文阶段 ---------- */
 function longctxSection(a,b,p){
   const pa=phase(a,"longctx");if(!pa||!pa.points||!pa.points.length)return "";
-  const spec={id:p+"-longctx-t",title:"超长输入（旧版）",columns:[{key:"tok",label:"输入 token",type:"int",sticky:true},{key:"ttft",label:"首字等待",unit:"秒",type:"sec"},
-    {key:"pre",label:"读入速度",unit:"token/秒",type:"int"},{key:"dec",label:"生成速度",unit:"token/秒",type:"num"},{key:"i50",label:"出字间隔 一般",unit:"毫秒",type:"num"},{key:"i95",label:"较慢",unit:"毫秒",type:"num"}],
+  const spec={id:p+"-longctx-t",title:"超长输入（旧版）",columns:[{key:"tok",label:"输入 token",type:"int",sticky:true},{key:"ttft",label:termText("{ttft}"),unit:"秒",type:"sec"},
+    {key:"pre",label:termText("{prefill}"),unit:"token/秒",type:"int"},{key:"dec",label:termText("{decode}"),unit:"token/秒",type:"num"},{key:"i50",label:termText("{itl} {p50}"),unit:"毫秒",type:"num"},{key:"i95",label:termText("{p95}"),unit:"毫秒",type:"num"}],
     rows:pa.points.map(q=>({tok:q.in_tokens,ttft:q.ttft_s,pre:q.prefill_tps,dec:q.decode_tps,i50:q.itl_p50_ms,i95:q.itl_p95_ms}))};
   if(pa.points.length<3)return panel({id:p+"-longctx",title:"超长输入（旧版测试项）",jump:"超长输入",desc:"早期版本的长上下文测试结果，数据点太少，直接列出",tables:[spec]});
   return panel({id:p+"-longctx",title:"超长输入（旧版测试项）",jump:"超长输入",desc:"早期版本的长上下文测试结果",
@@ -2092,8 +2202,8 @@ function scnSection(a,b,p){
   const phs=scnPhases(a);if(!phs.length)return "";
   const nameOf=ph=>(ph.task&&ph.task.label)||SCN_LABEL[(ph.id||"").slice(4)]||ph.id;
   const jsonRate=ph=>{const ok=(ph.points||[]).reduce((s,q)=>s+(q.json_ok||0),0),t=(ph.points||[]).reduce((s,q)=>s+(q.json_total||0),0);return t?100*ok/t:null};
-  const M=[{key:"rps",label:"每秒完成请求数",unit:"个/秒",dir:1,digits:2,get:q=>q.req_s},{key:"t95",label:"首字等待 较慢",unit:"秒",dir:-1,type:"sec",get:q=>q.ttft_p95_s},
-    {key:"e95",label:"完整响应 较慢",unit:"秒",dir:-1,type:"sec",get:q=>q.e2e_p95_s}];
+  const M=[{key:"rps",label:termText("{rps}"),unit:"个/秒",dir:1,digits:2,get:q=>q.req_s},{key:"t95",label:termText("{ttft} {p95}"),unit:"秒",dir:-1,type:"sec",get:q=>q.ttft_p95_s},
+    {key:"e95",label:termText("{e2e|完整响应} {p95}"),unit:"秒",dir:-1,type:"sec",get:q=>q.e2e_p95_s}];
   let summary;
   if(b){
     const runs=[{tag:"A",r:a},{tag:"B",r:b}];
@@ -2101,7 +2211,7 @@ function scnSection(a,b,p){
       rows:compareRows(phs.map(ph=>ph.id),runs,(x,pid)=>{const ph=(x.r.phases||[]).find(z=>z.id===pid);return ph?scnLast(ph):null},M).map(r=>Object.assign(r,{_key:nameOf(phs.find(ph=>ph.id===r._key))}))};
   }else{
     summary={id:p+"-scn-sum",title:"各场景汇总（各自最高一档）",columns:[{key:"name",label:"场景",type:"text",sticky:true},{key:"at",label:"测到",type:"text"},
-      {key:"rps",label:"每秒完成请求数",unit:"个/秒",type:"bar",digits:2,color:C.a},{key:"t95",label:"首字等待 较慢",unit:"秒",type:"sec"},{key:"e95",label:"完整响应 较慢",unit:"秒",type:"sec"},
+      {key:"rps",label:termText("{rps}"),unit:"个/秒",type:"bar",digits:2,color:C.a},{key:"t95",label:termText("{ttft} {p95}"),unit:"秒",type:"sec"},{key:"e95",label:termText("{e2e|完整响应} {p95}"),unit:"秒",type:"sec"},
       {key:"out",label:"平均输出",unit:"token",type:"int"},{key:"succ",label:"成功率",unit:"%",type:"num"},{key:"json",label:"JSON 合格率",unit:"%",type:"num",digits:0}],
       rows:phs.map(ph=>{const q=scnLast(ph)||{};const isRag=ph.id==="scn_rag";
         return{name:nameOf(ph),at:isRag?(q.ctx_actual?`资料约 ${fmtInt(q.ctx_actual)} token（原来标 ${kLabel(q.ctx_tokens)}）`:`资料 ${fmtInt(q.ctx_tokens)} token`):`同时 ${q.conc} 个`,rps:q.req_s,t95:q.ttft_p95_s,e95:q.e2e_p95_s,out:q.out_tokens_avg,
@@ -2122,11 +2232,11 @@ function scnSection(a,b,p){
     const failNote=!f.total||f.ok===f.total?"":f.ok===0?alertBox("bad",`<b>${f.total} 个请求全部失败</b>${esc(f.why)}${esc(f.hint)}，所以下面的图没有数据。`)
       :alertBox("warn",`${f.fail} / ${f.total} 个请求失败${esc(f.why)}，图里只算成功的请求。`);
     charts.push(`<div class="scn-block"><div class="sub-h">${esc(nameOf(ph))}${desc?`<span class="sub-h-note">${esc(desc)}${tsLink}</span>`:""}</div>${failNote}
-      <div class="grid-2">${ccard(`${p}Scn${idx}Rps`,term("rps"),{desc:(isRag?"横轴是资料长度":"横轴是同时请求数")+" · 越高越好",h:220})}
-        ${ccard(`${p}Scn${idx}E2e`,term("e2e")+"（较慢的情况）",{desc:"95% 的请求比这更快拿到完整回答 · 越短越好",h:220})}</div></div>`);
-    details.push({id:`${p}-scn-${ph.id}`,title:esc(nameOf(ph)),sub:esc(desc),columns:[{key:"k",label:isRag?"资料长度":"同时请求数",unit:isRag?"token":"",type:"int",sticky:true},
-      ...(isRag?[{key:"inTok",label:"实际输入",unit:"token",type:"int"}]:[]),{key:"ok",label:"成功",type:"text"},{key:"rps",label:"每秒完成请求数",unit:"个/秒",type:"num",digits:2},...(pb?[{key:"rpsB",label:"B",unit:"个/秒",type:"num",digits:2}]:[]),
-      {key:"t95",label:"首字等待 较慢",unit:"秒",type:"sec"},{key:"e95",label:"完整响应 较慢",unit:"秒",type:"sec"},...(pb?[{key:"e95B",label:"B",unit:"秒",type:"sec"}]:[]),
+      <div class="grid-2">${ccard(`${p}Scn${idx}Rps`,term("rps"),{desc:termHtml((isRag?"横轴是资料长度":"横轴是{!conc}")+" · 越高越好"),h:220})}
+        ${ccard(`${p}Scn${idx}E2e`,termHtml("{e2e}（{!p95|较慢的情况}）"),{desc:"95% 的请求比这更快拿到完整回答 · 越短越好",h:220})}</div></div>`);
+    details.push({id:`${p}-scn-${ph.id}`,title:esc(nameOf(ph)),sub:esc(desc),columns:[{key:"k",label:isRag?"资料长度":termText("{conc}"),unit:isRag?"token":"",type:"int",sticky:true},
+      ...(isRag?[{key:"inTok",label:"实际输入",unit:"token",type:"int"}]:[]),{key:"ok",label:"成功",type:"text"},{key:"rps",label:termText("{rps}"),unit:"个/秒",type:"num",digits:2},...(pb?[{key:"rpsB",label:"B",unit:"个/秒",type:"num",digits:2}]:[]),
+      {key:"t95",label:termText("{ttft} {p95}"),unit:"秒",type:"sec"},{key:"e95",label:termText("{e2e|完整响应} {p95}"),unit:"秒",type:"sec"},...(pb?[{key:"e95B",label:"B",unit:"秒",type:"sec"}]:[]),
       {key:"out",label:"平均输出",unit:"token",type:"int"},{key:"inf",label:"最多积压",type:"int"},...(hasJson?[{key:"json",label:"JSON 合格",type:"text"}]:[]),{key:"note",label:"备注",type:"html"}],
       rows:(ph.points||[]).map(q=>{let z=pb?(pb.points||[]).find(x=>x[key]===q[key]):null;
         if(isRag&&z&&!ragPair(q,z))z=null;   /* 新旧算法的资料实际长度不同, 不比 */
@@ -2149,12 +2259,12 @@ function drawScn(a,b,p){
     const at=(x,k)=>x.pts.find(z=>z[key]===k);
     const get=(x,k,f)=>{const q=at(x,k);if(isRag&&x.tag==="B"&&q&&!ragPair(at(runs[0],k),q))return null;return q&&q[f]!=null?q[f]:null};
     const ref=k=>at(runs[0],k)||(runs[1]&&at(runs[1],k));
-    const cats=keys.map(k=>{if(!isRag)return String(k);const q=ref(k);return q&&q.ctx_actual?lenK(q.ctx_actual):kLabel(k)}),xName=isRag?"资料长度（token）":"同时请求数";
+    const cats=keys.map(k=>{if(!isRag)return String(k);const q=ref(k);return q&&q.ctx_actual?lenK(q.ctx_actual):kLabel(k)}),xName=isRag?"资料长度（token）":termText("{conc}");
     const title=i=>{if(!isRag)return `同时 ${keys[i]} 个请求`;const q=ref(keys[i]);
       return q&&q.ctx_actual?`资料约 ${fmtInt(q.ctx_actual)} token（原来标 ${kLabel(keys[i])}）`:`资料约 ${fmtInt(keys[i])} token`};
     lineChart(`${p}Scn${idx}Rps`,{cats,xName,unit:"个/秒",digits:2,series:runs.map(x=>({name:x.tag,color:x.color,data:keys.map(k=>get(x,k,"req_s"))})),area:true,tip:{title}});
     lineChart(`${p}Scn${idx}E2e`,{cats,xName,unit:"秒",digits:2,series:runs.map(x=>({name:x.tag,color:x.color,data:keys.map(k=>get(x,k,"e2e_p95_s"))})),
-      tip:{title,sub:i=>runs.map(x=>`${x.tag} 首字等待较慢 ${fmtSec(get(x,keys[i],"ttft_p95_s"))} 秒`).join(" · ")}});
+      tip:{title,sub:i=>runs.map(x=>termText(`${x.tag} {ttft}{p95} ${fmtSec(get(x,keys[i],"ttft_p95_s"))} 秒`)).join(" · ")}});
   });
 }
 
@@ -2165,26 +2275,26 @@ function replaySection(a,b,p){
   const charts=[],tables=[];
   if(pa){
     const pool=pa.pool||{};
-    tables.push({id:p+"-replay-c",title:term("closed"),sub:`请求池 ${fmtInt(pool.size)} 条${pool.wrapped?"（已循环使用）":""}`,columns:[{key:"conc",label:"同时请求数",type:"int",sticky:true},
-      {key:"rps",label:"每秒完成请求数",unit:"个/秒",type:"num",digits:2},...(pb?[{key:"rpsB",label:"B",unit:"个/秒",type:"num",digits:2}]:[]),
-      {key:"t95",label:"首字等待 较慢",unit:"秒",type:"sec"},{key:"e95",label:"完整响应 较慢",unit:"秒",type:"sec"},...(pb?[{key:"e95B",label:"B",unit:"秒",type:"sec"}]:[]),
+    tables.push({id:p+"-replay-c",title:term("closed"),sub:`请求池 ${fmtInt(pool.size)} 条${pool.wrapped?"（已循环使用）":""}`,columns:[{key:"conc",label:termText("{conc}"),type:"int",sticky:true},
+      {key:"rps",label:termText("{rps}"),unit:"个/秒",type:"num",digits:2},...(pb?[{key:"rpsB",label:"B",unit:"个/秒",type:"num",digits:2}]:[]),
+      {key:"t95",label:termText("{ttft} {p95}"),unit:"秒",type:"sec"},{key:"e95",label:termText("{e2e|完整响应} {p95}"),unit:"秒",type:"sec"},...(pb?[{key:"e95B",label:"B",unit:"秒",type:"sec"}]:[]),
       {key:"io",label:"平均输入 / 输出",unit:"token",type:"text"},{key:"inf",label:"最多积压",type:"int"},{key:"ok",label:"成功",type:"text"},{key:"note",label:"备注",type:"html"}],
       rows:pa.points.map(q=>{const z=pb?pb.points.find(x=>x.conc===q.conc):null;
         return{conc:q.conc,rps:q.req_s,rpsB:z&&z.req_s,t95:q.ttft_p95_s,e95:q.e2e_p95_s,e95B:z&&z.e2e_p95_s,io:`${fmtInt(q.prompt_tokens_avg)} / ${fmtInt(q.out_tokens_avg)}`,
           inf:q.max_inflight,ok:`${q.ok} / ${q.total}`,note:(retryTag(q)+(q.fail?` <span class="badge is-bad">失败 ${q.fail}</span>`:"")).trim()||"—"}})});
     charts.push(`<div class="scn-block"><div class="sub-h">${term("closed")}<span class="sub-h-note">请求池 ${fmtInt(pool.size)} 条${pool.wrapped?"（已循环使用，后面的请求可能因为重复内容复用而偏快）":""}${a.replay&&a.replay.file?" · "+esc(a.replay.file):""}</span></div>
-      <div class="grid-2">${ccard(p+"RpRps",term("rps"),{desc:"横轴是同时请求数 · 越高越好",h:220})}${ccard(p+"RpE2e",term("e2e")+"（较慢的情况）",{desc:"越短越好",h:220})}</div></div>`);
+      <div class="grid-2">${ccard(p+"RpRps",term("rps"),{desc:termHtml("横轴是{!conc} · 越高越好"),h:220})}${ccard(p+"RpE2e",termHtml("{e2e}（{!p95|较慢的情况}）"),{desc:"越短越好",h:220})}</div></div>`);
   }
   if(oa){
     tables.push({id:p+"-replay-o",title:term("open"),columns:[{key:"rate",label:"目标速率",unit:"个/秒",type:"num",sticky:true},{key:"sent",label:"发出",type:"int"},
       {key:"done",label:"实际完成",unit:"个/秒",type:"num",digits:2},...(ob?[{key:"doneB",label:"B",unit:"个/秒",type:"num",digits:2}]:[]),
-      {key:"lag",label:"跟得上吗",type:"status"},{key:"t95",label:"首字等待 较慢",unit:"秒",type:"sec"},{key:"e95",label:"完整响应 较慢",unit:"秒",type:"sec"},
+      {key:"lag",label:"跟得上吗",type:"status"},{key:"t95",label:termText("{ttft} {p95}"),unit:"秒",type:"sec"},{key:"e95",label:termText("{e2e|完整响应} {p95}"),unit:"秒",type:"sec"},
       {key:"inf",label:"最多积压",type:"int"},{key:"ok",label:"成功",type:"text"}],
       rows:oa.points.map(q=>{const z=ob?ob.points.find(x=>x.rate===q.rate):null,lag=q.completed_rps!=null&&q.rate&&q.completed_rps<q.rate*0.9;
         return{rate:q.rate,sent:q.sent,done:q.completed_rps,doneB:z&&z.completed_rps,lag:lag?{tone:"bad",text:"跟不上"}:{tone:"good",text:"跟得上"},
           t95:q.ttft_p95_s,e95:q.e2e_p95_s,inf:q.max_inflight,ok:`${q.ok} / ${q.total}`}})});
-    charts.push(`<div class="scn-block"><div class="sub-h">${term("open")}<span class="sub-h-note">按设定速率随机间隔地发请求；两次测试的发送时间点完全相同。${term("inflight")}一直往上涨，说明服务跟不上</span></div>
-      <div class="grid-2">${ccard(p+"OlInf",term("inflight")+"数量随时间变化",{desc:"横轴是开始后的秒数",h:240})}${ccard(p+"OlRate","目标速率 vs 实际完成速率",{desc:"实际明显低于目标说明处理不过来",h:240})}</div></div>`);
+    charts.push(`<div class="scn-block"><div class="sub-h">${term("open")}<span class="sub-h-note">按设定速率随机间隔地发请求；两次测试的发送时间点完全相同。${termHtml("{inflight}一直往上涨，说明服务跟不上")}</span></div>
+      <div class="grid-2">${ccard(p+"OlInf",termHtml("{inflight}数量随时间变化"),{desc:"横轴是开始后的秒数",h:240})}${ccard(p+"OlRate","目标速率 vs 实际完成速率",{desc:"实际明显低于目标说明处理不过来",h:240})}</div></div>`);
   }
   return panel({id:p+"-replay",title:"回放真实请求",jump:"真实回放",desc:"用线上导出的真实请求施压",chart:`<div class="scn-list">${charts.join("")}</div>`,tables,tcols:1});
 }
@@ -2194,8 +2304,8 @@ function drawReplay(a,b,p){
     const runs=[{tag:"A",color:C.a,pts:pa.points},pb?{tag:"B",color:C.b,pts:pb.points}:null].filter(Boolean);
     const concs=[...new Set(runs.flatMap(x=>x.pts.map(q=>q.conc)))].sort((x,y)=>x-y);
     const get=(x,c,k)=>{const q=x.pts.find(z=>z.conc===c);return q&&q[k]!=null?q[k]:null};
-    lineChart(p+"RpRps",{cats:concs.map(String),xName:"同时请求数",unit:"个/秒",digits:2,series:runs.map(x=>({name:x.tag,color:x.color,data:concs.map(c=>get(x,c,"req_s"))})),area:true});
-    lineChart(p+"RpE2e",{cats:concs.map(String),xName:"同时请求数",unit:"秒",digits:2,series:runs.map(x=>({name:x.tag,color:x.color,data:concs.map(c=>get(x,c,"e2e_p95_s"))}))});
+    lineChart(p+"RpRps",{cats:concs.map(String),xName:termText("{conc}"),unit:"个/秒",digits:2,series:runs.map(x=>({name:x.tag,color:x.color,data:concs.map(c=>get(x,c,"req_s"))})),area:true});
+    lineChart(p+"RpE2e",{cats:concs.map(String),xName:termText("{conc}"),unit:"秒",digits:2,series:runs.map(x=>({name:x.tag,color:x.color,data:concs.map(c=>get(x,c,"e2e_p95_s"))}))});
   }
   const oa=phase(a,"openloop"),ob=b?phase(b,"openloop"):null;
   if(oa){
@@ -2227,28 +2337,28 @@ function engineSummary(r){
   const pct=(k,v)=>v==null?null:(k==="gpu_cache_usage"&&v<=1.05?v*100:v);
   const stats=(k,f=v=>v)=>{const xs=s.map(m=>f(m[k])).filter(v=>v!=null&&isFinite(v));
     return xs.length?{avg:xs.reduce((p,q)=>p+q,0)/xs.length,min:Math.min(...xs),max:Math.max(...xs),n:xs.length}:null};
-  return [["显存缓存占用","%",stats("gpu_cache_usage",v=>pct("gpu_cache_usage",v))],["重复内容复用率","%",stats("prefix_cache_hit")],
-    ["处理中的请求","个",stats("requests_running")],["排队的请求","个",stats("requests_waiting")]].filter(x=>x[2]).map(([name,unit,v])=>({name,unit,...v}));
+  return [[termText("{kv}"),"%",stats("gpu_cache_usage",v=>pct("gpu_cache_usage",v))],[termText("{prefix}"),"%",stats("prefix_cache_hit")],
+    [termText("{inflight}"),"个",stats("requests_running")],["排队的请求","个",stats("requests_waiting")]].filter(x=>x[2]).map(([name,unit,v])=>({name,unit,...v}));
 }
 function engineSection(a,b,p){
   if(!metricsUsable(a).length)return "";
   const spec={id:p+"-engine-t",title:"服务端指标摘要（测试 A）",columns:[{key:"name",label:"指标",type:"text",sticky:true},{key:"unit",label:"单位",type:"text"},
     {key:"avg",label:"平均",type:"num"},{key:"min",label:"最低",type:"num"},{key:"max",label:"最高",type:"num"},{key:"n",label:"采样次数",type:"int"}],rows:engineSummary(a)};
-  return panel({id:p+"-engine",title:"服务端状态",jump:"服务端",desc:`测试期间服务端的${term("kv")}和${term("prefix")}（来自 vLLM /metrics）`,
-    chart:ccard(p+"Eng",term("kv")+" 与 "+term("prefix"),{desc:"显存缓存接近 100% 时新请求要排队；复用率越高越省时",h:220}),tables:[spec]});
+  return panel({id:p+"-engine",title:"服务端状态",jump:"服务端",desc:termHtml(`测试期间服务端的{kv}和{prefix}（来自 vLLM /metrics）`),
+    chart:ccard(p+"Eng",term("kv")+" 与 "+term("prefix"),{desc:termHtml("{!kv|显存缓存}接近 100% 时新请求要排队；{!prefix|复用率}越高越省时"),h:220}),tables:[spec]});
 }
 function drawEngine(a,b,p){
   const s=a.metrics_samples||[];if(!metricsUsable(a).length)return;
   const t0=s[0].t;
   const norm=(k,v)=>v==null?null:(k==="gpu_cache_usage"&&v<=1.05?v*100:v);
   const mk=(k,name,color)=>Object.assign(sLine(name,color,s.filter(m=>norm(k,m[k])!=null).map(m=>[Math.round(m.t-t0),norm(k,m[k]),m]),{dots:false,area:k==="gpu_cache_usage"}),{symbolSize:0});
-  setChart(p+"Eng",baseOption({color:[C.a,C.b],legend:legendOf(["显存缓存占用","重复内容复用率"]),
+  setChart(p+"Eng",baseOption({color:[C.a,C.b],legend:legendOf([termText("{kv}"),termText("{prefix}")]),
     grid:{left:4,right:16,top:44,bottom:26,containLabel:true},
     xAxis:Object.assign(axisValue({fmt:v=>(s[s.length-1].t-t0)>120?`${Math.floor(v/60)}:${pad2(Math.round(v%60))}`:v+" 秒"}),{name:(s[s.length-1].t-t0)>120?"测试开始后（分:秒）":"测试开始后",nameLocation:"middle",nameGap:26,axisLine:{show:true,lineStyle:{color:C.axis}},splitLine:{show:false}}),
     yAxis:axisValue({name:"%",max:100}),
     tooltip:Object.assign(baseOption().tooltip,{formatter:ps=>{const m=ps[0].data[2]||{};
       return tt(`开始后 ${Math.round(ps[0].value[0])} 秒`,ps.map(q=>[q.color,q.seriesName,fmt(q.value[1])+"%"]),`处理中 ${fmtInt(m.requests_running||0)} 个 · 排队 ${fmtInt(m.requests_waiting||0)} 个`)}}),
-    series:[mk("gpu_cache_usage","显存缓存占用",C.a),mk("prefix_cache_hit","重复内容复用率",C.b)]}));
+    series:[mk("gpu_cache_usage",termText("{kv}"),C.a),mk("prefix_cache_hit",termText("{prefix}"),C.b)]}));
 }
 
 /* ---------- 全部指标: 概览带里没放下的都在这里 ---------- */
@@ -2540,7 +2650,7 @@ function iqVersionWarning(r){
 }
 function iqIssues(r){
   const o=r.overall||{},out=[];
-  if(o.truncated)out.push(`${o.truncated} 题没答完`);
+  if(o.truncated)out.push(termText(`${o.truncated} 题{trunc}`));
   if(o.errors)out.push(`${o.errors} 题请求失败`);
   return out;
 }
@@ -2587,13 +2697,13 @@ function iqSubjSpecs(series){
   const rows=iqSubjRows(series),multi=series.length>1;
   const accCol=(s,i)=>({key:"acc_"+i,label:multi?s.tag:"正确率",unit:multi?"":"%",group:multi?"正确率（%）":"",type:"bar",color:s.color,max:100});
   const compact={id:"iq-subj-c",title:"科目排行",columns:[{key:"name",label:"科目",type:"text",sticky:true},...series.map(accCol),
-      ...(multi?series.slice(1).map((s,i)=>({key:"sig_"+(i+1),label:`A 与 ${s.tag}`,group:"差异是否可信",type:"status",tip:TERMS.sig.desc})):[{key:"ci",label:"误差范围",unit:"%",type:"text",align:"right",tip:TERMS.ci.desc}]),
+      ...(multi?series.slice(1).map((s,i)=>({key:"sig_"+(i+1),label:`A 与 ${s.tag}`,group:termText("{sig|差异是否可信}"),type:"status",tip:TERMS.sig.desc})):[{key:"ci",label:termText("{ci}"),unit:"%",type:"text",align:"right",tip:TERMS.ci.desc}]),
       {key:"n",label:"题数",type:"int"},{key:"act",label:"",type:"html",noSort:true}],rows,search:false};
   const full={id:"iq-subj-t",title:"科目排行",columns:[{key:"name",label:"科目",type:"text",sticky:true},{key:"n",label:"题数",type:"int"},...series.map(accCol),
       ...(multi?series.slice(1).map((s,i)=>({key:"d_"+(i+1),label:`A 比 ${s.tag}`,group:"差距（百分点）",type:"num",fmt:ppText,sortValue:r=>r["d_"+(i+1)]})):[]),
-      ...(multi?series.slice(1).map((s,i)=>({key:"sig_"+(i+1),label:`A 与 ${s.tag}`,group:"差异是否可信",type:"status"})):[{key:"ci",label:"误差范围",unit:"%",type:"text",align:"right"},{key:"correct",label:"答对",type:"int"}]),
+      ...(multi?series.slice(1).map((s,i)=>({key:"sig_"+(i+1),label:`A 与 ${s.tag}`,group:termText("{sig|差异是否可信}"),type:"status"})):[{key:"ci",label:termText("{ci}"),unit:"%",type:"text",align:"right"},{key:"correct",label:"答对",type:"int"}]),
       ...series.map((s,i)=>({key:"tok_"+i,label:multi?s.tag:"每题 token",group:multi?"平均每题输出 token":"",type:"int",tip:"平均每题输出多少 token，越少越省"})),
-      {key:"trunc",label:"没答完",type:"int"},{key:"err",label:"请求失败",type:"int"},{key:"act",label:"",type:"html",noSort:true}],rows};
+      {key:"trunc",label:termText("{trunc}"),type:"int"},{key:"err",label:"请求失败",type:"int"},{key:"act",label:"",type:"html",noSort:true}],rows};
   return{compact,full};
 }
 function _renderIq(){
@@ -2622,7 +2732,7 @@ function _renderIq(){
   const mismatch=series.slice(1).filter(s=>s.r.bank_id!==a.bank_id);
   const pkey=r=>JSON.stringify([r.params&&r.params.subject_ids||null,r.params&&r.params.limit_per_subject||null]);
   const pdiff=series.slice(1).filter(s=>s.r.bank_id===a.bank_id&&pkey(s.r)!==pkey(a));
-  if(pdiff.length)alerts+=alertBox("warn",`题量设置不一样：${pdiff.map(s=>esc(s.tag)).join("、")} 和 A 选的科目或每科题数不同，总分覆盖的题不同，请以各科成绩和“差异是否可信”为准`);
+  if(pdiff.length)alerts+=alertBox("warn",termHtml(`题量设置不一样：${pdiff.map(s=>esc(s.tag)).join("、")} 和 A 选的科目或每科题数不同，总分覆盖的题不同，请以各科成绩和“{!sig|差异是否可信}”为准`));
   if(mismatch.length)alerts+=alertBox("warn",`题集版本不一样：${mismatch.map(s=>esc(s.tag+"（"+s.r.bank_id+"）")).join("、")} 和 A（${esc(a.bank_id)}）用的不是同一套题，分数不能直接比`);
   /* ---- 结论 ---- */
   const subs=[...(a.subjects||[])].filter(x=>x.n);
@@ -2652,7 +2762,7 @@ function _renderIq(){
   const {compact,full}=iqSubjSpecs(series);
   const barH=Math.max(260,subs.length*(series.length*16+14)+70);
   const subjTab=CTAB.subj==="radar"?"radar":"bars";
-  const chartTabs=`<div class="ccard" data-ctab-card="subj"><div class="ccard-head"><div><h3 class="ccard-title">各科正确率</h3><p class="ccard-desc">越高越好 · 点柱子看这一科的题${series.length===1?" · 横线是"+term("ci"):""}</p></div>
+  const chartTabs=`<div class="ccard" data-ctab-card="subj"><div class="ccard-head"><div><h3 class="ccard-title">各科正确率</h3><p class="ccard-desc">越高越好 · 点柱子看这一科的题${series.length===1?termHtml(" · 横线是{ci}"):""}</p></div>
       ${segHTML("data-ctab",subjTab,[["bars","条形"],["radar","能力形状"]])}</div>
     <div class="chart" id="iqBars" data-ctab-pane="bars" style="height:${barH}px" role="img" aria-label="各科正确率"${subjTab==="bars"?"":" hidden"}></div>
     <div class="chart" id="iqRadar" data-ctab-pane="radar" style="height:${Math.min(460,Math.max(340,barH))}px" role="img" aria-label="能力形状"${subjTab==="radar"?"":" hidden"}></div></div>`;
@@ -2667,7 +2777,7 @@ function _renderIq(){
   const hasMmlu=subs.some(x=>/^mmlu/.test(x.id));
   el.innerHTML=overview(concl,stats,{meta:`题集 ${esc(a.bank_id||"")} · ${esc(budgetText(a))} · 开始于 ${esc(timeText(a.started_utc))}`})+
     (alerts?`<div class="notes">${alerts}</div>`:"")+
-    panel({id:"iq-subj",title:"各科得分",jump:"各科得分",desc:series.length>1?"按 A 的成绩从高到低排列；「差异是否可信」按同一批题逐题比较（McNemar 检验）":"按成绩从高到低排列；点「看错题」直接跳到下面这一科答错的题",
+    panel({id:"iq-subj",title:"各科得分",jump:"各科得分",desc:termHtml(series.length>1?"按 A 的成绩从高到低排列；「{!sig|差异是否可信}」按同一批题逐题比较（{!sigtest}）":"按成绩从高到低排列；点「看错题」直接跳到下面这一科答错的题"),
       chart:`<div class="side-row">${dataTable(compact)}${chartTabs}</div>`,tables:[full]})+
     (hasMmlu?panel({id:"iq-mmlu",title:"MMLU 各学科",jump:"MMLU 学科",desc:"只有 MMLU 在题库里记了每道题属于哪个学科，这里把它的四个分组展开到 53 个具体学科（每个学科题数不多，正确率仅供参考）。ARC、GSM8K、MATH-500、HellaSwag、C-Eval、指令遵循没有更细的分类，它们的正确率就是上面「科目排行」里的那一行",
       tables:[`<div id="iqMmlu"><div class="qb-loading faint">正在按学科统计…</div></div>`]}):"")+
@@ -2705,7 +2815,7 @@ function drawIqCharts(series){
   /* 各科正确率: 横向柱; 只看 A 时加误差范围 */
   const barSeries=series.map(s=>sBar(s.tag,s.color,subs.map(sub=>valOf(s,sub,x=>x.acc)),{horizontal:true,grouped:series.length>1}));
   if(series.length===1)barSeries[0].label={show:true,position:"insideLeft",color:"#fff",fontSize:11,fontWeight:600,formatter:p=>p.value>=12?fmt(p.value,1)+"%":""};
-  if(series.length===1)barSeries.push({type:"custom",name:"误差范围",z:10,silent:true,tooltip:{show:false},
+  if(series.length===1)barSeries.push({type:"custom",name:termText("{ci}"),z:10,silent:true,tooltip:{show:false},
     data:subs.map((x,i)=>[i,x.ci_lo,x.ci_hi]),encode:{x:[1,2],y:0},
     renderItem:(params,api)=>{
       const i=api.value(0),p1=api.coord([api.value(1),i]),p2=api.coord([api.value(2),i]),h=7,st={stroke:C.text2,lineWidth:1};
@@ -2719,7 +2829,7 @@ function drawIqCharts(series){
     tooltip:Object.assign(baseOption().tooltip,{axisPointer:{type:"shadow",shadowStyle:{color:"rgba(128,128,128,.08)"}},formatter:ps=>{
       const sub=subs[ps[0].dataIndex];
       return tt(sub.name,series.map(s=>{const x=(s.r.subjects||[]).find(y=>y.id===sub.id);
-        return [s.color,s.tag,x?`${fmt(x.acc,1)}%（${x.correct}/${x.n}）`:"—"]}),series.length===1?`误差范围 ${fmt(sub.ci_lo,1)}–${fmt(sub.ci_hi,1)}%`:"")}}),
+        return [s.color,s.tag,x?`${fmt(x.acc,1)}%（${x.correct}/${x.n}）`:"—"]}),series.length===1?termText(`{ci} ${fmt(sub.ci_lo,1)}–${fmt(sub.ci_hi,1)}%`):"")}}),
     series:barSeries}));
   if(barsInst){barsInst.off("click");barsInst.on("click",p=>{if(p.seriesType==="bar"&&subs[p.dataIndex])qbGo(subs[p.dataIndex].id,"all")})}
   /* 能力形状: 雷达(第二个标签) */
@@ -2893,7 +3003,7 @@ const MMLU_ZH={abstract_algebra:"抽象代数",anatomy:"解剖学",astronomy:"�
   professional_psychology:"专业心理学",public_relations:"公共关系",security_studies:"安全研究",sociology:"社会学",
   us_foreign_policy:"美国外交政策",virology:"病毒学",world_religions:"世界宗教"};
 const subTopic=s=>s?(MMLU_ZH[s]||String(s).replace(/_/g," ")):"";
-const QB_STATE={ok:["答对","good","check"],wrong:["答错","bad","x"],trunc:["没答完","warn","clock"],err:["请求失败","bad","alert"],none:["没做这题","","minus"]};
+const QB_STATE={ok:["答对","good","check"],wrong:["答错","bad","x"],get trunc(){return[termText("{trunc}"),"warn","clock"]},err:["请求失败","bad","alert"],none:["没做这题","","minus"]};
 const QB_SIZES=[6,12,24,48],QB_PREF=lsGet("llm-bench-pro-qb");
 const QB={key:"",main:"",data:null,loading:null,err:"",series:[],subj:"",filter:"all",vs:"",q:"",page:0,size:QB_SIZES.includes(QB_PREF.size)?QB_PREF.size:6};
 const qbKey=q=>q.sid+"|"+q.idx;
@@ -2966,7 +3076,7 @@ function qbRenderList(){
   const pass=(f,q)=>qbPass(f,recsA[qbKey(q)],recsX&&recsX[qbKey(q)]);
   const vsTag=(QB.series.find(s=>s.r.run_id===QB.vs)||{}).tag||"B";
   const A=QB.series.length>1?"A ":"";  /* 对照模式下注明指 A 的结果 */
-  const chips=[["all","全部"],["ok",A+"答对"],["bad",A+"没答对"],["trunc","其中没答完"],["err","其中请求失败"]]
+  const chips=[["all","全部"],["ok",A+"答对"],["bad",A+"没答对"],["trunc",termText("其中{trunc}")],["err","其中请求失败"]]
     .concat(recsX?[["vs-a","只有 A 答对"],["vs-b",`只有 ${vsTag} 答对`],["vs-none","都没答对"]]:[]);
   if(!chips.some(c=>c[0]===QB.filter))QB.filter="all";
   const cnt={};chips.forEach(([f])=>cnt[f]=scope.filter(q=>pass(f,q)).length);
@@ -3212,7 +3322,7 @@ function judgeValid(jb){if(!!jb.judge_base!==!!jb.judge_model){msg("genInfo","er
 function evalMethodText(ev){
   if(!ev)return"";
   const m=ev.method==="browser"?"在后台浏览器里实际运行检查":"只看代码（没找到 Chrome / Edge，结果仅供参考）";
-  return "检查方式："+m+(ev.judge_model?" + AI 看图打分（"+ev.judge_model+"）":"，没有配置 AI 看图打分");
+  return "检查方式："+m+(ev.judge_model?termText(" + {judge}")+"（"+ev.judge_model+"）":termText("，没有配置 {judge}"));
 }
 async function genStart(){
   const model=$("genModel").value.trim();
@@ -3364,7 +3474,7 @@ function tone2color(t){return t==="good"?C.goodMark:t==="bad"?C.badMark:t==="war
    下面「纯逻辑」一节的函数不碰页面(缩略图选哪张、谁更好、卡片上写什么、筛选与分页), tests/js/checks.js 有断言。
    ============================================================ */
 let GEN_SORT="default";
-const GEN_SORTS=[["default","按题目顺序"],["pass","检查通过项（少的在前）"],["lines","代码行数（多的在前）"],["tokens","输出 token（多的在前）"],["rounds","接着写的轮数（多的在前）"],["stars","人工星级（高的在前）"]];
+const genSorts=()=>[["default","按题目顺序"],["pass","检查通过项（少的在前）"],["lines","代码行数（多的在前）"],["tokens","输出 token（多的在前）"],["rounds",termText("{cont}的轮数（多的在前）")],["stars","人工星级（高的在前）"]];
 const GEN_LS="llm-bench-pro-gen-works";        /* 每页几件、上次看到第几页(同一个测试和筛选下刷新页面停在原处) */
 const GEN_PREF=lsGet(GEN_LS);
 const GW_SIZES=[12,24,48];
@@ -3400,7 +3510,7 @@ function genPickShot(it){
    3. 否则两边都有 AI 看图打分: 比 AI 分(差 5 分以内算差不多);
    4. 否则比检查通过的比例(6/6 比 4/6; 通过数一样就是差不多); 一边实际运行、一边只看了代码时检查方式不同, 不比。
    返回 {side: a | b | tie | none, basis: gen | stars | judge | checks, text: 一句话说明}; 有一边没有这道题返回 null。 */
-const GEN_WIN_RULE="怎么判断谁更好：有一边没生成出来，另一边更好；两边都有人工星级，比星级；否则两边都有 AI 看图打分，比 AI 分（差 5 分以内算差不多）；再否则比检查通过的比例。一边实际运行、一边只看了代码时，检查方式不同，不比。";
+const genWinRule=()=>termText("怎么判断谁更好：有一边没生成出来，另一边更好；两边都有人工星级，比星级；否则两边都有 {judge}，比打分（差 5 分以内算差不多）；再否则比检查通过的比例。一边{run|实际运行}、一边{static}时，检查方式不同，不比。");
 const GEN_JUDGE_TIE=5;
 function genWinner(ia,ib){
   if(!ia||!ib)return null;
@@ -3415,7 +3525,7 @@ function genWinner(ia,ib){
     return{side:Math.abs(d)<GEN_JUDGE_TIE?"tie":d>0?"a":"b",basis:"judge",text:`AI 打分 A ${fmt(ja,0)} 分，B ${fmt(jb,0)} 分`};
   }
   const ma=(ia.eval&&ia.eval.method)||"legacy",mb=(ib.eval&&ib.eval.method)||"legacy";
-  if(ma!==mb)return{side:"none",basis:"checks",text:"检查方式不同（一边实际运行，一边只看了代码），不比较"};
+  if(ma!==mb)return{side:"none",basis:"checks",text:termText("检查方式不同（一边{run|实际运行}，一边{static}），不比较")};
   if(!ia.total||!ib.total)return{side:"none",basis:"checks",text:"还没有检查结果"};
   const ra=ia.pass/ia.total,rb=ib.pass/ib.total,label=ma==="browser"?"运行检查":"代码关键词";
   return{side:Math.abs(ra-rb)<1e-9?"tie":ra>rb?"a":"b",basis:"checks",text:`${label}通过 A ${ia.pass}/${ia.total}，B ${ib.pass}/${ib.total}`};
@@ -3469,7 +3579,7 @@ function genCheckSegs(it){
   return[];
 }
 function genDataLine(it){
-  return[it.lines?`${fmtInt(it.lines)} 行`:"",it.continuations?`接着写 ${it.continuations} 轮`:"",it.out_tokens?`${fmtInt(it.out_tokens)} token`:""].filter(Boolean).join(" · ");
+  return[it.lines?`${fmtInt(it.lines)} 行`:"",it.continuations?termText(`{cont} ${it.continuations} 轮`):"",it.out_tokens?`${fmtInt(it.out_tokens)} token`:""].filter(Boolean).join(" · ");
 }
 
 /* 筛选: 状态标签 × 难度 × 名称搜索。row = {it, v, ib, vb, win} */
@@ -3560,7 +3670,7 @@ function genActionsHTML(run,it){
 function genCard(run,it,v,ctx,{tag="",inPair=false}={}){
   const info=genCardInfo(it,v,ctx),e=it.eval,j=e&&e.judge,sc=genScore(it),segs=genCheckSegs(it);
   const ref=`data-run="${esc(run.run_id)}" data-item="${esc(it.id)}"`;
-  const judge=j&&j.score!=null?`<span class="badge" title="AI 看图打分${j.stale?"（基于旧截图）":""}">${icon("sparkle")}<b class="score ${scoreCls(j.score)}">${fmt(j.score,0)}</b></span>`:(j&&j.error?`<span class="badge is-bad">打分失败</span>`:"");
+  const judge=j&&j.score!=null?`<span class="badge" title="${termText("{judge}")}${j.stale?"（基于旧截图）":""}">${icon("sparkle")}<b class="score ${scoreCls(j.score)}">${fmt(j.score,0)}</b></span>`:(j&&j.error?`<span class="badge is-bad">打分失败</span>`:"");
   const head=inPair
     ?`<header class="work-head"><span class="run-tag" style="background:${tag==="A"?C.a:C.b}">${tag}</span><span class="work-name" title="${esc(genLabel(run))}">${esc([run.model||"?",runFw(run)].filter(Boolean).join(" · "))}</span>${judge}</header>`
     :`<header class="work-head"><h3 class="work-name" title="${esc(it.name)}">${esc(it.name)}</h3><span class="badge">${esc(tierOf(it)||"—")}</span>${judge}</header>`;
@@ -3575,7 +3685,7 @@ function genCard(run,it,v,ctx,{tag="",inPair=false}={}){
 function genPairHead(a,b,it,ib,win){
   const cls=!ib?"flat":{a:"up",b:"down"}[win.side]||"flat",ic={up:"arrow-up",down:"arrow-down"}[cls]||"minus";
   const label=!ib?"B 没有这道题":genWinLabel(win);
-  const tip=GEN_WIN_RULE+(win?"\n\n这道题："+genWinLabel(win)+"（"+win.text+"）":"");
+  const tip=genWinRule()+(win?"\n\n这道题："+genWinLabel(win)+"（"+win.text+"）":"");
   const side=ib&&!ib.error&&!it.error&&it.file&&ib.file?`<button type="button" class="btn btn-ghost btn-sm pair-side" data-gen="compare" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}" aria-label="并排预览：${esc(it.name)}" title="A 和 B 两件作品并排运行">${icon("columns")}<span>并排预览</span></button>`:"";
   return `<div class="pair-head"><span class="delta ${cls} pair-win" title="${esc(tip)}">${icon(ic)}${esc(label)}</span><h3 class="pair-name" title="${esc(it.name)}">${esc(it.name)}</h3><span class="badge">${esc(tierOf(it)||"—")}</span><span class="pair-why">${esc(win?win.text:"")}</span>${side}</div>`;
 }
@@ -3610,7 +3720,7 @@ function genRenderWorks(opt={}){
   const act=document.activeElement,fo=act&&act.closest&&act.closest("#gwChips [data-gen-filter],#gwTiers [data-gen-tier]");
   const foSel=fo?(fo.dataset.genFilter!=null?`[data-gen-filter="${fo.dataset.genFilter}"]`:`[data-gen-tier="${fo.dataset.genTier}"]`):"";
   $("gwChips").innerHTML=statuses.map(([k,n])=>genChipHTML("data-gen-filter",k,n,cnt.by[k],k===GEN_FILTER)).join("")+
-    (wins.length?`<span class="qb-sep" aria-hidden="true"></span>`+wins.map(([k,n])=>genChipHTML("data-gen-filter",k,n,cnt.by[k],k===GEN_FILTER,GEN_WIN_RULE)).join(""):"");
+    (wins.length?`<span class="qb-sep" aria-hidden="true"></span>`+wins.map(([k,n])=>genChipHTML("data-gen-filter",k,n,cnt.by[k],k===GEN_FILTER,genWinRule())).join(""):"");
   $("gwTiers").innerHTML=[["all","全部"],...tiers.map(t=>[t,tagName(t)])].map(([t,n])=>genChipHTML("data-gen-tier",t,n,t==="all"?genFilterRows(rows,{status:st.status,q:st.q}).length:cnt.byTier[t],t===GEN_TIER)).join("");
   if(foSel){const c=document.querySelector("#gen-works "+foSel);if(c)c.focus({preventScroll:true})}
   /* 筛选 → 排序 → 分页 */
@@ -3692,11 +3802,11 @@ function renderGen(){
   const execLabel=s.mode==="static"?"只看代码的命中率":"实际运行检查通过率";
   let stats=stat("完成的作品",`${s.ok.length}<small>/ ${s.planned}</small>`,"",{sub:items.length-s.ok.length?`${items.length-s.ok.length} 题没生成出来`:"全部生成出来了"})+
     stat("全部检查通过",`${passN}<small>件</small>`,"",{sub:items.length?`占 ${fmt(100*passN/items.length,0)}%`:""})+
-    stat(s.mode==="static"?execLabel:term("run",execLabel),s.exec==null?"—":fmt(s.exec,1),s.exec==null?"":"%",
+    stat(s.mode==="static"?execLabel:termHtml("{run|实际运行检查}通过率"),s.exec==null?"—":fmt(s.exec,1),s.exec==null?"":"%",
       {sub:s.mode==="static"?`<span class="warn">${icon("alert","icon-sm")} 没有实际运行，仅供参考</span>`:s.mode==="mixed"?`只统计实际运行的 ${s.browserN} 件`:"打开、报错、白屏、动画和操作反应"});
   const missing=[];
   if(s.judge!=null)stats+=stat(term("judge"),fmt(s.judge,1),"/ 100",{sub:`${s.judgeN} 件有分${s.judgeErr?`，${s.judgeErr} 件打分失败`:""}${ev.judge_model?" · "+esc(ev.judge_model):""}`});
-  else missing.push(ev.judge_model?`${TERMS.judge.name}：都没打出分`:`没有配置${TERMS.judge.name}`);
+  else missing.push(ev.judge_model?termText("{judge}：都没打出分"):termText("没有配置{judge}"));
   if(s.stars!=null)stats+=stat("人工平均星级",fmt(s.stars,1),"/ 5",{sub:`已评 ${s.starN} 件`});
   else missing.push("还没有人工评分（在作品卡片或作品表里点星星）");
   const nStats=3+(s.judge!=null)+(s.stars!=null);
@@ -3713,7 +3823,7 @@ function renderGen(){
   else concl.push({tone:"good",html:`框架有没有改动模型写的代码：<b>${ck.raw||0}</b> 件原样保存，<b>${ck.trimmed||0}</b> 件只去掉了代码前后的说明文字或代码块标记${ck.stitched?`，<b>${ck.stitched}</b> 件拼接了接着写的内容`:""}${ck.rescued?`，<b>${ck.rescued}</b> 件思考失败后改为不思考重新生成`:""}。除此之外保存的作品和模型输出逐字一致。`});
   if(s.mode==="browser"||s.mode==="mixed"){
     const ctlN=items.filter(it=>it.eval&&it.eval.control&&it.eval.control.reproduced).length;
-    if(ctlN)concl.push({tone:"info",html:`报错的作品里有 <b>${ctlN}</b> 件在不加任何检测代码的干净环境里${term("control","重新运行")}也同样报错，确认是作品自身的 bug。`});
+    if(ctlN)concl.push({tone:"info",html:termHtml(`报错的作品里有 <b>${ctlN}</b> 件在不加任何检测代码的干净环境里{rerun}也同样报错，确认是作品自身的 bug。`)});
   }
   /* ---- 问题出在哪: 两个进度条清单 + 表格 ---- */
   const whyT={id:"gen-why-t",title:"作品情况（按最主要的问题归类）",columns:[{key:"name",label:"问题",type:"text",sticky:true},{key:"n",label:"件数",type:"int"},{key:"pct",label:"占比",unit:"%",type:"bar",color:C.text3,max:100,digits:0},
@@ -3734,7 +3844,7 @@ function renderGen(){
   GW.a=a;GW.b=b;GW.ctx=genRunCtx(s,ev,items);GW.ctxB=b?genRunCtx(genStats(b),b.eval||{},b.items||[]):null;
   genViewSync(a,b);
   GW.rows=genRows(a,b);
-  if(!GEN_SORTS.some(x=>x[0]===GEN_SORT))GEN_SORT="default";
+  if(!genSorts().some(x=>x[0]===GEN_SORT))GEN_SORT="default";
   const worksMode=panelMode("gen-works");
   const onlyB=b?(b.items||[]).filter(x=>!items.some(y=>y.id===x.id)).length:0;
   el.innerHTML=genStrip(a,s,ev,items)+overview(concl,stats,{cols:2,meta:`${esc(a.model||"")} · ${a.thinking?"思考模式":"不思考"} · ${esc(samplingTextGen(a))} · ${esc(evalMethodText(ev))} · 开始于 ${esc(timeText(a.started_utc))}`+
@@ -3753,7 +3863,7 @@ function renderGen(){
           <button type="button" class="btn btn-ghost btn-icon btn-sm" data-pv-export title="导出作品表与检查矩阵（CSV）" aria-label="导出作品表">${icon("download")}</button></div></div>
       <div class="work-tools">
         <div class="qb-bar"><label class="qb-search">${icon("search")}<input class="input" id="genSearch" type="search" placeholder="按名称搜索作品" value="${esc(GEN_Q)}" aria-label="按名称搜索作品" autocomplete="off"></label>
-          <label class="work-sort"><span>排序</span><select class="select" id="genSort">${GEN_SORTS.map(([k,n])=>`<option value="${k}" ${k===GEN_SORT?"selected":""}>${esc(n)}</option>`).join("")}</select></label></div>
+          <label class="work-sort"><span>排序</span><select class="select" id="genSort">${genSorts().map(([k,n])=>`<option value="${k}" ${k===GEN_SORT?"selected":""}>${esc(n)}</option>`).join("")}</select></label></div>
         <div class="qb-chiprow" id="gwChipRow"><div class="filter-chips gw-chips" id="gwChips" role="group" aria-label="按状态筛选"></div><div class="qb-pager-top" id="gwPagerTop"></div></div>
         <div class="work-tier-row"><span class="work-tier-label" id="gwTierLabel">难度</span><div class="filter-chips gw-chips" id="gwTiers" role="group" aria-labelledby="gwTierLabel"></div></div>
       </div>
@@ -3770,7 +3880,7 @@ function renderGen(){
 }
 function samplingTextGen(r){
   const sm=r.sampling;
-  if(!sm)return "随机性：旧版 T0.3";
+  if(!sm)return termText("{sampling}：旧版 T0.3");
   const first=r.thinking?sm.think:sm.plain;
   return (sm.mode==="official"?"官方推荐采样":sm.mode==="legacy"?"旧版低温 T0.3":"自定义采样")+(first&&first.temperature!=null?`（temperature ${first.temperature}）`:"");
 }
@@ -3805,8 +3915,8 @@ function genWorksTable(a,b,shown,ctx){
       ...(b?[{key:"statusB",label:"B 主要问题",type:"status",get:x=>{const y=x.ib;return y?vStatus(y):{tone:"neutral",text:"没有这题"}}},
         {key:"passB",label:"B 检查通过",type:"text",align:"right",get:x=>{const y=x.ib;return y&&y.total?`${y.pass}/${y.total}`:"—"},sortValue:x=>{const y=x.ib;return y&&y.total?y.pass/y.total:null}},
         {key:"dpass",label:"A 比 B 多过",unit:"项",type:"int",get:x=>{const y=x.ib;return y&&!y.error&&!x.it.error&&y.total&&x.it.total?x.it.pass-y.pass:null}},
-        {key:"win",label:"这道题谁更好",type:"text",get:x=>x.ib?genWinLabel(x.win):"B 没有这道题",sortValue:x=>x.win?WIN_RANK[x.win.side]:null,tip:GEN_WIN_RULE}]:[]),
-      {key:"lines",label:"行数",type:"int",get:x=>x.it.lines||null},{key:"rounds",label:"接着写",unit:"轮",type:"int",get:x=>x.it.continuations||0},
+        {key:"win",label:"这道题谁更好",type:"text",get:x=>x.ib?genWinLabel(x.win):"B 没有这道题",sortValue:x=>x.win?WIN_RANK[x.win.side]:null,tip:genWinRule()}]:[]),
+      {key:"lines",label:"行数",type:"int",get:x=>x.it.lines||null},{key:"rounds",label:termText("{cont}"),unit:"轮",type:"int",get:x=>x.it.continuations||0},
       {key:"tok",label:"输出",unit:"token",type:"int",get:x=>x.it.out_tokens||null},
       {key:"judge",label:"AI 分",type:"num",digits:0,get:x=>typeof x.it.judge_score==="number"?x.it.judge_score:null},
       {key:"stars",label:"人工星级",type:"html",get:x=>x.it.error?"—":starsHTML(a,x.it),sortValue:x=>x.it.stars||0,text:(v,x)=>x.it.stars?String(x.it.stars):""},
@@ -3979,7 +4089,7 @@ function previewCompare(it){
 /* 检查详情 / AI 打分 / 生成过程 三个标签 */
 function genDetail(r,it,tab){
   const e=it.eval;
-  const tabs=[e&&["checks","运行检查"],e&&["judge","AI 看图打分"],(it.trace||it.rounds)&&["trace","生成过程"]].filter(Boolean);
+  const tabs=[e&&["checks","运行检查"],e&&["judge",termText("{judge}")],(it.trace||it.rounds)&&["trace","生成过程"]].filter(Boolean);
   if(!tabs.length)return;
   if(!tabs.some(t=>t[0]===tab))tab=tabs[0][0];
   const v=genVerdict(it);
@@ -4011,7 +4121,7 @@ function checksPanel(it){
 }
 function judgePanel(it){
   const j=it.eval&&it.eval.judge;
-  if(!j)return `<p class="faint">没有配置 AI 看图打分。在「新建生成任务」里填写打分模型，再点「重新检查」。</p>`;
+  if(!j)return `<p class="faint">${termText("没有配置 {judge}。")}在「新建生成任务」里填写打分模型，再点「重新检查」。</p>`;
   if(j.error)return alertBox("warn",esc(j.error));
   return `<div class="row" style="align-items:baseline"><span class="score-big score ${scoreCls(j.score)}">${fmt(j.score,1)}</span><span class="faint">/ 100 · ${esc(j.model||"")}</span></div>
     ${j.stale?alertBox("info",j.kept_because?esc("这次打分没有替换原来的分数："+j.kept_because):"重新检查时没有配置打分模型，这是之前基于旧截图的分数。"):""}
@@ -5131,7 +5241,7 @@ function mdRunSummary(r){
   const s=(r&&r.summary)||{};
   if(r.kind==="perf"){
     const p=[];
-    if(s.peak_tps!=null)p.push(`最高总生成速度 ${fmt(s.peak_tps,1)} token/秒${s.peak_conc?`（同时 ${s.peak_conc} 个请求）`:""}`);
+    if(s.peak_tps!=null)p.push(termText(`最高{agg} ${fmt(s.peak_tps,1)} token/秒${s.peak_conc?`（同时 ${s.peak_conc} 个请求）`:""}`));
     if(s.decode_tps!=null)p.push(`单个请求 ${fmt(s.decode_tps,1)} token/秒`);
     if(s.scn)p.push(`模拟业务 ${s.scn} 类`);
     return p.join(" · ")||"没有速度数据";
@@ -5998,7 +6108,7 @@ function renderStyleguide(){
    导出报告(离线 HTML) / 打开离线报告
    ============================================================ */
 /* 导出: 当前页面(同一套界面)连同数据打包成一个 HTML 文件, 双击就能打开, 和这里看到的一样 */
-const EXPORT_LS=["llm-bench-pro-viewmode","llm-bench-pro-dt","llm-bench-pro-ctab","llm-bench-pro-qb","llm-bench-pro-gen-works","llm-bench-pro-density","llm-bench-pro-rail"];
+const EXPORT_LS=["llm-bench-pro-viewmode","llm-bench-pro-dt","llm-bench-pro-ctab","llm-bench-pro-qb","llm-bench-pro-gen-works","llm-bench-pro-density","llm-bench-pro-rail",TERM_LS];
 const PAGE_NAME={dash:"速度测试",cmp:"速度对比",iq:"能力测试",gen:"代码生成"};
 function exportSel(page){
   if(page==="dash")return[$("runA").value,[$("runB").value]];
@@ -6103,6 +6213,7 @@ applyTheme(document.documentElement.dataset.theme||"dark",false);
 applyRailPin(LS.get("llm-bench-pro-rail")==="1",false);
 document.querySelectorAll("[data-vm-page]").forEach(g=>g.querySelectorAll("[data-vm]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.vm===(VIEWMODE[g.dataset.vmPage]||"chart")))));
 applyDensity(LS.get("llm-bench-pro-density")==="compact"?"compact":"normal",false);
+applyTermUI(TERM_MODE);
 if(OFF)offlineInit();
 else{
   showView((location.hash||"#dash").slice(1));

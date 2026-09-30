@@ -18,7 +18,7 @@ JS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "js")
 
 
 def _run(cmd, timeout=90):
-    p = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    p = subprocess.run(cmd, capture_output=True, timeout=timeout, env=dict(os.environ, LLMB_ROOT=ROOT))   # checks.js 要读 web/index.html
     return p.returncode, (p.stdout or b"").decode("utf-8", "replace"), (p.stderr or b"").decode("utf-8", "replace")
 
 
