@@ -931,14 +931,16 @@ class TestRunIq(LangCase):
     def test_consecutive_failures_abort_message_is_stored_as_the_run_error(self):
         flow, doc, err = run_iq_doc(lambda m, p, b: (503, {"error": "unavailable"}, None), mk_bank(2, 20))
         self.assertIsInstance(err, RuntimeError)
-        want = re.compile(r"^Stopped after 10 consecutive failed requests \(latest error: HTTPError: HTTP Error 503: Service Unavailable \| .*\)\. "
+        # 并发 (conc=8) 下几个请求同时失败, 中止时的连续失败数可能比阈值 10 多一两个: 只要求不少于 10
+        want = re.compile(r"^Stopped after (\d+) consecutive failed requests \(latest error: HTTPError: HTTP Error 503: Service Unavailable \| .*\)\. "
                           r"Fix the endpoint and resume the run\.$")
         self.assertRegex(str(err), want)
+        self.assertGreaterEqual(int(want.match(str(err)).group(1)), 10)
         self.assertEqual(doc["status"], "failed")
-        self.assertRegex(doc["error"], r"^RuntimeError: Stopped after 10 consecutive failed requests")
+        self.assertRegex(doc["error"], r"^RuntimeError: Stopped after \d+ consecutive failed requests")
         flow.assert_clean(self, doc, keys=STORED_TEXT_KEYS)
         flow_zh, doc_zh, err = run_iq_doc(lambda m, p, b: (503, {"error": "unavailable"}, None), mk_bank(2, 20), lang="zh")
-        self.assertRegex(str(err), r"^连续 10 题请求失败，已中止（最近错误：HTTPError: HTTP Error 503: Service Unavailable \| .*）。修复端点后可续跑$")
+        self.assertRegex(str(err), r"^连续 \d+ 题请求失败，已中止（最近错误：HTTPError: HTTP Error 503: Service Unavailable \| .*）。修复端点后可续跑$")
         with i18n.use_lang("en"):                                                   # 单数: 现在走不到 (至少 10 题), 词条也要对
             self.assertEqual(i18n.tn("连续 {n} 题请求失败，已中止（最近错误：{error}）。修复端点后可续跑", 1, error="boom"),
                              "Stopped after 1 consecutive failed request (latest error: boom). Fix the endpoint and resume the run.")
