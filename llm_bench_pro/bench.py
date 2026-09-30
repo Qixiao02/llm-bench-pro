@@ -126,19 +126,19 @@ ERR_MAX = 320  # 失败记录里每条错误最多保留的字数: 状态码 + �
 
 def _error_brief(text, headers=None, limit=300):
     """服务端错误正文 -> 一行摘要: 去掉 HTML 标签和换行, 隐去请求里的密钥(有的网关会原样回显), 截取前 limit 字。"""
-    t = text or ""
-    if t.lstrip()[:1] == "<":
-        t = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", t)
-        t = re.sub(r"<[^>]+>", " ", t)
-    t = " ".join(t.split())
+    s = text or ""
+    if s.lstrip()[:1] == "<":
+        s = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", s)
+        s = re.sub(r"<[^>]+>", " ", s)
+    s = " ".join(s.split())
     for v in (headers or {}).values():
         v = str(v)
         secret = v.split(None, 1)[-1] if v[:7].lower() == "bearer " else v
         if len(secret) >= 8:
-            t = t.replace(secret, "***")
-    t = re.sub(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}", "Bearer ***", t)
-    t = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}", "sk-***", t)
-    return t[:limit]
+            s = s.replace(secret, "***")
+    s = re.sub(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}", "Bearer ***", s)
+    s = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}", "sk-***", s)
+    return s[:limit]
 
 
 def stream_call(url, payload, headers, timeout=900, apply_req_extra=True):
@@ -416,7 +416,7 @@ def phase_prefill(url, headers, model, ladder, out_tok, rep):
         })
         plog("  %-6s in=%-7d ttft=%6.2fs  prefill=%8.0f t/s" %
               (label, points[-1]["in_tokens"], points[-1]["ttft_med_s"] or 0, points[-1]["prefill_tps_med"] or 0))
-    out = {"id": "prefill", "name": "Prefill 阶梯", "points": points}
+    out = {"id": "prefill", "name": t("Prefill 阶梯", ctx="阶段名"), "points": points}
     if skipped:
         out["skipped"] = skipped
     return out
@@ -445,7 +445,7 @@ def phase_decode(url, headers, model, out_tok, rep):
         })
         plog("  %s  decode=%7.1f t/s  itl_p50=%6.1fms  burst=%.2f tok/chunk" %
               (lang, cases[-1]["decode_tps_med"] or 0, cases[-1]["itl_p50_ms_med"] or 0, cases[-1]["spec_burst_med"]))
-    return {"id": "decode", "name": "单流解码", "cases": cases}
+    return {"id": "decode", "name": t("单流解码", ctx="阶段名"), "cases": cases}
 
 
 def phase_concurrency(url, headers, model, conc_list, out_tok, per_conc):
@@ -495,7 +495,7 @@ def phase_concurrency(url, headers, model, conc_list, out_tok, per_conc):
         plog("  conc=%-3d ok/fail=%d/%d  agg=%8.1f t/s  per_stream=%7.1f  ttft_p95=%6.2fs" %
               (conc, ok, fail, points[-1]["agg_tps"], points[-1]["per_stream_tps_med"] or 0,
                points[-1]["ttft_p95_s"] or 0))
-    return {"id": "concurrency", "name": "并发阶梯", "points": points}
+    return {"id": "concurrency", "name": t("并发阶梯", ctx="阶段名"), "points": points}
 
 
 def phase_prefill_conc(url, headers, model, ladder, conc, out_tok, max_attempts=3, retry_pause_s=30.0):
@@ -585,7 +585,7 @@ def phase_prefill_conc(url, headers, model, ladder, conc, out_tok, max_attempts=
         "per_stream_decode_p90": round(pct(all_dec, 90), 1) if all_dec else None,
         "per_stream_decode_p95": round(pct(all_dec, 95), 1) if all_dec else None,
     }
-    out = {"id": "prefill_conc", "name": "提示词阶梯×并发", "conc": conc, "points": points, "summary": summary}
+    out = {"id": "prefill_conc", "name": t("提示词阶梯×并发", ctx="阶段名"), "conc": conc, "points": points, "summary": summary}
     if skipped:
         out["skipped"] = skipped
     return out
@@ -604,13 +604,13 @@ def phase_longctx(url, headers, model, ctx_tokens, out_tok, cal=None):
         if not why:
             raise
         plog(t("  超长输入 {label} 跳过: {reason}", label=label, reason=why))
-        return {"id": "longctx", "name": "长上下文驻留", "points": [],
+        return {"id": "longctx", "name": t("长上下文驻留", ctx="阶段名"), "points": [],
                 "skipped": [{"phase": "longctx", "label": label, "reason": why}]}
     d = derive(s)
     d.update(label=label, target_tokens=ctx_tokens)
     plog("  ctx=%-7d in=%d  ttft=%6.2fs  prefill=%7.0f t/s  decode=%6.1f t/s" %
          (ctx_tokens, d["in_tokens"], d["ttft_s"] or 0, d["prefill_tps"] or 0, d["decode_tps"] or 0))
-    return {"id": "longctx", "name": "长上下文驻留", "points": [d]}
+    return {"id": "longctx", "name": t("长上下文驻留", ctx="阶段名"), "points": [d]}
 
 
 # ---------------------------------------------------------------- 场景阶段: 任务模板 / 真实请求回放
@@ -739,23 +739,38 @@ VISION_PROMPTS = [
 ]
 
 SCN_TEMPLATES = {
-    "chat":   {"label": "对话问答", "validator": None},
-    "code":   {"label": "代码生成", "validator": None},
-    "json":   {"label": "结构化抽取", "validator": "json"},
-    "rag":    {"label": "RAG 问答", "validator": None},
-    "vision": {"label": "图片理解", "validator": None},
-    "custom": {"label": "自定义任务集", "validator": None},  # 合法率按行内 response_format 决定
+    "chat":   {"validator": None},
+    "code":   {"validator": None},
+    "json":   {"validator": "json"},
+    "rag":    {"validator": None},
+    "vision": {"validator": None},
+    "custom": {"validator": None},  # 合法率按行内 response_format 决定
 }
+
+# 场景的显示名 (存进结果的 task.label 和阶段名, 也用在日志里): 按调用时的语言翻译, 所以是函数, 不是模块级的文字
+_SCN_LABELS = {
+    "chat": lambda: t("对话问答", ctx="场景名"),
+    "code": lambda: t("代码生成", ctx="场景名"),
+    "json": lambda: t("结构化抽取", ctx="场景名"),
+    "rag": lambda: t("RAG 问答", ctx="场景名"),
+    "vision": lambda: t("图片理解", ctx="场景名"),
+    "custom": lambda: t("自定义任务集", ctx="场景名"),
+}
+
+
+def scenario_label(tpl_id):
+    """场景模板 id -> 显示名 (中文模式和以前的 SCN_TEMPLATES[id]["label"] 一样)。"""
+    return _SCN_LABELS[tpl_id]()
 
 
 def _json_text_ok(text, required=None):
     """输出能否解析为 JSON(容忍 ``` 围栏); required 非空时要求键齐全。"""
-    t = (text or "").strip()
-    if t.startswith("```"):
-        t = t.split("\n", 1)[1] if "\n" in t else ""
-        t = t.rsplit("```", 1)[0]
+    s = (text or "").strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else ""
+        s = s.rsplit("```", 1)[0]
     try:
-        obj = json.loads(t)
+        obj = json.loads(s)
     except Exception:
         return False
     return isinstance(obj, dict) and (not required or set(required) <= set(obj))
@@ -1027,7 +1042,8 @@ def phase_scenario(url, headers, model, tpl_id, cfg):
                  (conc, ("ctx=%-6d" % ctx) if ctx else "      ", rec["ok"], rec["total"], rec["req_s"],
                   rec["ttft_p95_s"] or 0, rec["e2e_p95_s"] or 0,
                   ("  json=%d/%d" % (rec["json_ok"], rec["json_total"])) if rec.get("json_total") else ""))
-    task = {"tpl": tpl_id, "label": tpl["label"], "validator": tpl["validator"],
+    scn_label = scenario_label(tpl_id)
+    task = {"tpl": tpl_id, "label": scn_label, "validator": tpl["validator"],
             "max_tokens": mt, "requests_per_worker": rpw}
     if tpl_id == "rag":
         task["rag_ctx"] = ctx_list
@@ -1043,7 +1059,7 @@ def phase_scenario(url, headers, model, tpl_id, cfg):
         ts = cfg.get("task_set")  # 用的是页面上导入的哪个任务集(任务集页面按它统计「用过几次」)
         if isinstance(ts, dict) and ts.get("id"):
             task["task_set"] = {"id": str(ts["id"]), "name": str(ts.get("name") or ts["id"])}
-    return {"id": "scn_" + tpl_id, "name": "场景 · " + tpl["label"], "points": points, "task": task}
+    return {"id": "scn_" + tpl_id, "name": t("场景 · {label}", ctx="阶段名", label=scn_label), "points": points, "task": task}
 
 
 # ---- 自定义任务集 / 回放文件的逐行检查: 测试时实际发送(ReplayPool)与上传时的检查报告共用同一个判断
@@ -1051,12 +1067,16 @@ TASK_MAX_PROMPT_TOKENS = 60000   # meta.prompt_tokens 超过它的行跳过(避�
 TASK_MT_DEFAULT = 4096           # 行内没写 max_tokens 时的默认值
 TASK_MT_CAP = 8192               # 行内 max_tokens 的上限
 TASK_ROLES = ("system", "user", "assistant", "tool", "developer", "function")
-_JSON_ERR_ZH = [("Expecting ',' delimiter", "缺少逗号，或者括号没有配对"), ("Expecting ':' delimiter", "缺少冒号"),
-                ("Expecting property name enclosed in double quotes", "键名要用英文双引号括起来，最后一项后面不能有逗号"),
-                ("Illegal trailing comma", "最后一项后面不能有逗号"),
-                ("Unterminated string", "字符串没有结束（缺少英文双引号）"), ("Invalid control character", "字符串里不能直接换行（要写成 \\n）"),
-                ("Extra data", "一行里只能放一个 JSON 对象"), ("Expecting value", "这里缺少值（可能多了逗号，或用了中文引号、单引号）"),
-                ("Unexpected UTF-8 BOM", "文件开头有 BOM，请存为不带 BOM 的 UTF-8")]
+# Python json 模块的报错 (开头) -> 大白话说明。说明按调用时的语言翻译, 所以每条是一个函数 (不能在模块级调 t())
+_JSON_ERRORS = [("Expecting ',' delimiter", lambda: t("缺少逗号，或者括号没有配对")),
+                ("Expecting ':' delimiter", lambda: t("缺少冒号")),
+                ("Expecting property name enclosed in double quotes", lambda: t("键名要用英文双引号括起来，最后一项后面不能有逗号")),
+                ("Illegal trailing comma", lambda: t("最后一项后面不能有逗号")),
+                ("Unterminated string", lambda: t("字符串没有结束（缺少英文双引号）")),
+                ("Invalid control character", lambda: t("字符串里不能直接换行（要写成 \\n）")),
+                ("Extra data", lambda: t("一行里只能放一个 JSON 对象")),
+                ("Expecting value", lambda: t("这里缺少值（可能多了逗号，或用了中文引号、单引号）")),
+                ("Unexpected UTF-8 BOM", lambda: t("文件开头有 BOM，请存为不带 BOM 的 UTF-8"))]
 
 
 def task_max_tokens(params, default=TASK_MT_DEFAULT, cap=TASK_MT_CAP):
@@ -1073,27 +1093,30 @@ def task_max_tokens(params, default=TASK_MT_DEFAULT, cap=TASK_MT_CAP):
 
 def _json_err_text(e):
     msg = getattr(e, "msg", str(e))
-    zh = next((z for en, z in _JSON_ERR_ZH if msg.startswith(en)), msg)
-    return "第 %d 个字符附近%s" % (getattr(e, "colno", 0), "：" + zh if zh else "")
+    why = next((explain() for head, explain in _JSON_ERRORS if msg.startswith(head)), msg)   # 认不出的原样带上 Python 的原文
+    pos = getattr(e, "colno", 0)
+    return t("第 {pos} 个字符附近：{why}", pos=pos, why=why) if why else t("第 {pos} 个字符附近", pos=pos)
 
 
-def _check_image_url(url):
-    """任务集里的一张图: data URL 解码后按看图模型的要求检查; 网址没法离线检查, 只提醒。返回 (问题, 提醒)。"""
+def _check_image_url(url, k, i):
+    """任务集里的一张图: data URL 解码后按看图模型的要求检查; 网址没法离线检查, 只提醒。
+    i 是这张图在整行里的序号 (按消息顺序数, 不是它所在那条消息里的第几张), k 是它所在的消息 (第几条)。
+    返回 (问题, 提醒): 各是一整句说明 (已带上位置) 或 None。整句翻译: 英文的语序和中文不一样, 不能把位置拼在片段前面。"""
     if url.startswith("data:"):
         head, _, payload = url.partition(",")
         if ";base64" not in head or not payload:
-            return "不是 base64 格式的 data URL（应为 data:image/png;base64,…）", None
+            return t("messages 第 {k} 条的第 {i} 张图不是 base64 格式的 data URL（应为 data:image/png;base64,…）", k=k, i=i), None
         try:
             data = base64.b64decode(payload)
         except (ValueError, TypeError):
-            return "的 base64 数据已损坏", None
+            return t("messages 第 {k} 条的第 {i} 张图的 base64 数据已损坏", k=k, i=i), None
         c = vision_assets.check_image(data)
         if not c["ok"]:
-            return c["msg"], None
-        return None, (c["msg"] or None)
+            return t("messages 第 {k} 条的第 {i} 张图{msg}", k=k, i=i, msg=c["msg"]), None
+        return None, (t("第 {i} 张图{msg}", i=i, msg=c["msg"]) if c["msg"] else None)
     if url.startswith(("http://", "https://")):
-        return None, "是网址，模型服务需要能访问到它"
-    return "的地址应为 data:image/…;base64,… 或 http(s) 网址", None
+        return None, t("第 {i} 张图是网址，模型服务需要能访问到它", i=i)
+    return t("messages 第 {k} 条的第 {i} 张图的地址应为 data:image/…;base64,… 或 http(s) 网址", k=k, i=i), None
 
 
 def check_task_line(line, max_prompt_tokens=TASK_MAX_PROMPT_TOKENS):
@@ -1105,60 +1128,60 @@ def check_task_line(line, max_prompt_tokens=TASK_MAX_PROMPT_TOKENS):
     def bad(reason):
         out["reason"] = reason
         return out
+    # 下面每条说明都是整句翻译 (位置 k / j / i 作占位符): 英文的语序和中文不一样, 不能拼碎片
     try:
         r = json.loads(line)
     except ValueError as e:
-        return bad("不是合法的 JSON（%s）" % _json_err_text(e))
+        return bad(t("不是合法的 JSON（{detail}）", detail=_json_err_text(e)))
     if not isinstance(r, dict):
-        return bad("每行应是一个 JSON 对象，形如 {\"messages\": [...]}")
+        return bad(t('每行应是一个 JSON 对象，形如 {{"messages": [...]}}'))
     msgs = r.get("messages")
     if not isinstance(msgs, list) or not msgs:
         out["status"] = "skip"
-        return bad("缺少 messages（消息列表）" if not isinstance(msgs, list) else "messages 是空的")
+        return bad(t("缺少 messages（消息列表）") if not isinstance(msgs, list) else t("messages 是空的"))
     for k, m in enumerate(msgs, 1):
-        where = "messages 第 %d 条" % k
         if not isinstance(m, dict):
-            return bad(where + "不是对象，应为 {\"role\": ..., \"content\": ...}")
+            return bad(t('messages 第 {k} 条不是对象，应为 {{"role": ..., "content": ...}}', k=k))
         role = m.get("role")
         if not isinstance(role, str) or not role:
-            return bad(where + "缺少 role")
+            return bad(t("messages 第 {k} 条缺少 role", k=k))
         if role not in TASK_ROLES:
-            return bad("%s的 role「%s」不认识（应为 system / user / assistant / tool）" % (where, role))
+            return bad(t("messages 第 {k} 条的 role「{role}」不认识（应为 system / user / assistant / tool）", k=k, role=role))
         content = m.get("content")
         if content is None:
             if role != "assistant":  # 只有带 tool_calls 的助手消息可以没有 content
-                return bad(where + "缺少 content")
+                return bad(t("messages 第 {k} 条缺少 content", k=k))
         elif isinstance(content, list):
             for j, part in enumerate(content, 1):
                 if not isinstance(part, dict) or not isinstance(part.get("type"), str):
-                    return bad("%s的 content 第 %d 项应为 {\"type\": ...}" % (where, j))
+                    return bad(t('messages 第 {k} 条的 content 第 {j} 项应为 {{"type": ...}}', k=k, j=j))
                 if part["type"] == "text" and not isinstance(part.get("text"), str):
-                    return bad("%s的 content 第 %d 项缺少 text" % (where, j))
+                    return bad(t("messages 第 {k} 条的 content 第 {j} 项缺少 text", k=k, j=j))
                 if part["type"] == "image_url":
                     iu = part.get("image_url")
                     url = iu.get("url") if isinstance(iu, dict) else None
                     if not isinstance(url, str) or not url:
-                        return bad("%s的图片应写成 {\"type\": \"image_url\", \"image_url\": {\"url\": \"...\"}}" % where)
+                        return bad(t('messages 第 {k} 条的图片应写成 {{"type": "image_url", "image_url": {{"url": "..."}}}}', k=k))
                     out["images"] += 1
-                    problem, warn = _check_image_url(url)
+                    problem, warn = _check_image_url(url, k, out["images"])
                     if problem:
-                        return bad("%s的第 %d 张图%s" % (where, out["images"], problem))
+                        return bad(problem)
                     if warn:
-                        out["warns"].append("第 %d 张图%s" % (out["images"], warn))
+                        out["warns"].append(warn)
         elif not isinstance(content, str):
-            return bad(where + "的 content 应为文字，或文字和图片组成的列表")
+            return bad(t("messages 第 {k} 条的 content 应为文字，或文字和图片组成的列表", k=k))
     params = r.get("params")
     if params is not None and not isinstance(params, dict):
-        return bad("params 应为对象，如 {\"max_tokens\": 512}")
+        return bad(t('params 应为对象，如 {{"max_tokens": 512}}'))
     params = params or {}
     rf = params.get("response_format")
     if rf is not None:
         if not isinstance(rf, dict) or rf.get("type") not in ("text", "json_object", "json_schema"):
-            return bad("response_format 应为 {\"type\": \"json_object\"} 或 {\"type\": \"json_schema\", \"json_schema\": {...}}")
+            return bad(t('response_format 应为 {{"type": "json_object"}} 或 {{"type": "json_schema", "json_schema": {{...}}}}'))
         js = rf.get("json_schema")
         if rf["type"] == "json_schema" and not (isinstance(js, dict) and isinstance(js.get("name"), str) and js["name"]
                                                and isinstance(js.get("schema", {}), dict)):
-            return bad("json_schema 应写成 {\"name\": \"名字\", \"schema\": {JSON Schema}}")
+            return bad(t('json_schema 应写成 {{"name": "名字", "schema": {{JSON Schema}}}}'))
         out["json"] = rf["type"] != "text"
     for key in ("max_tokens", "max_completion_tokens"):
         v = params.get(key)
@@ -1169,17 +1192,17 @@ def check_task_line(line, max_prompt_tokens=TASK_MAX_PROMPT_TOKENS):
         except (TypeError, ValueError):
             n = 0
         if n <= 0:
-            out["warns"].append("%s 不是正整数，会按默认 %d" % (key, TASK_MT_DEFAULT))
+            out["warns"].append(t("{key} 不是正整数，会按默认 {default}", key=key, default=TASK_MT_DEFAULT))
         elif n > TASK_MT_CAP:
-            out["warns"].append("%s 是 %d，超过上限，会按 %d" % (key, n, TASK_MT_CAP))
-    t = params.get("temperature")
-    if t is not None and (isinstance(t, bool) or not isinstance(t, (int, float)) or t < 0):
-        return bad("temperature 应为不小于 0 的数字")
+            out["warns"].append(t("{key} 是 {n}，超过上限，会按 {cap}", key=key, n=n, cap=TASK_MT_CAP))
+    temp = params.get("temperature")
+    if temp is not None and (isinstance(temp, bool) or not isinstance(temp, (int, float)) or temp < 0):
+        return bad(t("temperature 应为不小于 0 的数字"))
     meta = r.get("meta")
     pt = meta.get("prompt_tokens") if isinstance(meta, dict) else None
     if isinstance(pt, int) and pt > max_prompt_tokens:
         out["status"] = "skip"
-        return bad("输入约 %d token，超过 %d 的上限，跳过" % (pt, max_prompt_tokens))
+        return bad(t("输入约 {tokens} token，超过 {limit} 的上限，跳过", tokens=pt, limit=max_prompt_tokens))
     out.update(status="ok", rec=r)
     return out
 
@@ -1213,9 +1236,9 @@ def check_task_text(text, max_prompt_tokens=TASK_MAX_PROMPT_TOKENS, limit=10):
         except ValueError:
             whole = None
         if isinstance(whole, list):
-            rep["hint"] = "整个文件是一个 JSON 数组；任务集要求每行一个 JSON 对象（JSONL），可以参考「下载模板」"
+            rep["hint"] = t("整个文件是一个 JSON 数组；任务集要求每行一个 JSON 对象（JSONL），可以参考「下载模板」")
         elif isinstance(whole, dict):
-            rep["hint"] = "一个请求被排版成了多行；任务集要求每个请求写在一行里（JSONL），可以参考「下载模板」"
+            rep["hint"] = t("一个请求被排版成了多行；任务集要求每个请求写在一行里（JSONL），可以参考「下载模板」")
     return rep
 
 
@@ -1239,7 +1262,8 @@ class ReplayPool:
                 else:
                     bad += 1
         if not pool:
-            raise RuntimeError("文件里没有可用请求: %s (没有消息或超长跳过 %d 行, 格式不对 %d 行)" % (path, skipped, bad))
+            raise RuntimeError(t("文件里没有可用请求: {path} (没有消息或超长跳过 {skipped} 行, 格式不对 {bad} 行)",
+                                 path=path, skipped=skipped, bad=bad))
         random.Random(seed).shuffle(pool)
         self.pool, self.skipped, self.bad, self.path = pool, skipped, bad, path
         self.mt_default, self.mt_cap, self.cursor = int(mt_default), int(mt_cap), 0
@@ -1306,7 +1330,7 @@ def phase_replay_closed(url, headers, model, cfg, rp):
         plog("  C=%-3d ok=%d/%d  req/s=%7.2f  ttft_p95=%6.2fs  e2e_p95=%6.2fs  in-flight_max=%d" %
              (conc, rec["ok"], rec["total"], rec["req_s"], rec["ttft_p95_s"] or 0,
               rec["e2e_p95_s"] or 0, rec["max_inflight"]))
-    return {"id": "replay", "name": "回放·闭环", "points": points,
+    return {"id": "replay", "name": t("回放·闭环", ctx="阶段名"), "points": points,
             "pool": {"size": len(rp), "skipped": rp.skipped, "bad": rp.bad, "wrapped": rp.wrapped}}
 
 
@@ -1368,10 +1392,11 @@ def phase_replay_open(url, headers, model, cfg, rp):
         rec = _retry_cell(lambda r=rate: _open_rate_cell(url, headers, model, r, duration, rp),
                           "openloop rate=%g" % rate, max_attempts, pause)
         points.append(rec)
-        plog("  rate=%-6g sent=%d shed=%d ok=%d/%d  完成=%6.2f rps  ttft_p95=%6.2fs  in-flight_max=%d" %
-             (rate, rec["sent"], rec["shed"], rec["ok"], rec["total"], rec["completed_rps"],
-              rec["ttft_p95_s"] or 0, rec["max_inflight"]))
-    return {"id": "openloop", "name": "回放·开环 (泊松到达)", "points": points, "duration_s": duration}
+        plog(t("  rate={rate:<6g} sent={sent} shed={shed} ok={ok}/{total}  完成={rps:6.2f} rps  ttft_p95={ttft:6.2f}s  "
+               "in-flight_max={inflight}",
+               rate=rate, sent=rec["sent"], shed=rec["shed"], ok=rec["ok"], total=rec["total"], rps=rec["completed_rps"],
+               ttft=rec["ttft_p95_s"] or 0, inflight=rec["max_inflight"]))
+    return {"id": "openloop", "name": t("回放·开环 (泊松到达)", ctx="阶段名"), "points": points, "duration_s": duration}
 
 
 # ---------------------------------------------------------------- 主流程
@@ -1591,7 +1616,7 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
         plog("[phase] concurrency")
         result["phases"].append(phase_concurrency(url, headers, model, cfg["conc"], cfg["decode_tok"], cfg["conc_rounds"])); save()
         for tpl_id in (scenarios or {}).get("tasks") or []:
-            plog("[phase] scenario:%s (%s)" % (tpl_id, SCN_TEMPLATES[tpl_id]["label"]))
+            plog("[phase] scenario:%s (%s)" % (tpl_id, scenario_label(tpl_id)))
             result["phases"].append(phase_scenario(url, headers, model, tpl_id, scenarios)); save()
         if rp_pool is not None:
             rcfg = replay.get("closed") or {}
@@ -1635,37 +1660,38 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
 
 def main(argv=None):
     i18n.preparse_lang(argv)  # 要在创建 argparse 之前: --help 的文字也是 --lang 指定的语言
-    ap = argparse.ArgumentParser(description="llm-bench-pro 推理基准引擎")
-    ap.add_argument("--url", required=True, help="完整 chat completions URL (或 base URL, 自动规整)")
+    ap = argparse.ArgumentParser(description=t("llm-bench-pro 推理基准引擎"))
+    ap.add_argument("--url", required=True, help=t("完整 chat completions URL (或 base URL, 自动规整)"))
     ap.add_argument("--model", required=True)
     ap.add_argument("--api-key", default=os.environ.get("BENCH_API_KEY", ""))
     ap.add_argument("--suite", choices=list(SUITES) + ["custom"], default="standard")
-    ap.add_argument("--metrics-url", default=None, help="vLLM /metrics 地址 (框架指标抓取)")
-    ap.add_argument("--tag", default="", help="运行标签, 如 '1.6.5 vs 1.6.3'")
-    ap.add_argument("--outdir", default=os.path.join(ROOT, "data", "results"), help="结果目录 (默认 data/results/, 页面服务启动时自动导入)")
-    ap.add_argument("--custom", default=None, help="自定义套件 JSON 文件 (suite=custom 时)")
-    ap.add_argument("--conc-ladder", default=None, help="自定义并发阶梯, 逗号分隔, 如 1,2,4,8")
-    ap.add_argument("--matrix-conc", type=int, default=None, help="提示词阶梯x并发的并发路数 (默认 4)")
-    ap.add_argument("--lens", default=None, help="自定义长度阶梯(K), 逗号分隔, 如 1,2,4,8,16")
-    ap.add_argument("--framework", default=None, help="后端框架名称, 如 1Cat-vLLM / vLLM / SGLang")
-    ap.add_argument("--fw-version", default=None, help="框架版本号, 如 1.6.5-sm70main")
-    ap.add_argument("--no-fixed-output", action="store_true", help="不发送 ignore_eos(允许模型提前结束输出)")
+    ap.add_argument("--metrics-url", default=None, help=t("vLLM /metrics 地址 (框架指标抓取)"))
+    ap.add_argument("--tag", default="", help=t("运行标签, 如 '1.6.5 vs 1.6.3'"))
+    ap.add_argument("--outdir", default=os.path.join(ROOT, "data", "results"),
+                    help=t("结果目录 (默认 data/results/, 页面服务启动时自动导入)"))
+    ap.add_argument("--custom", default=None, help=t("自定义套件 JSON 文件 (suite=custom 时)"))
+    ap.add_argument("--conc-ladder", default=None, help=t("自定义并发阶梯, 逗号分隔, 如 1,2,4,8"))
+    ap.add_argument("--matrix-conc", type=int, default=None, help=t("提示词阶梯x并发的并发路数 (默认 4)"))
+    ap.add_argument("--lens", default=None, help=t("自定义长度阶梯(K), 逗号分隔, 如 1,2,4,8,16"))
+    ap.add_argument("--framework", default=None, help=t("后端框架名称, 如 1Cat-vLLM / vLLM / SGLang"))
+    ap.add_argument("--fw-version", default=None, help=t("框架版本号, 如 1.6.5-sm70main"))
+    ap.add_argument("--no-fixed-output", action="store_true", help=t("不发送 ignore_eos(允许模型提前结束输出)"))
     ap.add_argument("--scn", default=None,
-                    help="任务场景, 逗号分隔: chat/code/json/rag/vision/custom (默认不启用任何场景)")
-    ap.add_argument("--scn-conc", default=None, help="任务场景并发列表, 逗号分隔, 如 4,8 (默认 4,8)")
-    ap.add_argument("--scn-rpw", type=int, default=3, help="任务场景每并发请求数 (默认 3)")
-    ap.add_argument("--rag-ctx", default=None, help="RAG 场景上下文档位(token), 逗号分隔, 如 1500,4000,16000")
-    ap.add_argument("--vision-dir", default=None, help="图片理解场景的图片目录(服务器路径); 不填用内置示例图片")
-    ap.add_argument("--vision-img", type=int, default=1, help="图片理解每请求图片数 1-4 (默认 1)")
-    ap.add_argument("--custom-file", default=None, help="自定义任务集 JSONL (每行 {messages, params})")
-    ap.add_argument("--replay-file", default=None, help="真实请求回放 JSONL 文件 (每行 {messages, params})")
-    ap.add_argument("--replay-conc", default=None, help="回放闭环并发列表, 逗号分隔, 如 8,16")
-    ap.add_argument("--replay-rates", default=None, help="回放开环速率列表(req/s), 逗号分隔, 如 2,5; 传了才跑开环")
-    ap.add_argument("--rate-duration", type=int, default=60, help="开环每档速率持续秒数 (默认 60)")
-    ap.add_argument("--no-shape-warmup", action="store_true", help="关闭按 batch shape 的预热")
+                    help=t("任务场景, 逗号分隔: chat/code/json/rag/vision/custom (默认不启用任何场景)"))
+    ap.add_argument("--scn-conc", default=None, help=t("任务场景并发列表, 逗号分隔, 如 4,8 (默认 4,8)"))
+    ap.add_argument("--scn-rpw", type=int, default=3, help=t("任务场景每并发请求数 (默认 3)"))
+    ap.add_argument("--rag-ctx", default=None, help=t("RAG 场景上下文档位(token), 逗号分隔, 如 1500,4000,16000"))
+    ap.add_argument("--vision-dir", default=None, help=t("图片理解场景的图片目录(服务器路径); 不填用内置示例图片"))
+    ap.add_argument("--vision-img", type=int, default=1, help=t("图片理解每请求图片数 1-4 (默认 1)"))
+    ap.add_argument("--custom-file", default=None, help=t("自定义任务集 JSONL (每行 {{messages, params}})"))
+    ap.add_argument("--replay-file", default=None, help=t("真实请求回放 JSONL 文件 (每行 {{messages, params}})"))
+    ap.add_argument("--replay-conc", default=None, help=t("回放闭环并发列表, 逗号分隔, 如 8,16"))
+    ap.add_argument("--replay-rates", default=None, help=t("回放开环速率列表(req/s), 逗号分隔, 如 2,5; 传了才跑开环"))
+    ap.add_argument("--rate-duration", type=int, default=60, help=t("开环每档速率持续秒数 (默认 60)"))
+    ap.add_argument("--no-shape-warmup", action="store_true", help=t("关闭按 batch shape 的预热"))
     ap.add_argument("--sink", choices=["json", "db", "both"], default="json",
-                    help="结果落地: json=outdir 文件(默认) / db=SQLite 库 / both")
-    ap.add_argument("--db", default=None, help="SQLite 库路径 (默认 data/llm_bench.db 或 $LLM_BENCH_DB)")
+                    help=t("结果落地: json=outdir 文件(默认) / db=SQLite 库 / both"))
+    ap.add_argument("--db", default=None, help=t("SQLite 库路径 (默认 data/llm_bench.db 或 $LLM_BENCH_DB)"))
     i18n.add_lang_arg(ap)
     args = ap.parse_args(argv)
     url = args.url if args.url.endswith("/chat/completions") else normalize_base(args.url) + "/v1/chat/completions"
@@ -1674,7 +1700,7 @@ def main(argv=None):
         try:
             ladder = sorted({int(x) for x in args.conc_ladder.split(",") if x.strip()})
         except ValueError:
-            plog("--conc-ladder 格式错误, 应为逗号分隔整数"); sys.exit(2)
+            plog(t("--conc-ladder 格式错误, 应为逗号分隔整数")); sys.exit(2)
     lens_list = None
     if args.lens:
         try:
@@ -1682,17 +1708,17 @@ def main(argv=None):
             if not (1 <= min(lens_list) and max(lens_list) <= 256):
                 raise ValueError("range")
         except ValueError:
-            plog("--lens 格式错误: 应为 1-256 的逗号分隔整数(K)"); sys.exit(2)
+            plog(t("--lens 格式错误: 应为 1-256 的逗号分隔整数(K)")); sys.exit(2)
 
     def _int_list(text, flag):
         try:
             return [int(x) for x in text.split(",") if x.strip()]
         except ValueError:
-            plog("%s 格式错误, 应为逗号分隔整数" % flag); sys.exit(2)
+            plog(t("{flag} 格式错误, 应为逗号分隔整数", flag=flag)); sys.exit(2)
 
     scen_cfg = None
     if args.scn:
-        scen_cfg = {"tasks": [t.strip() for t in args.scn.split(",") if t.strip()]}
+        scen_cfg = {"tasks": [x.strip() for x in args.scn.split(",") if x.strip()]}
         if args.scn_conc:
             scen_cfg["conc"] = _int_list(args.scn_conc, "--scn-conc")
         scen_cfg["requests_per_worker"] = args.scn_rpw
@@ -1713,7 +1739,7 @@ def main(argv=None):
                 replay_cfg["open"] = {"rates": [float(x) for x in args.replay_rates.split(",") if x.strip()],
                                       "duration_s": args.rate_duration}
             except ValueError:
-                plog("--replay-rates 格式错误, 应为逗号分隔数字"); sys.exit(2)
+                plog(t("--replay-rates 格式错误, 应为逗号分隔数字")); sys.exit(2)
     try:
         run_suite(url, args.model, args.api_key, args.suite, args.metrics_url, args.tag, args.outdir, args.custom,
                   conc_ladder=ladder, matrix_conc=args.matrix_conc, lens=lens_list,
