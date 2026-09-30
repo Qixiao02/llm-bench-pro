@@ -17,10 +17,13 @@ import threading
 from datetime import datetime, timezone
 
 try:
-    from . import bench, vision_assets  # 包内导入
+    from . import bench, i18n, vision_assets  # 包内导入
 except ImportError:
     import bench  # server.py 以包目录为 sys.path 顶层导入
+    import i18n
     import vision_assets
+
+t, tn = i18n.t, i18n.tn
 
 ID_RE = re.compile(r"^scn-[0-9a-f]{12}$")
 NAME_MAX = 80        # 名称最多几个字
@@ -40,9 +43,9 @@ def clean_name(raw):
     """名称: 去掉控制字符和首尾空白。返回 (名称, 错误说明); 没问题时错误说明为空。"""
     name = _NAME_DROP.sub("", str(raw if raw is not None else "")).strip()
     if not name:
-        return name, "名称不能为空"
+        return name, t("名称不能为空")
     if len(name) > NAME_MAX:
-        return name, "名称最多 %d 个字（现在 %d 个）" % (NAME_MAX, len(name))
+        return name, t("名称最多 {max} 个字（现在 {n} 个）", max=NAME_MAX, n=len(name))
     return name, ""
 
 
@@ -279,9 +282,14 @@ def _summarize(rows):
     return out
 
 
-@functools.lru_cache(maxsize=2)
 def scan(path, size, mtime_ns):
-    """逐行索引(含搜索用的文字): 按 (路径, 大小, 修改时间) 缓存最近看过的两个文件, 翻页、筛选、看图不用每次重读。"""
+    """逐行索引(含搜索用的文字): 按 (路径, 大小, 修改时间, 语言) 缓存最近看过的两个文件, 翻页、筛选、看图不用每次重读。
+    每行的原因和提醒是按当前语言写的说明, 所以语言也算缓存键: 切换界面语言后第一次查看会重读一遍, 不会看到另一种语言的旧说明。"""
+    return _scan_cached(path, size, mtime_ns, i18n.current_lang())
+
+
+@functools.lru_cache(maxsize=2)
+def _scan_cached(path, size, mtime_ns, lang):
     return scan_file(path)
 
 
@@ -335,22 +343,22 @@ def _text_part(text, full):
 def image_info(url):
     """一张图的概况(不带图片数据): data URL 解码后给出格式、宽高、大小和检查结果; 网址只给地址。"""
     if not isinstance(url, str) or not url:
-        return {"kind": "bad", "msg": "缺少图片地址"}
+        return {"kind": "bad", "msg": t("缺少图片地址")}
     if url.startswith("data:"):
         head, _, payload = url.partition(",")
         if ";base64" not in head or not payload:
-            return {"kind": "bad", "msg": "不是 base64 格式的 data URL"}
+            return {"kind": "bad", "msg": t("不是 base64 格式的 data URL")}
         try:
             data = base64.b64decode(payload)
         except (ValueError, TypeError):
-            return {"kind": "bad", "msg": "base64 数据已损坏"}
+            return {"kind": "bad", "msg": t("base64 数据已损坏")}
         c = vision_assets.check_image(data)
         fmt = c["format"]
         return {"kind": "data", "format": vision_assets.FORMATS[fmt][2] if fmt else None, "width": c["width"],
                 "height": c["height"], "bytes": c["bytes"], "ok": c["ok"], "level": c["level"], "msg": c["msg"]}
     if url.startswith(("http://", "https://")):
         return {"kind": "url", "url": url[:URL_MAX], "cut": len(url) > URL_MAX}
-    return {"kind": "bad", "msg": "地址应为 data:image/…;base64,… 或 http(s) 网址"}
+    return {"kind": "bad", "msg": t("地址应为 data:image/…;base64,… 或 http(s) 网址")}
 
 
 def _call_name(call):
@@ -398,7 +406,7 @@ def _small(obj, limit=20000):
             return obj
     except (TypeError, ValueError):
         pass
-    return {k: "（%s，太长没有显示）" % type(v).__name__ for k, v in obj.items()}
+    return {k: t("（{type}，太长没有显示）", type=type(v).__name__) for k, v in obj.items()}
 
 
 def line_view(row, text, full=False):
@@ -430,7 +438,7 @@ def pretty(text):
 
     def walk(x):
         if isinstance(x, str) and x.startswith("data:") and len(x) > 200:
-            return "%s…（共 %d 个字符，这里省略）" % (x[:64], len(x))
+            return t("{head}…（共 {n} 个字符，这里省略）", head=x[:64], n=len(x))
         if isinstance(x, dict):
             return {k: walk(v) for k, v in x.items()}
         if isinstance(x, list):
@@ -449,22 +457,22 @@ def image_bytes(text, idx):
     try:
         obj = json.loads(text)
     except ValueError:
-        raise ValueError("这一行不是合法的 JSON")
+        raise ValueError(t("这一行不是合法的 JSON"))
     urls = image_urls(obj)
     if not 0 <= idx < len(urls):
-        raise LookupError("这一行没有第 %d 张图（一共 %d 张）" % (idx + 1, len(urls)))
+        raise LookupError(tn("这一行没有第 {no} 张图（一共 {n} 张）", len(urls), no=idx + 1))
     url = urls[idx]
     if not url:
-        raise ValueError("这张图没有地址")
+        raise ValueError(t("这张图没有地址"))
     if not url.startswith("data:"):
-        raise RemoteImage("这张图是网址形式，只显示网址，不在这里下载")
+        raise RemoteImage(t("这张图是网址形式，只显示网址，不在这里下载"))
     head, _, payload = url.partition(",")
     if ";base64" not in head or not payload:
-        raise ValueError("不是 base64 格式的 data URL")
+        raise ValueError(t("不是 base64 格式的 data URL"))
     try:
         data = base64.b64decode(payload)
     except (ValueError, TypeError):
-        raise ValueError("base64 数据已损坏")
+        raise ValueError(t("base64 数据已损坏"))
     try:
         fmt = vision_assets.image_info(data)[0]
     except vision_assets.ImageError as e:
