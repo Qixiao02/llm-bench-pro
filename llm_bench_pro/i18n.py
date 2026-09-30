@@ -16,6 +16,7 @@ t / tn 永远不抛异常: 缺参数的占位符原样留着, 格式串有问题
   2. set_default_lang() 设的进程语言: 命令行 --lang (preparse_lang)
   3. 环境变量 LLM_BENCH_LANG (zh / en)
   4. 系统区域: LANGUAGE / LC_ALL / LC_MESSAGES / LANG (以 zh 开头用中文, 否则英文); 都没有时 Windows 看用户界面语言
+     (只在 AUTO_DETECT 为 True 时看; 翻译没全部完成前关着)
   5. 什么都读不到: DEFAULT_LANG (中文, 即代码里原文的语言)
 
 线程: 语言存在 contextvars 里, 新线程不会继承。凡是要在线程里打日志 / 生成存进结果里的说明文字的地方,
@@ -39,6 +40,9 @@ from concurrent.futures import ThreadPoolExecutor
 LANGS = ("zh", "en")
 SOURCE_LANG = "zh"     # 代码里中文原文的语言: 这个语言不查词典
 DEFAULT_LANG = "zh"    # 设置、环境变量、系统区域都读不到时用的语言
+# 是否按系统区域和请求头 Accept-Language 自动选语言。中英文翻译还没全部完成时保持 False, 免得英文系统上的用户看到半中半英;
+# 全部翻完后改成 True (改这一处)。X-Lang、--lang、LLM_BENCH_LANG 明确指定的不受影响。
+AUTO_DETECT = False
 ENV_VAR = "LLM_BENCH_LANG"
 DICT_PACKAGES = {"en": "i18n_en"}   # 语言 → 词典所在的包 (llm_bench_pro/i18n_en/<模块名>.py, 内容是 ENTRIES = {...})
 
@@ -131,7 +135,7 @@ def current_lang():
     v = _LANG.get()
     if v:
         return v
-    return _process_lang or normalize_lang(os.environ.get(ENV_VAR)) or system_lang() or DEFAULT_LANG
+    return _process_lang or normalize_lang(os.environ.get(ENV_VAR)) or (system_lang() if AUTO_DETECT else None) or DEFAULT_LANG
 
 
 def html_lang():
@@ -164,7 +168,7 @@ def lang_from_headers(headers):
     get = getattr(headers, "get", None)
     if get is None:
         return None
-    return normalize_lang(get("X-Lang")) or _from_accept_language(get("Accept-Language"))
+    return normalize_lang(get("X-Lang")) or (_from_accept_language(get("Accept-Language")) if AUTO_DETECT else None)
 
 
 # ---------------------------------------------------------------- 线程

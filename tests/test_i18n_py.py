@@ -137,6 +137,9 @@ class LangCase(unittest.TestCase):
         i18n.MISSING.clear()
         self.addCleanup(i18n.set_lang, None)
         self.addCleanup(i18n.set_default_lang, None)
+        auto = mock.patch.object(i18n, "AUTO_DETECT", True)   # 这些用例测的是完整的自动识别; 关着的情况见 TestAutoDetectSwitch
+        auto.start()
+        self.addCleanup(auto.stop)
 
 
 def tearDownModule():
@@ -568,6 +571,56 @@ class TestLanguageResolution(LangCase):
         self.assertIsNone(i18n.lang_from_headers(None))
 
 
+class TestAutoDetectSwitch(unittest.TestCase):
+    """翻译没全部完成前 AUTO_DETECT 关着: 系统区域和 Accept-Language 不生效, 明确指定的 (X-Lang / --lang / 环境变量) 照常。"""
+
+    def setUp(self):
+        i18n.set_lang(None)
+        i18n.set_default_lang(None)
+        self.addCleanup(i18n.set_lang, None)
+        self.addCleanup(i18n.set_default_lang, None)
+        self.win = mock.patch.object(i18n, "_windows_ui_lang", return_value="en")
+        self.win.start()
+        self.addCleanup(self.win.stop)
+
+    def env(self, **kw):
+        keep = {k: v for k, v in os.environ.items() if k not in ("LLM_BENCH_LANG", "LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG")}
+        keep.update(kw)
+        return mock.patch.dict(os.environ, keep, clear=True)
+
+    def test_ships_off_until_translation_is_complete(self):
+        self.assertFalse(i18n.AUTO_DETECT)
+
+    def test_system_locale_is_ignored_while_off(self):
+        with mock.patch.object(i18n, "AUTO_DETECT", False):
+            for env in ({"LANG": "en_US.UTF-8"}, {"LC_ALL": "de_DE"}, {}):
+                with self.subTest(env=env), self.env(**env):
+                    self.assertEqual(i18n.current_lang(), "zh")           # Windows 界面语言是英文也不看
+            with mock.patch.object(i18n, "AUTO_DETECT", True), self.env(LANG="en_US.UTF-8"):
+                self.assertEqual(i18n.current_lang(), "en")                # 打开后才生效
+
+    def test_accept_language_is_ignored_while_off(self):
+        class H(dict):
+            def get(self, k, d=None):
+                return dict.get(self, k, d)
+        with mock.patch.object(i18n, "AUTO_DETECT", False):
+            self.assertIsNone(i18n.lang_from_headers(H({"Accept-Language": "en-US,en;q=0.9"})))
+            self.assertEqual(i18n.lang_from_headers(H({"X-Lang": "en", "Accept-Language": "zh-CN"})), "en")
+        with mock.patch.object(i18n, "AUTO_DETECT", True):
+            self.assertEqual(i18n.lang_from_headers(H({"Accept-Language": "en-US,en;q=0.9"})), "en")
+
+    def test_explicit_choices_still_work_while_off(self):
+        with mock.patch.object(i18n, "AUTO_DETECT", False):
+            with self.env(LLM_BENCH_LANG="en", LANG="zh_CN.UTF-8"):
+                self.assertEqual(i18n.current_lang(), "en")
+            with self.env():
+                i18n.set_default_lang("en")
+                self.assertEqual(i18n.current_lang(), "en")
+                i18n.set_default_lang(None)
+                with i18n.use_lang("en"):
+                    self.assertEqual(i18n.current_lang(), "en")
+
+
 class TestThreads(LangCase):
     """线程和线程池里沿用创建 / 提交时的语言, 之后原线程改语言不影响它们。"""
 
@@ -920,6 +973,10 @@ class TestApiErrorsFollowXLang(LangServerCase):
             job.set(running=False)
 
     def test_accept_language_is_the_fallback(self):
+        with mock.patch.object(i18n, "AUTO_DETECT", True):
+            self._accept_language_is_the_fallback()
+
+    def _accept_language_is_the_fallback(self):
         zh = "服务地址不能为空"
         body = {"url": "", "model": "m"}
         self.assertEqual(self.error_of("POST", "/api/endpoints", body, headers={"Accept-Language": "en-US,en;q=0.9"})[1],
