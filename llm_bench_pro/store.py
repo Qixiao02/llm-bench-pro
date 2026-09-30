@@ -18,6 +18,11 @@ import sys
 import threading
 import time
 
+try:
+    from . import i18n  # 包内导入
+except ImportError:
+    import i18n  # server.py 以包目录为 sys.path 顶层导入
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
 SCHEMA_VERSION = 2  # 2: deleted_runs 墓碑表
 STALE_S = 300  # 心跳超过该秒数未更新的 running 运行视为中断
@@ -757,20 +762,25 @@ def check_roundtrip(results_dir, db_path=None):
 
 
 def main(argv=None):
+    i18n.preparse_lang(argv)  # 要在创建 argparse 之前: --help 的文字也是 --lang 指定的语言
     ap = argparse.ArgumentParser(description="llm-bench-pro SQLite 结果库")
     ap.add_argument("--db", default=None, help="库路径 (默认 data/llm_bench.db 或 $LLM_BENCH_DB)")
+    i18n.add_lang_arg(ap)
     sp = ap.add_subparsers(dest="cmd")
-    sp.add_parser("init", help="建库建表")
+    i18n.add_lang_arg(sp.add_parser("init", help="建库建表"), sub=True)
     p = sp.add_parser("import", help="导入 data/results/*.json (幂等)")
     p.add_argument("--results", default=os.path.join(ROOT, "data", "results"))
     p.add_argument("--force", action="store_true", help="内容变化的已导入运行删除后重导")
+    i18n.add_lang_arg(p, sub=True)
     p = sp.add_parser("export", help="导出为 JSON")
     p.add_argument("--out", default=os.path.join(ROOT, "data", "export"))
     p.add_argument("--kind", choices=KINDS, default=None)
     p.add_argument("--run", default=None)
-    sp.add_parser("stale", help="把心跳超时的 running 运行标记为 interrupted")
+    i18n.add_lang_arg(p, sub=True)
+    i18n.add_lang_arg(sp.add_parser("stale", help="把心跳超时的 running 运行标记为 interrupted"), sub=True)
     p = sp.add_parser("check", help="校验库与 data/results/*.json 往返等价")
     p.add_argument("--results", default=os.path.join(ROOT, "data", "results"))
+    i18n.add_lang_arg(p, sub=True)
     args = ap.parse_args(argv)
     db = args.db or default_db()
     if args.cmd == "init":

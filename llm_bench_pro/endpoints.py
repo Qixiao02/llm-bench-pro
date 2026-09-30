@@ -19,9 +19,12 @@ import urllib.error
 import urllib.parse
 
 try:
-    from . import bench  # 包内导入
+    from . import bench, i18n  # 包内导入
 except ImportError:
     import bench  # server.py 以包目录为 sys.path 顶层导入
+    import i18n
+
+t = i18n.t
 
 ID_RE = re.compile(r"^ep_[A-Za-z0-9_]{1,60}$")
 NAME_MAX = 64       # 名称最多几个字(按字数, 不按字节)
@@ -34,11 +37,15 @@ KINDS = ("perf", "iq", "gen")
 _DROP = re.compile("[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069\ufeff]")
 _URL_OK = re.compile(r"^https?://[^\s/?#@]+(?:[/?#]\S*)?$", re.IGNORECASE)
 _HOST = re.compile(r"^https?://([^/?#]+)", re.IGNORECASE)
-BAD_URL = "服务地址要以 http:// 或 https:// 开头，中间不能有空格，比如 http://127.0.0.1:8000"
 
 
 class NotModelList(ValueError):
     """/v1/models 返回的不是模型列表(不是 OpenAI 兼容接口)。"""
+
+
+def bad_url():
+    """服务地址写法不对时的说明 (按当前语言生成, 所以是函数, 不是模块级常量)。"""
+    return t("服务地址要以 http:// 或 https:// 开头，中间不能有空格，比如 http://127.0.0.1:8000")
 
 
 # ---------------------------------------------------------------- 保存时的检查
@@ -89,28 +96,28 @@ def clean_fields(body):
     for k in ("name", "url", "api_key", "model"):
         v = body.get(k)
         if v is not None and not isinstance(v, str):
-            return None, "%s 应为文字" % k
+            return None, t("{field} 应为文字", field=k)
     url = (body.get("url") or "").strip()
     if not url:
-        return None, "服务地址不能为空"
+        return None, t("服务地址不能为空")
     if len(url) > URL_MAX:
-        return None, "服务地址最多 %d 个字（现在 %d 个）" % (URL_MAX, len(url))
+        return None, t("服务地址最多 {limit} 个字（现在 {n} 个）", limit=URL_MAX, n=len(url))
     if not url_ok(url):
-        return None, BAD_URL
+        return None, bad_url()
     url = bench.normalize_base(url)
     model = _DROP.sub("", body.get("model") or "").strip()
     if not model:
-        return None, "模型名称不能为空"
+        return None, t("模型名称不能为空")
     if len(model) > MODEL_MAX:
-        return None, "模型名称最多 %d 个字（现在 %d 个）" % (MODEL_MAX, len(model))
+        return None, t("模型名称最多 {limit} 个字（现在 {n} 个）", limit=MODEL_MAX, n=len(model))
     name = _DROP.sub("", body.get("name") or "").strip()
     if len(name) > NAME_MAX:
-        return None, "名称最多 %d 个字（现在 %d 个）" % (NAME_MAX, len(name))
+        return None, t("名称最多 {limit} 个字（现在 {n} 个）", limit=NAME_MAX, n=len(name))
     key = (body.get("api_key") or "").strip()
     if len(key) > KEY_MAX:
-        return None, "API Key 最多 %d 个字" % KEY_MAX
+        return None, t("API Key 最多 {limit} 个字", limit=KEY_MAX)
     if re.search(r"[\x00-\x1f\x7f]", key):
-        return None, "API Key 中间不能有换行或其他控制字符"
+        return None, t("API Key 中间不能有换行或其他控制字符")
     return {"name": name or default_name(model, url), "url": url, "api_key": key, "model": model}, ""
 
 
@@ -223,7 +230,7 @@ def models_of(data):
     """/v1/models 的返回 → [{id, max_model_len}]; 不是 {"data": [...]} 的样子时抛 NotModelList。"""
     items = data.get("data") if isinstance(data, dict) else None
     if not isinstance(items, list):
-        raise NotModelList("返回的不是模型列表（没有 data 数组）")
+        raise NotModelList(t("返回的不是模型列表（没有 data 数组）"))
     out = []
     for m in items:
         if isinstance(m, dict) and isinstance(m.get("id"), str):

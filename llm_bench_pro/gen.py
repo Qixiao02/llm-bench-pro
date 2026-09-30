@@ -13,12 +13,13 @@ import urllib.error
 import urllib.request
 import zlib
 from datetime import datetime, timezone
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, wait
 
 try:
-    from . import geneval, iq, sinks, store  # 包内导入: python -m llm_bench_pro.gen
+    from . import geneval, i18n, iq, sinks, store  # 包内导入: python -m llm_bench_pro.gen
 except ImportError:
     import geneval  # server.py 以包目录为 sys.path 顶层导入
+    import i18n
     import iq
     import sinks
     import store
@@ -800,7 +801,7 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
             save()
 
     try:
-        ex = ThreadPoolExecutor(max_workers=conc)
+        ex = i18n.executor(max_workers=conc)
         futures.extend(ex.submit(worker, t) for t in tasks)
         try:
             pending = set(futures)
@@ -901,7 +902,7 @@ def reevaluate(run_id, judge=None, only=None, db_path=None, browsers=2, log=None
         log("  ✓ [%s] %s · 进度 %d/%d" % (it["name"], _eval_brief(it), done[0], len(targets)))
 
     try:
-        with ThreadPoolExecutor(max_workers=max(1, browsers)) as ex:
+        with i18n.executor(max_workers=max(1, browsers)) as ex:
             pending = {ex.submit(one, it) for it in targets}
             while pending:
                 finished, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)

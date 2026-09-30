@@ -28,14 +28,16 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 try:
-    from . import sinks, vision_assets  # 包内导入: python -m llm_bench_pro.bench
+    from . import i18n, sinks, vision_assets  # 包内导入: python -m llm_bench_pro.bench
 except ImportError:
-    import sinks  # server.py 以包目录为 sys.path 顶层导入
+    import i18n  # server.py 以包目录为 sys.path 顶层导入
+    import sinks
     import vision_assets
+
+t, tn = i18n.t, i18n.tn
 
 # 1.3: 业务场景改为可插拔任务模板(对话问答/代码/结构化抽取/RAG/图片理解/自定义任务集); 1.2 的回放机制不变
 # 1.4: 图片理解默认用内置示例图片(每张图配只问图里内容的提示词), 发送前检查图片(太小/损坏的不发);
@@ -161,7 +163,7 @@ def stream_call(url, payload, headers, timeout=900, apply_req_extra=True):
             detail = ""
         if e.code in (400, 422) and "ignore_eos" in payload and "ignore_eos" in detail:
             _NO_IGNORE_EOS.add(url)  # 端点不支持固定输出长度: 关闭后重试, 结果中会记录
-            plog("  端点不支持 ignore_eos, 已关闭固定输出长度")
+            plog(t("  端点不支持 ignore_eos, 已关闭固定输出长度"))
             return stream_call(url, {k: v for k, v in payload.items() if k not in ("stream", "stream_options")},
                                headers, timeout, apply_req_extra)
         raise HTTPStatusError(url, e.code, e.msg, e.hdrs, _error_brief(detail, headers)) from None
@@ -270,8 +272,7 @@ class MetricsRecorder:
         self.samples = []
         if enabled:
             self._stop = threading.Event()
-            self._th = threading.Thread(target=self._loop, daemon=True)
-            self._th.start()
+            self._th = i18n.spawn(self._loop)
 
     def _loop(self):
         while not self._stop.wait(1.0):
@@ -322,10 +323,10 @@ def calibrate_prompt(url, headers, model):
     except Cancelled:
         raise
     except Exception as e:
-        return _guess("校准请求失败：%s" % str(e)[:200], samples)
+        return _guess(t("校准请求失败：{error}", error=str(e)[:200]), samples)
     unit, overhead = _fit(samples)
     if not (2 <= unit <= 400) or not (-50 <= overhead <= 4000):
-        return _guess("服务返回的输入 token 数不随长度变化（可能没有返回真实用量）", samples)
+        return _guess(t("服务返回的输入 token 数不随长度变化（可能没有返回真实用量）"), samples)
     return {"method": "usage", "unit_tokens": round(unit, 3), "overhead_tokens": max(0, int(round(overhead))),
             "samples": samples}
 
@@ -342,7 +343,7 @@ class ContextOverflow(Exception):
 def ctx_overflow(e):
     """HTTP 400 / 413 / 422 且服务说的是上下文超长 -> 大白话原因; 其他错误返回 None。"""
     if isinstance(e, urllib.error.HTTPError) and e.code in (400, 413, 422) and _CTX_ERR.search(str(e)):
-        return "超过模型的最大上下文（服务返回：%s）" % str(e)[:160]
+        return t("超过模型的最大上下文（服务返回：{detail}）", detail=str(e)[:160])
     return None
 
 
@@ -353,7 +354,7 @@ def fit_context(ladder, max_len, out_tok, phase_id):
         label, _, target = item
         if max_len and target and target + out_tok > max_len:
             skipped.append({"phase": phase_id, "label": label,
-                            "reason": "超过模型的最大上下文（%d token）" % max_len})
+                            "reason": t("超过模型的最大上下文（{n} token）", n=max_len)})
         else:
             keep.append(item)
     return keep, skipped
@@ -377,8 +378,9 @@ def resolve_ladder(ladder, cal):
 
 def _cal_text(cal):
     if cal["method"] == "usage":
-        return "每句 %.1f token，说明文字和对话模板 %d token（实测）" % (cal["unit_tokens"], cal["overhead_tokens"])
-    return "没能校准，按旧估算每句 %.1f token（%s）" % (cal["unit_tokens"], cal.get("error") or "")
+        return t("每句 {unit:.1f} token，说明文字和对话模板 {overhead} token（实测）",
+                 unit=cal["unit_tokens"], overhead=cal["overhead_tokens"])
+    return t("没能校准，按旧估算每句 {unit:.1f} token（{reason}）", unit=cal["unit_tokens"], reason=cal.get("error") or "")
 
 
 # ---------------------------------------------------------------- 测试阶段
@@ -402,7 +404,7 @@ def phase_prefill(url, headers, model, ladder, out_tok, rep):
             if not why:
                 raise
             skipped += [{"phase": "prefill", "label": x[0], "reason": why} for x in ladder[i:]]  # 更长的也放不下
-            plog("  %s 及更长的档位跳过: %s" % (label, why))
+            plog(t("  {label} 及更长的档位跳过: {reason}", label=label, reason=why))
             break
         ttfts = [r["ttft_s"] for r in runs if r["ttft_s"]]
         tps = [r["prefill_tps"] for r in runs if r["prefill_tps"]]
@@ -472,7 +474,7 @@ def phase_concurrency(url, headers, model, conc_list, out_tok, per_conc):
                         results.append({"error": str(e)[:ERR_MAX]})
 
             round_t0 = time.perf_counter()
-            with ThreadPoolExecutor(max_workers=conc) as ex:
+            with i18n.executor(max_workers=conc) as ex:
                 list(ex.map(worker, range(conc)))
             round_wall = time.perf_counter() - round_t0
             good = [r for r in results if "error" not in r]
@@ -521,7 +523,7 @@ def phase_prefill_conc(url, headers, model, ladder, conc, out_tok, max_attempts=
                 with lock:
                     results.append({"error": str(e)[:ERR_MAX], "ctx": ctx_overflow(e)})
 
-        with ThreadPoolExecutor(max_workers=conc) as ex:
+        with i18n.executor(max_workers=conc) as ex:
             list(ex.map(worker, range(conc)))
         good = [r for r in results if "error" not in r]
         ctx = next((r["ctx"] for r in results if r.get("ctx")), None)
@@ -553,10 +555,10 @@ def phase_prefill_conc(url, headers, model, ladder, conc, out_tok, max_attempts=
     for i, (label, reps, target) in enumerate(ladder):
         check_cancel()
         try:
-            rec = _retry_cell(lambda r=reps: run_label(r), "矩阵 %s" % label, max_attempts, retry_pause_s)
+            rec = _retry_cell(lambda r=reps: run_label(r), t("矩阵 {label}", label=label), max_attempts, retry_pause_s)
         except ContextOverflow as e:
             skipped += [{"phase": "prefill_conc", "label": x[0], "reason": str(e)} for x in ladder[i:]]
-            plog("  %s 及更长的档位跳过: %s" % (label, e))
+            plog(t("  {label} 及更长的档位跳过: {reason}", label=label, reason=e))
             break
         if rec["point"]:
             rec["point"]["label"] = label
@@ -601,7 +603,7 @@ def phase_longctx(url, headers, model, ctx_tokens, out_tok, cal=None):
         why = ctx_overflow(e)
         if not why:
             raise
-        plog("  超长输入 %s 跳过: %s" % (label, why))
+        plog(t("  超长输入 {label} 跳过: {reason}", label=label, reason=why))
         return {"id": "longctx", "name": "长上下文驻留", "points": [],
                 "skipped": [{"phase": "longctx", "label": label, "reason": why}]}
     d = derive(s)
@@ -773,8 +775,9 @@ def _retry_cell(run_once, label, max_attempts=3, pause_s=30.0):
             return rec
         failed.append({"attempt": attempts, "ok": rec["ok"], "fail": rec["fail"],
                        "errors": rec.get("errors") or []})
-        plog("  %s: %d/%d 失败, %.0fs 后重跑 (尝试 %d/%d)" %
-             (label, rec["fail"], rec["total"], pause_s, attempts + 1, max_attempts))
+        plog(t("  {label}: {fail}/{total} 失败, {pause:.0f}s 后重跑 (尝试 {attempt}/{max_attempts})",
+               label=label, fail=rec["fail"], total=rec["total"], pause=pause_s,
+               attempt=attempts + 1, max_attempts=max_attempts))
         _sleep_cancel(pause_s)
 
 
@@ -887,12 +890,12 @@ def calibrate_rag(url, headers, model):
     except Cancelled:
         raise
     except Exception as e:
-        out = _guess("校准请求失败：%s" % str(e)[:200], samples)
+        out = _guess(t("校准请求失败：{error}", error=str(e)[:200]), samples)
         out["unit_tokens"] = RAG_TOKENS_PER_PASSAGE
         return out
     unit, overhead = _fit(samples)
     if not (5 <= unit <= 2000) or not (-50 <= overhead <= 4000):
-        out = _guess("服务返回的输入 token 数不随资料长度变化（可能没有返回真实用量）", samples)
+        out = _guess(t("服务返回的输入 token 数不随资料长度变化（可能没有返回真实用量）"), samples)
         out["unit_tokens"] = RAG_TOKENS_PER_PASSAGE
         return out
     return {"method": "usage", "unit_tokens": round(unit, 3), "overhead_tokens": max(0, int(round(overhead))),
@@ -918,19 +921,20 @@ def _load_vision_images(d, skipped=None):
     """读取图片目录 -> data URL 列表。逐张检查: 太小、损坏、太大的跳过(发出去服务端也会拒绝),
     跳过的检查结果追加到 skipped; 无目录或没有能用的图片时抛错(场景无法运行, 快速失败)。"""
     if not d or not os.path.isdir(d):
-        raise RuntimeError("图片目录不存在: %s (图片理解场景需要已上传的图片包或服务器图片目录)" % d)
+        raise RuntimeError(t("图片目录不存在: {path} (图片理解场景需要已上传的图片包或服务器图片目录)", path=d))
     good, checks = vision_assets.scan_dir(d)
     if not checks:
-        raise RuntimeError("图片目录中没有图片(jpg/png/webp/gif): %s" % d)
+        raise RuntimeError(t("图片目录中没有图片(jpg/png/webp/gif): {path}", path=d))
     bad = [c for c in checks if not c["ok"]]
     for c in bad[:5]:
-        plog("  跳过图片 %s: %s" % (c["name"], c["msg"]))
+        plog(t("  跳过图片 {name}: {reason}", name=c["name"], reason=c["msg"]))
     if len(bad) > 5:
-        plog("  另外还跳过 %d 张不能用的图片" % (len(bad) - 5))
+        plog(tn("  另外还跳过 {n} 张不能用的图片", len(bad) - 5))
     if skipped is not None:
         skipped.extend(bad)
     if not good:
-        raise RuntimeError("图片目录里没有能用的图片: %s (%s)" % (d, "；".join("%s %s" % (c["name"], c["msg"]) for c in bad[:3])))
+        raise RuntimeError(t("图片目录里没有能用的图片: {path} ({reasons})", path=d,
+                             reasons=t("；").join("%s %s" % (c["name"], c["msg"]) for c in bad[:3])))
     return [vision_assets.data_url(data, c["format"]) for _, data, c in good]
 
 
@@ -955,17 +959,23 @@ def phase_scenario(url, headers, model, tpl_id, cfg):
             samples = vision_assets.sample_images()
             images = [vision_assets.data_url(png, "png") for _, _, png, _ in samples]
             prompts = [p for _, _, _, p in samples]
-        plog("  图片池 %d 张%s, 每请求 %d 张" % (len(images), "(内置示例图片)" if prompts else "", n_img))
+        if prompts:  # 整句翻译, 不拼碎片: 英文的语序和中文不一样
+            plog(tn("  图片池 {n} 张(内置示例图片), 每请求 {per} 张", len(images), per=n_img))
+        else:
+            plog(tn("  图片池 {n} 张, 每请求 {per} 张", len(images), per=n_img))
     if tpl_id == "custom":
         pool = ReplayPool(cfg.get("custom_file") or "")
-        plog("  任务集 %d 条" % len(pool))
+        plog(tn("  任务集 {n} 条", len(pool)))
     ctx_list = [int(x) for x in (cfg.get("rag_ctx") or [4000])] if tpl_id == "rag" else [None]
     rag_cal = None
     if tpl_id == "rag":
         rag_cal = calibrate_rag(url, headers, model)
-        plog("  资料长度校准: " + (("每段 %.1f token，问题和说明 %d token（实测）" % (rag_cal["unit_tokens"], rag_cal["overhead_tokens"]))
-                                   if rag_cal["method"] == "usage" else "没能校准，按旧估算每段 %d token（%s）"
-                                   % (rag_cal["unit_tokens"], rag_cal.get("error") or "")))
+        if rag_cal["method"] == "usage":
+            plog(t("  资料长度校准: 每段 {unit:.1f} token，问题和说明 {overhead} token（实测）",
+                   unit=rag_cal["unit_tokens"], overhead=rag_cal["overhead_tokens"]))
+        else:
+            plog(t("  资料长度校准: 没能校准，按旧估算每段 {unit} token（{reason}）",
+                   unit=rag_cal["unit_tokens"], reason=rag_cal.get("error") or ""))
 
     def build(rng, salt, ctx):
         if tpl_id == "chat":
@@ -998,7 +1008,7 @@ def phase_scenario(url, headers, model, tpl_id, cfg):
                         _scenario_request(url, headers, body, res, lock, inflight)
 
                 t0 = time.perf_counter()
-                with ThreadPoolExecutor(max_workers=conc) as ex:
+                with i18n.executor(max_workers=conc) as ex:
                     list(ex.map(worker, range(conc)))
                 m = _cell_metrics(res, time.perf_counter() - t0)
                 m.update(conc=conc, requests_per_worker=rpw)
@@ -1284,7 +1294,7 @@ def phase_replay_closed(url, headers, model, cfg, rp):
                                       res, lock, inflight)
 
             t0 = time.perf_counter()
-            with ThreadPoolExecutor(max_workers=c) as ex:
+            with i18n.executor(max_workers=c) as ex:
                 list(ex.map(worker, range(c)))
             m = _cell_metrics(res, time.perf_counter() - t0)
             m.update(conc=c, requests_per_worker=rpw, max_inflight=inflight[1],
@@ -1314,7 +1324,7 @@ def _open_rate_cell(url, headers, model, rate, duration, rp):
     samples, stop = [], threading.Event()
     threads, shed, k = [], 0, 0
     start = rp.cursor
-    sampler = threading.Thread(target=_inflight_sampler, args=(samples, stop, inflight, lock), daemon=True)
+    sampler = i18n.spawn(_inflight_sampler, args=(samples, stop, inflight, lock), start=False)
     t0 = time.perf_counter()
     sampler.start()
     try:
@@ -1325,15 +1335,12 @@ def _open_rate_cell(url, headers, model, rate, duration, rp):
             if inflight[0] >= MAX_OPEN_INFLIGHT:  # 在途超限: 丢弃并计数(到达时间轴不变)
                 shed += 1
             else:
-                t = threading.Thread(target=_scenario_request,
-                                     args=(url, headers, _replay_body(model, rp.get(start + k), rp),
-                                           res, lock, inflight), daemon=True)
-                t.start()
-                threads.append(t)
+                body = _replay_body(model, rp.get(start + k), rp)
+                threads.append(i18n.spawn(_scenario_request, args=(url, headers, body, res, lock, inflight)))
             k += 1
             nxt += rng.expovariate(rate)
-        for t in threads:
-            t.join()
+        for th in threads:
+            th.join()
     finally:
         stop.set()
         sampler.join(timeout=2)
@@ -1470,9 +1477,9 @@ def _warmup(url, headers, model, cfg, warmup_shapes):
     for reps, conc in uniq[:16]:
         check_cancel()
         prompt = "（预热 %d）请阅读后用一句话概括：" % (int(time.time() * 1000) % 1000000) + (ZH_UNIT * reps)
-        with ThreadPoolExecutor(max_workers=conc) as ex:
+        with i18n.executor(max_workers=conc) as ex:
             list(ex.map(lambda _: one(prompt), range(conc)))
-        plog("  warmup shape: 输入x%d句 × 并发%d" % (reps, conc))
+        plog(tn("  warmup shape: 输入x{n}句 × 并发{conc}", reps, conc=conc))
 
 
 def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag="",
@@ -1506,14 +1513,14 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
         if cfg.get("prefill_conc"):
             cfg["prefill_conc"]["ladder"] = lens_to_ladder(lens)
     if scenarios and scenarios.get("tasks"):
-        for t in scenarios["tasks"]:
-            if t not in SCN_TEMPLATES:
-                raise RuntimeError("未知任务类型: %s (可选: %s)" % (t, "/".join(SCN_TEMPLATES)))
+        for tpl in scenarios["tasks"]:
+            if tpl not in SCN_TEMPLATES:
+                raise RuntimeError(t("未知任务类型: {name} (可选: {options})", name=tpl, options="/".join(SCN_TEMPLATES)))
     rp_pool = None
     if replay:
         rfile = replay.get("file") or replay.get("path") or ""
         if not rfile or not os.path.isfile(rfile):
-            raise RuntimeError("回放文件不存在: %s" % rfile)
+            raise RuntimeError(t("回放文件不存在: {path}", path=rfile))
         rp_pool = ReplayPool(rfile,
                              max_prompt_tokens=int(replay.get("max_prompt_tokens") or 60000),
                              seed=int(replay.get("seed") or 1),
@@ -1553,7 +1560,7 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
         _warm_one(url, headers, model, "回复 OK")
         cal = calibrate_prompt(url, headers, model)
         result["prompt_calibration"] = cal
-        plog("  长度校准: " + _cal_text(cal))
+        plog(t("  长度校准: {text}", text=_cal_text(cal)))
         cfg["prefill"] = resolve_ladder(cfg.get("prefill") or [], cal)
         if cfg.get("prefill_conc"):
             cfg["prefill_conc"]["ladder"] = resolve_ladder(cfg["prefill_conc"].get("ladder") or [], cal)
@@ -1567,10 +1574,10 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
             for ctx in cfg.get("longctx", []):
                 if ctx + 256 > max_len:
                     skips.append({"phase": "longctx", "label": "%dK" % (ctx // 1024),
-                                  "reason": "超过模型的最大上下文（%d token）" % max_len})
+                                  "reason": t("超过模型的最大上下文（{n} token）", n=max_len)})
             cfg["longctx"] = [c for c in cfg.get("longctx", []) if c + 256 <= max_len]
             for s in skips:
-                plog("  %s 跳过: %s" % (s["label"], s["reason"]))
+                plog(t("  {label} 跳过: {reason}", label=s["label"], reason=s["reason"]))
         _warmup(url, headers, model, cfg, warmup_shapes)
         plog("[phase] prefill")
         result["phases"].append(phase_prefill(url, headers, model, cfg["prefill"], 96, cfg["prefill_rep"])); save()
@@ -1589,11 +1596,11 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
         if rp_pool is not None:
             rcfg = replay.get("closed") or {}
             if rcfg.get("conc"):
-                plog("[phase] replay 闭环")
+                plog(t("[phase] replay 闭环"))
                 result["phases"].append(phase_replay_closed(url, headers, model, rcfg, rp_pool)); save()
             ocfg = replay.get("open") or {}
             if ocfg.get("rates"):
-                plog("[phase] replay 开环 (泊松到达)")
+                plog(t("[phase] replay 开环 (泊松到达)"))
                 result["phases"].append(phase_replay_open(url, headers, model, ocfg, rp_pool)); save()
             result["replay"]["wrapped"] = rp_pool.wrapped
         for ctx in cfg.get("longctx", []):
@@ -1602,8 +1609,8 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
         result["status"] = "done"
     except Cancelled:
         result["status"] = "cancelled"
-        result["error"] = "用户取消"
-        plog("已取消: 已完成的阶段已保存")
+        result["error"] = t("用户取消")
+        plog(t("已取消: 已完成的阶段已保存"))
     except KeyboardInterrupt:
         result["status"] = "interrupted"
         plog("interrupted - partial results kept")
@@ -1619,14 +1626,15 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
         result["finished_utc"] = datetime.now(timezone.utc).isoformat()
         if fixed_output and url in _NO_IGNORE_EOS:
             result["overrides"]["fixed_output"] = False
-            result["overrides"]["fixed_output_note"] = "端点不支持 ignore_eos, 输出长度未固定"
+            result["overrides"]["fixed_output_note"] = t("端点不支持 ignore_eos, 输出长度未固定")
         _CANCEL = None
         save()
     plog("done => %s" % sink.location)
     return sink.location
 
 
-def main():
+def main(argv=None):
+    i18n.preparse_lang(argv)  # 要在创建 argparse 之前: --help 的文字也是 --lang 指定的语言
     ap = argparse.ArgumentParser(description="llm-bench-pro 推理基准引擎")
     ap.add_argument("--url", required=True, help="完整 chat completions URL (或 base URL, 自动规整)")
     ap.add_argument("--model", required=True)
@@ -1658,7 +1666,8 @@ def main():
     ap.add_argument("--sink", choices=["json", "db", "both"], default="json",
                     help="结果落地: json=outdir 文件(默认) / db=SQLite 库 / both")
     ap.add_argument("--db", default=None, help="SQLite 库路径 (默认 data/llm_bench.db 或 $LLM_BENCH_DB)")
-    args = ap.parse_args()
+    i18n.add_lang_arg(ap)
+    args = ap.parse_args(argv)
     url = args.url if args.url.endswith("/chat/completions") else normalize_base(args.url) + "/v1/chat/completions"
     ladder = None
     if args.conc_ladder:

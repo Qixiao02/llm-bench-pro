@@ -35,6 +35,7 @@ import endpoints  # noqa: E402
 import export_html  # noqa: E402
 import gen  # noqa: E402
 import geneval  # noqa: E402
+import i18n  # noqa: E402
 import iq  # noqa: E402
 import report  # noqa: E402
 import sinks  # noqa: E402
@@ -42,6 +43,8 @@ import store  # noqa: E402
 import tasksets  # noqa: E402
 import vision_assets  # noqa: E402
 from version import APP_VERSION  # noqa: E402
+
+t, tn = i18n.t, i18n.tn
 
 DATA = os.path.join(ROOT, "data")        # 运行数据(不入库): 数据库 / 结果 JSON / 生成作品 / 回放与场景文件
 RESULTS = os.path.join(DATA, "results")  # 命令行跑出的或从别的机器拷回的 JSON 结果: 启动时自动导入库(仅新增)
@@ -137,7 +140,14 @@ COMMIT_AT_START = _git_head()
 
 # ---------------------------------------------------------------- 后台任务
 
-JOB_NAMES = {"perf": "性能测试", "iq": "能力评测", "gen": "代码生成", "bank": "题集更新"}
+JOB_KINDS = ("perf", "iq", "gen", "bank")
+
+
+def job_name(kind):
+    """任务的名称 (出现在提示和日志里)。按当前语言生成, 所以是函数, 不是模块级常量。
+    ctx="任务名": 「代码生成」在别处 (场景名等) 的英文说法不一样, 用语境区分。"""
+    return {"perf": t("性能测试", ctx="任务名"), "iq": t("能力评测", ctx="任务名"),
+            "gen": t("代码生成", ctx="任务名"), "bank": t("题集更新", ctx="任务名")}[kind]
 
 
 class Job:
@@ -145,6 +155,7 @@ class Job:
 
     def __init__(self, kind, log_limit=500):
         self.kind, self.log_limit = kind, log_limit
+        self.lang = i18n.current_lang()  # 任务启动时的语言 (try_start 里更新): 任务的日志和结果里的说明都用它
         self.lock = threading.Lock()
         self.cancel = threading.Event()
         self.state = {"running": False, "log": [], "error": None, "run_id": None, "started_at": None,
@@ -164,6 +175,7 @@ class Job:
         with self.lock:
             if self.state["running"]:
                 return False
+            self.lang = i18n.current_lang()  # 记下发起这个任务的请求的语言, 之后别的请求的语言不影响它
             self.cancel.clear()
             self.state.update({"running": True, "log": [], "error": None, "run_id": run_id, "base": base,
                                "title": title, "cancelling": False, "files": [os.path.realpath(f) for f in files or []],
@@ -175,8 +187,9 @@ class Job:
             self.state.update(kw)
 
     def run(self, target, progress_attr=None, module=None):
-        """在后台线程中执行 target(job); 统一记录异常与结束状态。"""
+        """在后台线程中执行 target(job); 统一记录异常与结束状态。任务线程和它里面的工作线程都用启动时记下的语言。"""
         def body():
+            i18n.set_lang(self.lang)
             if module is not None:
                 setattr(module, progress_attr, self.line)
             try:
@@ -189,10 +202,10 @@ class Job:
                 if module is not None:
                     setattr(module, progress_attr, None)
                 self.set(running=False, cancelling=False)
-        threading.Thread(target=body, daemon=True, name="job-" + self.kind).start()
+        i18n.spawn(body, name="job-" + self.kind)
 
 
-JOBS = {k: Job(k) for k in JOB_NAMES}
+JOBS = {k: Job(k) for k in JOB_KINDS}
 
 
 def endpoint_key(base):
@@ -211,7 +224,7 @@ def endpoint_conflict(kind, base):
             continue
         st = job.snapshot()
         if st["running"] and st["base"] and endpoint_key(st["base"]) == key and "perf" in (k, kind):
-            return JOB_NAMES[k]
+            return job_name(k)
     return None
 
 
@@ -752,10 +765,10 @@ def _busy_task_files():
 def _task_set_path(fid):
     """(路径, 状态码, 错误说明): id 必须是 scn- 加 12 位十六进制数字, 文件要存在。"""
     if not isinstance(fid, str) or not tasksets.ID_RE.match(fid):
-        return None, 400, "任务集 id 不对（应为 scn- 加 12 位十六进制数字）"
+        return None, 400, t("任务集 id 不对（应为 scn- 加 12 位十六进制数字）")
     path = tasksets.file_path(SCN_TASKS_DIR, fid)
     if not os.path.isfile(path):
-        return None, 404, "任务集不存在（可能已被删除）"
+        return None, 404, t("任务集不存在（可能已被删除）")
     return path, 200, ""
 
 
@@ -793,12 +806,12 @@ def task_set_detail(fid, offset="", limit="", status="", q="", head=True):
     try:
         offset, limit = int(offset or 0), int(limit or 12)
     except (TypeError, ValueError):
-        return 400, {"ok": False, "error": "offset / limit 应为整数"}
+        return 400, {"ok": False, "error": t("offset / limit 应为整数")}
     if offset < 0 or not 1 <= limit <= tasksets.PAGE_MAX:
-        return 400, {"ok": False, "error": "offset 不能小于 0，limit 应为 1–%d" % tasksets.PAGE_MAX}
+        return 400, {"ok": False, "error": t("offset 不能小于 0，limit 应为 1–{max}", max=tasksets.PAGE_MAX)}
     status = status or "all"
     if status not in tasksets.FILTERS:
-        return 400, {"ok": False, "error": "status 应为 %s 之一" % " / ".join(tasksets.FILTERS)}
+        return 400, {"ok": False, "error": t("status 应为 {options} 之一", options=" / ".join(tasksets.FILTERS))}
     q = str(q or "")[:200]
     s = tasksets.scan(*tasksets.stat_key(path))
     counts, total, page = tasksets.query(s, status, q, offset, limit)
@@ -823,10 +836,10 @@ def task_set_line(fid, line, raw=False):
     try:
         no = int(line)
     except (TypeError, ValueError):
-        return 400, {"ok": False, "error": "line 应为行号"}
+        return 400, {"ok": False, "error": t("line 应为行号")}
     row = tasksets.find(tasksets.scan(*tasksets.stat_key(path)), no)
     if row is None:
-        return 404, {"ok": False, "error": "没有第 %d 行（或者这一行是空行）" % no}
+        return 404, {"ok": False, "error": t("没有第 {no} 行（或者这一行是空行）", no=no)}
     text = tasksets.read_texts(path, [row])[0]
     if raw:
         return 200, {"ok": True, "no": no, "text": text}
@@ -841,10 +854,10 @@ def task_set_image(fid, line, idx):
     try:
         no, k = int(line), int(idx)
     except (TypeError, ValueError):
-        return 400, {"ok": False, "error": "line / idx 应为整数"}, None
+        return 400, {"ok": False, "error": t("line / idx 应为整数")}, None
     row = tasksets.find(tasksets.scan(*tasksets.stat_key(path)), no)
     if row is None:
-        return 404, {"ok": False, "error": "没有第 %d 行（或者这一行是空行）" % no}, None
+        return 404, {"ok": False, "error": t("没有第 {no} 行（或者这一行是空行）", no=no)}, None
     try:
         data, ctype = tasksets.image_bytes(tasksets.read_texts(path, [row])[0], k)
     except LookupError as e:
@@ -871,10 +884,10 @@ def endpoint_list():
 def _endpoint_of(ep_id):
     """(保存的模型, 状态码, 错误说明): id 必须是 ep_ 加字母数字, 模型要存在。"""
     if not isinstance(ep_id, str) or not endpoints.ID_RE.match(ep_id):
-        return None, 400, "模型 id 不对（应为 ep_ 开头的字母、数字、下划线）"
+        return None, 400, t("模型 id 不对（应为 ep_ 开头的字母、数字、下划线）")
     ep = store.get_endpoint(ep_id)
     if not ep:
-        return None, 404, "这个模型不存在（可能已被删除）"
+        return None, 404, t("这个模型不存在（可能已被删除）")
     return ep, 200, ""
 
 
@@ -886,13 +899,13 @@ def endpoint_runs(ep_id, kind="", limit=""):
         return code, {"ok": False, "error": err}
     kind = kind or "all"
     if kind not in ("all",) + endpoints.KINDS:
-        return 400, {"ok": False, "error": "kind 应为 all / perf / iq / gen 之一"}
+        return 400, {"ok": False, "error": t("kind 应为 all / perf / iq / gen 之一")}
     try:
         limit = int(limit or endpoints.RUNS_MAX)
     except (TypeError, ValueError):
-        return 400, {"ok": False, "error": "limit 应为整数"}
+        return 400, {"ok": False, "error": t("limit 应为整数")}
     if not 1 <= limit <= endpoints.RUNS_MAX:
-        return 400, {"ok": False, "error": "limit 应为 1–%d" % endpoints.RUNS_MAX}
+        return 400, {"ok": False, "error": t("limit 应为 1–{max}", max=endpoints.RUNS_MAX)}
     hit, counts = endpoints.matching_runs(store.run_targets(), ep, kind)
     briefs = store.run_briefs([rid for rid, _ in hit[:limit]])
     runs = []
@@ -937,6 +950,7 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def do_GET(self):
+        i18n.set_lang(i18n.lang_from_headers(self.headers))  # 本请求的语言: X-Lang, 其次 Accept-Language, 都没有用默认
         parts = urllib.parse.urlsplit(self.path)
         path = urllib.parse.unquote(parts.path)
         query = urllib.parse.parse_qs(parts.query)
@@ -947,10 +961,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._redirect("/", {"Set-Cookie": "bench_token=%s; Path=/; HttpOnly; SameSite=Strict" % token})
         if not self._authorized(path, query):
             if path.startswith("/api/"):
-                return self._json({"ok": False, "error": "需要访问令牌"}, 401)
+                return self._json({"ok": False, "error": t("需要访问令牌")}, 401)
             return self._body(("<!doctype html><meta charset=utf-8><title>LLM Bench Pro</title>"
-                               "<p style='font:14px system-ui;margin:40px'>该服务启用了访问令牌，请使用 "
-                               "<code>http://主机:端口/?token=令牌</code> 打开。</p>").encode(), "text/html; charset=utf-8", 401)
+                               "<p style='font:14px system-ui;margin:40px'>%s</p>"
+                               % t("该服务启用了访问令牌，请使用 <code>http://主机:端口/?token=令牌</code> 打开。")).encode(),
+                              "text/html; charset=utf-8", 401)
 
         if path in ("/", "/index.html"):
             return self._serve_file(UI, "text/html; charset=utf-8")
@@ -1028,6 +1043,7 @@ class Handler(BaseHTTPRequestHandler):
                 "gen_version": gen.GEN_VERSION}
 
     def do_POST(self):
+        i18n.set_lang(i18n.lang_from_headers(self.headers))  # 本请求的语言 (同 do_GET); 后台任务在启动时再记下它
         parts = urllib.parse.urlsplit(self.path)
         try:  # 先读完请求体: 提前返回错误而不读取时, Windows 上客户端可能收到连接重置而非错误响应
             length = min(int(self.headers.get("Content-Length", 0)), 16 * 1024 * 1024)
@@ -1035,13 +1051,13 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, OSError):
             return self._json({"ok": False, "error": "bad request"}, 400)
         if not self._authorized(parts.path, {}):
-            return self._json({"ok": False, "error": "需要访问令牌"}, 401)
+            return self._json({"ok": False, "error": t("需要访问令牌")}, 401)
         # 跨站/沙箱 iframe(Origin: null)中的作品页面不能调用接口: 要求同源, 且必须是 JSON 请求(跨站时会触发预检)
         origin = self.headers.get("Origin")
         if origin is not None and urllib.parse.urlsplit(origin).netloc != (self.headers.get("Host") or ""):
-            return self._json({"ok": False, "error": "拒绝跨源请求"}, 403)
+            return self._json({"ok": False, "error": t("拒绝跨源请求")}, 403)
         if not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
-            return self._json({"ok": False, "error": "Content-Type 必须为 application/json"}, 415)
+            return self._json({"ok": False, "error": t("Content-Type 必须为 application/json")}, 415)
         try:
             body = json.loads(raw or b"{}")
         except Exception:
@@ -1070,12 +1086,12 @@ class Handler(BaseHTTPRequestHandler):
         """同类任务运行中 -> 409; 与性能测试共用同一端点 -> 409(code=endpoint_busy, 可带 force 确认后继续)。
         已写出拒绝响应时返回 True, 调用方必须立即返回。"""
         if JOBS[kind].snapshot()["running"]:
-            self._json({"ok": False, "error": "已有%s在运行" % JOB_NAMES[kind]}, 409)
+            self._json({"ok": False, "error": t("已有{name}在运行", name=job_name(kind))}, 409)
             return True
         other = endpoint_conflict(kind, base)
         if other and not body.get("force"):
             self._json({"ok": False, "code": "endpoint_busy", "conflict": other,
-                        "error": "%s正在使用同一模型端点。同时运行会使性能测试的吞吐和延迟数据失真。" % other}, 409)
+                        "error": t("{name}正在使用同一模型端点。同时运行会使性能测试的吞吐和延迟数据失真。", name=other)}, 409)
             return True
         return False
 
@@ -1084,13 +1100,13 @@ class Handler(BaseHTTPRequestHandler):
         (带上同样的 Key: 服务开了鉴权时不带就认不出来)。连不上时 code 说明原因(见 endpoints.probe_fail), 页面写成大白话。"""
         raw, api_key = body.get("base"), body.get("api_key")
         if not isinstance(raw, str) or (api_key is not None and not isinstance(api_key, str)):
-            return self._json({"ok": False, "code": "bad_url", "error": "base / api_key 应为文字"}, 400)
+            return self._json({"ok": False, "code": "bad_url", "error": t("base / api_key 应为文字")}, 400)
         base = bench.normalize_base(raw)
         if not endpoints.url_ok(base):
-            return self._json({"ok": False, "code": "bad_url", "base": base, "error": endpoints.BAD_URL}, 400)
+            return self._json({"ok": False, "code": "bad_url", "base": base, "error": endpoints.bad_url()}, 400)
         api_key = (api_key or "").strip()
         if re.search(r"[\x00-\x1f\x7f]", api_key):
-            return self._json({"ok": False, "code": "bad_key", "base": base, "error": "API Key 中间不能有换行或其他控制字符"}, 400)
+            return self._json({"ok": False, "code": "bad_key", "base": base, "error": t("API Key 中间不能有换行或其他控制字符")}, 400)
         headers = {"Authorization": "Bearer " + api_key} if api_key else {}
         t0 = time.perf_counter()
         try:
@@ -1113,13 +1129,14 @@ class Handler(BaseHTTPRequestHandler):
     def api_cancel(self, body):
         kind = body.get("job")
         if kind not in JOBS:
-            return self._json({"ok": False, "error": "job 应为 perf / iq / gen / bank"}, 400)
+            return self._json({"ok": False, "error": t("job 应为 perf / iq / gen / bank")}, 400)
         job = JOBS[kind]
         if not job.snapshot()["running"]:
-            return self._json({"ok": False, "error": "没有运行中的%s" % JOB_NAMES[kind]}, 409)
+            return self._json({"ok": False, "error": t("没有运行中的{name}", name=job_name(kind))}, 409)
         job.cancel.set()
         job.set(cancelling=True)
-        job.line("收到停止请求：不再开始新的请求，已完成的结果会保留")
+        with i18n.use_lang(job.lang):  # 这行日志写进任务的日志里: 用任务启动时的语言, 不用这次停止请求的语言
+            job.line(t("收到停止请求：不再开始新的请求，已完成的结果会保留"))
         return self._json({"ok": True})
 
     def api_run_delete(self, body):
@@ -1145,14 +1162,14 @@ class Handler(BaseHTTPRequestHandler):
         带 id 是修改, 不带是新增; 字段规则见 endpoints.clean_fields。返回这一个和全部(都带「用过几次」)。"""
         ep_id = body.get("id")
         if ep_id not in (None, "") and (not isinstance(ep_id, str) or not endpoints.ID_RE.match(ep_id)):
-            return self._json({"ok": False, "error": "模型 id 不对（应为 ep_ 开头的字母、数字、下划线）"}, 400)
+            return self._json({"ok": False, "error": t("模型 id 不对（应为 ep_ 开头的字母、数字、下划线）")}, 400)
         fields, err = endpoints.clean_fields(body)
         if err:
             return self._json({"ok": False, "error": err}, 400)
         try:
             ep = store.save_endpoint(dict(fields, id=ep_id or None))
         except KeyError:
-            return self._json({"ok": False, "error": "这个模型不存在（可能已被删除）"}, 404)
+            return self._json({"ok": False, "error": t("这个模型不存在（可能已被删除）")}, 404)
         except ValueError as e:
             return self._json({"ok": False, "error": str(e)}, 400)
         eps = endpoint_list()
@@ -1305,7 +1322,7 @@ class Handler(BaseHTTPRequestHandler):
         if not path:
             return self._json({"ok": False, "error": err}, code)
         if not isinstance(body.get("name"), str):
-            return self._json({"ok": False, "error": "name 应为文字"}, 400)
+            return self._json({"ok": False, "error": t("name 应为文字")}, 400)
         name, err = tasksets.clean_name(body["name"])
         if err:
             return self._json({"ok": False, "error": err}, 400)
@@ -1320,7 +1337,7 @@ class Handler(BaseHTTPRequestHandler):
         if not path:
             return self._json({"ok": False, "error": err}, code)
         if os.path.realpath(path) in _busy_task_files():
-            return self._json({"ok": False, "error": "有速度测试正在用这个任务集，等测试结束（或停止它）之后再删除"}, 409)
+            return self._json({"ok": False, "error": t("有速度测试正在用这个任务集，等测试结束（或停止它）之后再删除")}, 409)
         fid = body["id"]
         uses = len(store.task_set_uses().get(fid) or [])
         tasksets.remove(SCN_TASKS_DIR, fid)
@@ -1400,7 +1417,7 @@ class Handler(BaseHTTPRequestHandler):
         bundle["api"]["version"]["offline"] = True
         bundle["ui"] = _export_ui(body.get("ui"))
         bundle["exported_at"] = datetime.now(timezone.utc).isoformat()
-        title = re.sub(r"[\x00-\x1f]", " ", str(body.get("title") or ""))[:160] or "LLM Bench Pro 离线报告"
+        title = re.sub(r"[\x00-\x1f]", " ", str(body.get("title") or ""))[:160] or t("LLM Bench Pro 离线报告")
         text = export_html.compose(page, bundle, _export_state(body.get("state")), title)
         return self._body(text.encode("utf-8"), "text/html; charset=utf-8")
 
@@ -1458,7 +1475,8 @@ class Handler(BaseHTTPRequestHandler):
         metrics_url = base + "/metrics" if body.get("metrics", True) else None
         tag = (body.get("tag") or "").strip()
         fixed_output = body.get("fixed_output", True) is not False
-        notes = ["启动时%s正在使用同一端点，数据可能受干扰" % body.get("conflict_with", "其他测试")] if body.get("force") else None
+        # 存进结果里的说明: 用发起这个测试的请求的语言生成 (任务里的其他文字也一样), 原样存储
+        notes = [t("启动时{name}正在使用同一端点，数据可能受干扰", name=body.get("conflict_with", t("其他测试")))] if body.get("force") else None
 
         def target(j):
             sink = sinks.SqliteSink()
@@ -1693,12 +1711,14 @@ class BenchServer(ThreadingHTTPServer):
 
 
 def parse_args(argv=None):
-    ap = argparse.ArgumentParser(description="LLM Bench Pro 服务")
-    ap.add_argument("port", nargs="?", type=int, default=18080, help="监听端口 (默认 18080)")
+    i18n.preparse_lang(argv)  # 要在创建 argparse 之前: --help 的文字也是 --lang 指定的语言
+    ap = argparse.ArgumentParser(description=t("LLM Bench Pro 服务"))
+    ap.add_argument("port", nargs="?", type=int, default=18080, help=t("监听端口 (默认 18080)"))
     ap.add_argument("--host", default=os.environ.get("LLM_BENCH_HOST", "127.0.0.1"),
-                    help="监听地址 (默认 127.0.0.1 仅本机; 局域网访问用 0.0.0.0, 建议同时设置 --token)")
+                    help=t("监听地址 (默认 127.0.0.1 仅本机; 局域网访问用 0.0.0.0, 建议同时设置 --token)"))
     ap.add_argument("--token", default=os.environ.get("LLM_BENCH_TOKEN", ""),
-                    help="访问令牌; 设置后需用 http://主机:端口/?token=令牌 打开页面")
+                    help=t("访问令牌; 设置后需用 http://主机:端口/?token=令牌 打开页面"))
+    i18n.add_lang_arg(ap)
     return ap.parse_args(argv)
 
 
@@ -1714,19 +1734,20 @@ def migrate_legacy_dirs(root=ROOT, data=DATA):
             if not os.path.exists(new):
                 os.makedirs(data, exist_ok=True)
                 os.rename(old, new)
-                notes.append(("%s/ 已搬到 data/%s/" % (name, name), False))
+                notes.append((t("{name}/ 已搬到 data/{name}/", name=name), False))
                 continue
             left = [e for e in os.listdir(old) if os.path.exists(os.path.join(new, e))]
             for e in os.listdir(old):
                 if e not in left:
                     shutil.move(os.path.join(old, e), os.path.join(new, e))
             if left:
-                notes.append(("%s/ 里有 %d 项和 data/%s/ 重名，没有搬动，请手动核对后删除旧目录" % (name, len(left), name), True))
+                notes.append((tn("{name}/ 里有 {n} 项和 data/{name}/ 重名，没有搬动，请手动核对后删除旧目录", len(left), name=name), True))
             else:
                 os.rmdir(old)
-                notes.append(("%s/ 已并入 data/%s/" % (name, name), False))
+                notes.append((t("{name}/ 已并入 data/{name}/", name=name), False))
         except OSError as e:
-            notes.append(("%s/ 搬到 data/ 失败（%s）。请关掉占用这些文件的程序后重启服务，或手动搬到 data/%s/" % (name, e, name), True))
+            notes.append((t("{name}/ 搬到 data/ 失败（{error}）。请关掉占用这些文件的程序后重启服务，或手动搬到 data/{name}/",
+                            name=name, error=e), True))
     return notes
 
 
@@ -1736,8 +1757,9 @@ def main(argv=None):
     try:
         server = BenchServer((args.host, args.port), Handler)
     except OSError as e:
-        print("✗ 无法监听 %s:%d（%s）\n  端口可能已被占用，常见原因是已有 LLM Bench Pro 在运行。"
-              "\n  请先关闭旧进程，或换一个端口：python run.py %d" % (args.host, args.port, e, args.port + 1))
+        print(t("✗ 无法监听 {host}:{port}（{error}）\n  端口可能已被占用，常见原因是已有 LLM Bench Pro 在运行。"
+                "\n  请先关闭旧进程，或换一个端口：python run.py {next_port}",
+                host=args.host, port=args.port, error=e, next_port=args.port + 1))
         sys.exit(1)
     moved = migrate_legacy_dirs()
     db = store.default_db()
@@ -1748,11 +1770,12 @@ def main(argv=None):
     print("LLM Bench Pro %s => http://%s:%d%s  (db: %s)" % (APP_VERSION, shown, args.port,
                                                             "/?token=***" if args.token else "", db))
     for text, attention in moved:
-        print("  %s 目录调整：%s" % ("⚠" if attention else "·", text))
+        print(t("  {mark} 目录调整：{text}", mark="⚠" if attention else "·", text=text))
     if args.host not in ("127.0.0.1", "localhost", "::1") and not args.token:
-        print("  ⚠ 正在监听 %s 且未设置访问令牌：局域网内任何人都可以发起测试、查看结果。建议加 --token" % args.host)
+        print(t("  ⚠ 正在监听 {host} 且未设置访问令牌：局域网内任何人都可以发起测试、查看结果。建议加 --token", host=args.host))
     if imported["inserted"] or imported["errors"] or stale:
-        print("  导入旧 JSON %d 个, 失败 %d 个, 标记中断 %d 个" % (imported["inserted"], len(imported["errors"]), stale))
+        print(t("  导入旧 JSON {inserted} 个, 失败 {failed} 个, 标记中断 {stale} 个",
+                inserted=imported["inserted"], failed=len(imported["errors"]), stale=stale))
         for e in imported["errors"]:
             print("  ✗", e)
     try:

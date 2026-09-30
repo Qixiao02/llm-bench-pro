@@ -22,10 +22,11 @@ import threading
 import time
 
 try:
-    from . import cdp, gen_specs, iq
+    from . import cdp, gen_specs, i18n, iq
 except ImportError:
     import cdp
     import gen_specs
+    import i18n
     import iq
 
 # 1.1: 交互判定基线与动作窗口等长、需作品处理器响应、忽略无变化的 DOM 重写; 按键码表; 移动端溢出判定;
@@ -1057,6 +1058,7 @@ def apply_eval(item, report):
 
 
 def main(argv=None):
+    i18n.preparse_lang(argv)  # 要在创建 argparse 之前: --help 的文字也是 --lang 指定的语言
     ap = argparse.ArgumentParser(description="生成作品评测: 运行检测 + 视觉评审")
     ap.add_argument("--run", required=True, help="gen 运行 ID")
     ap.add_argument("--db", default=None)
@@ -1065,6 +1067,7 @@ def main(argv=None):
     ap.add_argument("--judge-model", default=None)
     ap.add_argument("--judge-key", default=os.environ.get("JUDGE_API_KEY", ""))
     ap.add_argument("--browsers", type=int, default=2)
+    i18n.add_lang_arg(ap)
     args = ap.parse_args(argv)
     try:
         from . import gen

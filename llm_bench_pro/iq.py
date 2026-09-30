@@ -14,13 +14,14 @@ import time
 import urllib.error
 import urllib.request
 from collections import OrderedDict, deque
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, wait
 from datetime import datetime, timezone
 
 try:
-    from . import bankman, sinks  # 包内导入
+    from . import bankman, i18n, sinks  # 包内导入
 except ImportError:
     import bankman  # server.py 以包目录为 sys.path 顶层导入
+    import i18n
     import sinks
 
 # 1.1: 修正 MATH-500 boxed 判分(1.0 的 math500 分数无效)
@@ -850,7 +851,7 @@ def _run_subjects(url, model, headers, subjects, limit_per_subject, conc, thinki
                 rec["rtail"] = r["reasoning_tail"]  # 答错时留思考的最后一段, 便于看出卡在哪
             return rec
 
-        ex = ThreadPoolExecutor(max_workers=conc)
+        ex = i18n.executor(max_workers=conc)
         futures = {ex.submit(worker, x) for x in pending}
         since_save = 0
         try:

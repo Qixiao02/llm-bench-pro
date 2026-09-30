@@ -13,7 +13,6 @@ bankman.py — 能力评测题库管理器
 离线使用: 本地数据齐全时 build() 不访问网络; 没有网的机器, 把能联网机器上的 data/datasets/ 拷过去即可。
 同一份上游数据无论从哪个源下载, 本地保存的格式一样, 抽出来的题完全相同(同内容同 id)。
 """
-import concurrent.futures as cf
 import csv
 import hashlib
 import io
@@ -27,6 +26,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+
+try:
+    from . import i18n  # 包内导入
+except ImportError:
+    import i18n  # server.py 以包目录为 sys.path 顶层导入
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
 BANKS = os.path.join(ROOT, "banks")
@@ -252,7 +256,7 @@ def gh_text(ctx, repo, branch, path):
         except Exception:
             return None
     ctx.check()
-    with cf.ThreadPoolExecutor(len(cands)) as ex:
+    with i18n.executor(len(cands)) as ex:
         ranked = sorted(r for r in ex.map(probe, cands) if r)
     if not ranked:
         raise RuntimeError("GitHub 和它的镜像都连不上")
@@ -646,6 +650,7 @@ def load_bank(bank_id):
 
 def main(argv=None):
     import argparse
+    i18n.preparse_lang(argv)  # 要在创建 argparse 之前: --help 的文字也是 --lang 指定的语言
     ap = argparse.ArgumentParser(description="能力评测题库: 下载数据到本地 / 从本地数据生成题库")
     ap.add_argument("cmd", nargs="?", default="build", choices=["build", "download", "status"],
                     help="build=缺什么下载什么再生成(默认); download=只下载数据; status=看本地数据")
@@ -653,6 +658,7 @@ def main(argv=None):
     ap.add_argument("--proxy", default=None, help="下载用的 HTTP 代理, 如 http://127.0.0.1:7890")
     ap.add_argument("--offline", action="store_true", help="不联网, 只用本地数据生成")
     ap.add_argument("--force", action="store_true", help="download 时重新下载全部数据")
+    i18n.add_lang_arg(ap)
     a = ap.parse_args(argv)
     log = lambda m: print(m, flush=True)  # noqa: E731
     if a.cmd == "status":
