@@ -135,8 +135,8 @@ class TestEndpointFields(unittest.TestCase):
         self.assertEqual(endpoints.perf_summary([]), {"phases": 0, "scn": 0})
         items = [{"exec_score": 80, "judge_score": 70, "eval": {"method": "browser"}}, {"exec_score": 60, "eval": {"method": "static"}},
                  {"error": "boom", "exec_score": 0}]
-        self.assertEqual(endpoints.gen_summary(items, 33), {"done": 2, "planned": 33, "exec": 70.0, "judge": 70.0, "method": "mixed"})
-        self.assertEqual(endpoints.gen_summary(items[1:2], None), {"done": 1, "planned": 1, "exec": 60.0, "method": "static"})
+        self.assertEqual(endpoints.gen_summary(items, 33), {"done": 2, "planned": 33, "exec": 80.0, "judge": 70.0, "method": "mixed"})   # 只平均实际运行的
+        self.assertEqual(endpoints.gen_summary(items[1:2], None), {"done": 1, "planned": 1, "method": "static"})   # 没有实际运行: 不打分
         self.assertEqual(endpoints.gen_summary([], 4), {"done": 0, "planned": 4})
 
 

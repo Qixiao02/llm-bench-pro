@@ -1,6 +1,6 @@
 "use strict";
 /* LLM Bench Pro 前端逻辑 (零依赖经典脚本; 图表用本地内置的 ECharts) */
-const UI_VERSION="3.9.0";  /* 与 llm_bench_pro/version.py 保持一致 */
+const UI_VERSION="3.10.0";  /* 与 llm_bench_pro/version.py 保持一致 */
 I18N.boot();  /* 翻译框架 (i18n.js) 先加载: 记下页面上原有的静态节点, 英文模式下先把 index.html 的静态文字翻成英文, 再往下跑 */
 /* ============================================================
    基础工具
@@ -3397,7 +3397,7 @@ async function loadGenResults(focusNew,keepRun){
   try{
     const list=await getJSON("/api/gen-results");
     const prev=new Set(Object.keys(GEN_RUNS));
-    GEN_RUNS={};list.forEach(r=>GEN_RUNS[r.run_id]=r);GEN_LOADED=true;
+    GEN_RUNS={};list.forEach(r=>{(r.items||[]).forEach(genNormalize);GEN_RUNS[r.run_id]=r});GEN_LOADED=true;
     const names=Object.keys(GEN_RUNS).sort().reverse();
     const fresh=focusNew?names.find(n=>!prev.has(n)):null;
     const main=$("genMainSel"),cmp=$("genCmpSel");
@@ -3418,12 +3418,11 @@ function genStats(r){
   const browser=ok.filter(x=>x.eval&&x.eval.method==="browser");
   const stat=ok.filter(x=>x.eval&&x.eval.method==="static");
   const mode=browser.length&&stat.length?"mixed":stat.length?"static":browser.length?"browser":((r.eval||{}).method==="static"?"static":"browser");
-  const execPool=mode==="static"?(stat.length?stat:ok):(browser.length?browser:ok);
   const judged=ok.filter(x=>typeof x.judge_score==="number");
   const judgeErr=ok.filter(x=>x.eval&&x.eval.judge&&x.eval.judge.error&&typeof x.judge_score!=="number");
   const starred=ok.filter(x=>typeof x.stars==="number"&&x.stars>0);
   return{ok,v2,mode,browserN:browser.length,staticN:stat.length,
-    exec:v2?avgOf(execPool.map(x=>x.exec_score)):null,
+    exec:v2?avgOf(ok.map(x=>x.exec_score)):null,
     judge:avgOf(judged.map(x=>x.judge_score)),judgeN:judged.length,judgeErr:judgeErr.length,
     stars:avgOf(starred.map(x=>x.stars)),starN:starred.length,
     planned:r.planned||items.length};
@@ -3431,7 +3430,8 @@ function genStats(r){
 function genLabel(r){
   const s=genStats(r);
   const parts=[r.model||"?",runFw(r),r.thinking?"思考":"不思考",`完成 ${s.ok.length}/${s.planned}`,r.status&&r.status!=="done"?STATUS_NAME[r.status]||r.status:""];
-  if(s.exec!=null)parts.push(`${s.mode==="static"?"只看代码":"运行检查"} ${s.exec.toFixed(0)}%`);
+  if(s.exec!=null)parts.push(`运行检查 ${s.exec.toFixed(0)}%`);
+  else if(s.v2&&s.mode==="static")parts.push("没有实际运行");
   if(s.judge!=null)parts.push(`AI 打分 ${s.judge.toFixed(0)}`);
   if(s.stars!=null)parts.push(`人工 ${s.stars.toFixed(1)}（${s.starN}）`);
   if(!s.v2)parts.push("旧版检查");
@@ -3439,6 +3439,36 @@ function genLabel(r){
   return parts.filter(Boolean).join(" · ");
 }
 function scoreCls(p){return p==null?"":p>=80?"good":p>=50?"mid":"bad"}
+/* ---------- 评分标准: 以「能不能用」为准 ----------
+   算分的只有四类(每道题 1~3 条核心断言): 能打开、不白屏、不报错、题目要求的核心操作有反应。
+   动画、手机适配、外网依赖、代码写完整、代码关键词只作提示, 不算分; AI 看图分和人工星级另外列出, 不混进这个分数。
+   纯动画题(没有操作步骤)的核心断言就是「画面在动」, 这时「有动画」也算分。没有在浏览器里实际运行(只看了代码)看不出能不能用, 不打分。
+   规则和后端 gen_specs.py 的 score_checks 一样(tests/js/gen_score_cases.json 是两边共用的用例);
+   旧任务的存档里没有 scored 标记, 按检查项的 id 现算, 所以旧任务也按新标准显示。 */
+const GEN_STEP_RE=/^step\d+$/;
+function genChecks(it){
+  const e=it&&it.eval,list=e&&Array.isArray(e.checks)?e.checks.filter(c=>c&&c.id!=null):[];
+  const run=!!e&&e.method==="browser";
+  const hasStep=list.some(c=>GEN_STEP_RE.test(String(c.id)));
+  const notRepro=!!(e&&e.control)&&e.control.reproduced===false;
+  const core=[],hints=[];let env=null;
+  list.forEach(c=>{
+    const id=String(c.id);
+    if(!run){hints.push(c);return}
+    const scored=typeof c.scored==="boolean"?c.scored:(id==="load"||id==="nonblank"||id==="no_error"||GEN_STEP_RE.test(id)||(id==="animated"&&!hasStep));
+    if(id==="no_error"&&!c.pass&&(!scored||notRepro)){env=c;return}   /* 没通过、但在干净页面里没有复现: 可能是检测引起的, 不算在作品头上, 不算分 */
+    (scored?core:hints).push(c);
+  });
+  const pass=core.filter(c=>c.pass).length,total=core.length;
+  return{run,core,hints,env,pass,total,score:run&&total?Math.round(1000*pass/total)/10:null};
+}
+/* 载入时把 pass / total / exec_score 换成新标准的值(旧任务的存档是按全部检查项算的), 排序、对比、汇总、图表都读这三个字段 */
+function genNormalize(it){
+  if(!it||it.error||!it.eval)return it;
+  const g=genChecks(it);
+  it.pass=g.pass;it.total=g.total;it.exec_score=g.score;
+  return it;
+}
 /* 检查项的大白话名称(原名放在悬停提示里) */
 const CHECK_PLAIN={load:"能正常打开，没有卡死",nonblank:"打开后有内容（不是白屏）",animated:"不操作时画面也在动",no_error:"运行时没有报错",
   responsive:"手机屏幕上显示正常",self_contained:"不依赖外部网络资源",complete:"代码写完整了",probe:"检查过程顺利完成",doctype:"是完整的网页代码"};
@@ -3463,7 +3493,7 @@ function repText(d){
 }
 /* 作品的主要问题: 按优先级只取一个, 用于归因统计和卡片标题 */
 const VERDICTS=[
-  ["pass","全部检查通过","good","模型写得不错"],
+  ["pass","能用","good","模型写得不错"],
   ["partial","部分功能没反应","warn","模型写的功能不完整"],
   ["error","运行报错","bad","作品本身的 bug"],
   ["blank","白屏或打不开","bad","作品本身的问题"],
@@ -3477,20 +3507,22 @@ const VERDICT_META=Object.fromEntries(VERDICTS.map(([k,n,tone,why])=>[k,{name:n,
 function genVerdict(it){
   if(it.error)return{key:"fail",text:(it.degenerate?"模型陷入重复输出，没写出有效代码":"生成失败："+it.error)};
   if(it.degenerate)return{key:"repeat",text:`模型陷入重复输出：${repText(it.degenerate)}，已提前停止`};
-  const e=it.eval||{},by=Object.fromEntries((e.checks||[]).map(c=>[c.id,c]));
-  if(it.unfinished||(by.complete&&!by.complete.pass))return{key:"unfinished",text:it.unfinished?"接着写了多轮仍没写完（写到长度上限）":"代码没写完整（缺少结尾或脚本没闭合）"};
-  if(!it.eval)return{key:"static",text:"还没有检查"};
-  if(e.method==="static")return{key:"static",text:"没有在浏览器里实际运行，只检查了代码里的关键词"};
-  if(by.load&&!by.load.pass)return{key:"blank",text:"页面打不开或卡死"};
-  if(by.nonblank&&!by.nonblank.pass)return{key:"blank",text:"打开后是白屏"};
-  if(by.no_error&&!by.no_error.pass){
-    const ctl=e.control;
-    if(ctl&&ctl.reproduced===false)return{key:"env",text:"运行报错，但在干净环境里没有复现，可能是检测引起的"};
-    return{key:"error",text:"运行时报错"+(ctl&&ctl.reproduced?"（干净环境里同样报错，是作品本身的问题）":"")};
+  const e=it.eval,by=Object.fromEntries(((e&&e.checks)||[]).map(c=>[c.id,c]));
+  const cut=!!it.unfinished||!!(by.complete&&!by.complete.pass);   /* 代码没写完: 页面照样能用就只是提示; 真的坏了时它是最可能的原因 */
+  const unfin={key:"unfinished",text:it.unfinished?"接着写了多轮仍没写完（写到长度上限）":"代码没写完整（缺少结尾或脚本没闭合）"};
+  if(!e||e.method==="static"){   /* 没有实际运行: 看不出能不能用; 只有代码没写完是这时也能确定的问题 */
+    if(cut)return unfin;
+    return e?{key:"static",text:"没有在浏览器里实际运行，看不出能不能用（代码关键词只作参考，不打分）"}:{key:"static",text:"还没有检查"};
   }
-  const fails=(e.checks||[]).filter(c=>!c.pass);
-  if(fails.length)return{key:"partial",text:fails.slice(0,2).map(failText).join("；")+(fails.length>2?`，还有 ${fails.length-2} 项`:"")};
-  return{key:"pass",text:"全部检查通过"};
+  const g=genChecks(it),bad=g.core.filter(c=>!c.pass);
+  if(!bad.length&&!g.env)return{key:"pass",text:cut?t("能用（代码结尾不完整，但页面能正常运行）"):"能用"};
+  if(cut)return unfin;
+  const net=by.self_contained&&!by.self_contained.pass?t("（它依赖外部网络资源，检查时没联网，可能因此没加载出来）"):"";   /* 检查时不联网: 页面因此坏了才算问题, 这里说明可能的原因 */
+  if(by.load&&!by.load.pass)return{key:"blank",text:"页面打不开或卡死"+net};
+  if(by.nonblank&&!by.nonblank.pass)return{key:"blank",text:"打开后是白屏"+net};
+  if(g.env)return{key:"env",text:"运行报错，但在干净环境里没有复现，可能是检测引起的"};
+  if(by.no_error&&!by.no_error.pass)return{key:"error",text:"运行时报错"+(e.control&&e.control.reproduced?(net?t("（干净环境里同样报错）"):"（干净环境里同样报错，是作品本身的问题）"):"")+net};
+  return{key:"partial",text:genFailNote(bad)+net};
 }
 /* 框架对模型输出做过什么: 用于回答"作品是不是被框架弄坏了" */
 function changeKind(it){
@@ -3539,19 +3571,25 @@ function genPickShot(it){
   return{file:s.file,name:s.name||"",caption:s.caption||"",path:it.file.replace(/[^/]+$/,"")+e.shots_dir+"/"+s.file};
 }
 
-/* 谁更好(A / B 对比, 一道题一个结论), 判断顺序:
+/* 谁更好(A / B 对比, 一道题一个结论), 以「能不能用」为准, 判断顺序:
    1. 有一边没生成出来: 另一边更好(两边都没生成出来: 不比);
-   2. 两边都有人工星级: 比星级(相同就是差不多);
-   3. 否则两边都有 AI 看图打分: 比 AI 分(差 5 分以内算差不多);
-   4. 否则比检查通过的比例(6/6 比 4/6; 通过数一样就是差不多); 一边实际运行、一边只看了代码时检查方式不同, 不比。
+   2. 两边都实际运行了: 比运行检查通过的比例(只算能打开 / 不白屏 / 不报错 / 核心操作有反应: 6/6 比 4/6, 比例不同就分出高下);
+   3. 通过的比例一样(或一边只看了代码, 运行检查没法比): 两边都有人工星级比星级(相同就是差不多);
+   4. 否则两边都有 AI 看图打分: 比 AI 分(差 5 分以内算差不多);
+   5. 都比不出来: 两边都实际运行、通过比例一样是差不多; 一边实际运行一边只看了代码、或者两边都没实际运行, 不比。
+   星级和 AI 分只是「能用」之外的参考: 一个打不开的作品不会因为星级或 AI 分更高而「更好」。
    返回 {side: a | b | tie | none, basis: gen | stars | judge | checks, text: 一句话说明}; 有一边没有这道题返回 null。 */
-const genWinRule=()=>termText("怎么判断谁更好：有一边没生成出来，另一边更好；两边都有人工星级，比星级；否则两边都有 {judge}，比打分（差 5 分以内算差不多）；再否则比检查通过的比例。一边{run|实际运行}、一边{static}时，检查方式不同，不比。");
+const genWinRule=()=>termText("怎么判断谁更好：有一边没生成出来，另一边更好；两边都实际运行了，先比运行检查通过的比例（只算能打开、不白屏、不报错、核心操作有反应）；通过的比例一样，再比人工星级（两边都有才比）、{judge}（差 5 分以内算差不多）。一边{run|实际运行}、一边{static}时，运行检查比不了，直接比星级和打分。");
 const GEN_JUDGE_TIE=5;
 function genWinner(ia,ib){
   if(!ia||!ib)return null;
   if(ia.error&&ib.error)return{side:"none",basis:"gen",text:"两边都没生成出来"};
   if(ia.error)return{side:"b",basis:"gen",text:"A 没生成出来"};
   if(ib.error)return{side:"a",basis:"gen",text:"B 没生成出来"};
+  const ma=(ia.eval&&ia.eval.method)||"legacy",mb=(ib.eval&&ib.eval.method)||"legacy";
+  const ran=ma==="browser"&&mb==="browser"&&ia.total>0&&ib.total>0;   /* 两边都实际运行了、有检查结果: 才能比「能不能用」 */
+  const ra=ran?ia.pass/ia.total:0,rb=ran?ib.pass/ib.total:0,checks=`运行检查通过 A ${ia.pass}/${ia.total}，B ${ib.pass}/${ib.total}`;
+  if(ran&&Math.abs(ra-rb)>1e-9)return{side:ra>rb?"a":"b",basis:"checks",text:checks};
   const star=x=>typeof x.stars==="number"&&x.stars>0?x.stars:0,sa=star(ia),sb=star(ib);
   if(sa&&sb)return{side:sa===sb?"tie":sa>sb?"a":"b",basis:"stars",text:`人工评分 A ${sa} 星，B ${sb} 星`};
   const ja=ia.judge_score,jb=ib.judge_score;
@@ -3559,11 +3597,10 @@ function genWinner(ia,ib){
     const d=ja-jb;
     return{side:Math.abs(d)<GEN_JUDGE_TIE?"tie":d>0?"a":"b",basis:"judge",text:`AI 打分 A ${fmt(ja,0)} 分，B ${fmt(jb,0)} 分`};
   }
-  const ma=(ia.eval&&ia.eval.method)||"legacy",mb=(ib.eval&&ib.eval.method)||"legacy";
+  if(ran)return{side:"tie",basis:"checks",text:checks};
   if(ma!==mb)return{side:"none",basis:"checks",text:termText("检查方式不同（一边{run|实际运行}，一边{static}），不比较")};
-  if(!ia.total||!ib.total)return{side:"none",basis:"checks",text:"还没有检查结果"};
-  const ra=ia.pass/ia.total,rb=ib.pass/ib.total,label=ma==="browser"?"运行检查":"代码关键词";
-  return{side:Math.abs(ra-rb)<1e-9?"tie":ra>rb?"a":"b",basis:"checks",text:`${label}通过 A ${ia.pass}/${ia.total}，B ${ib.pass}/${ib.total}`};
+  if(ma!=="browser")return{side:"none",basis:"checks",text:t("两边都没有实际运行，看不出哪个能用，不比较")};
+  return{side:"none",basis:"checks",text:"还没有检查结果"};
 }
 function genWinLabel(w){return !w?"":({a:"A 更好",b:"B 更好",tie:"差不多"}[w.side]||"没法比")}
 
@@ -3576,15 +3613,15 @@ const STRIP_CLOSED=new Set();
 function genStrip(a,s,ev,items){
   if(!(s.v2&&(s.mode==="static"||s.mode==="mixed"))||STRIP_CLOSED.has(a.run_id))return "";
   const why=genStaticWhy(ev,items);
-  return `<div class="strip is-bad" role="status">${icon("x-circle")}<span class="strip-text"><b>${s.mode==="static"?"这些作品没有在浏览器里实际运行":`有 ${s.staticN} 件作品没有在浏览器里实际运行`}</b>，只检查了代码里的关键词，通过率不能代表作品真的能用。
+  return `<div class="strip is-bad" role="status">${icon("x-circle")}<span class="strip-text"><b>${s.mode==="static"?"这些作品没有在浏览器里实际运行":`有 ${s.staticN} 件作品没有在浏览器里实际运行`}</b>，只检查了代码里的关键词，看不出作品能不能用，所以没有打分。
       <span class="faint" title="${esc(why)}">原因：${esc(why)}</span></span>
     <button class="btn btn-secondary btn-sm" data-online-only onclick="genReeval()">${icon("scan-check")}重新检查</button>
     <button class="btn btn-ghost btn-icon btn-sm" data-strip-close="${esc(a.run_id)}" aria-label="收起提示" title="收起提示">${icon("x")}</button></div>`;
 }
-function genFailList(it){return it.eval?(it.eval.checks||[]).filter(c=>!c.pass):[]}
+function genFailList(it){return genChecks(it).core.filter(c=>!c.pass)}   /* 算分的检查里没通过的(提示项没通过不算问题) */
 function genFailNote(fails){return fails.slice(0,2).map(failText).join("；")+(fails.length>2?`，还有 ${fails.length-2} 项`:"")}
 /* 卡片上的状态标签和「自己的问题」:
-   - 整次测试都只看了代码 / 都是旧版检查: 状态标签不写(每张都一样, 顶部写过了), 有没找到的代码关键词才写;
+   - 整次测试都只看了代码 / 都是旧版检查: 状态标签不写(每张都一样, 顶部写过了), 说明也不写(代码关键词只作参考, 在详情里);
    - 一部分只看了代码: 标「没有实际运行」, 原因和顶部警示带一样就不再写;
    - 其余(报错、白屏、没写完、陷入重复、生成失败、部分功能没反应)都是这件作品自己的问题, 原样写一句。 */
 function genCardInfo(it,v,ctx){
@@ -3592,25 +3629,33 @@ function genCardInfo(it,v,ctx){
   let badge={tone:meta.tone,text:meta.name},note="";
   if(v.key==="static"){
     const common=!ctx.v2||ctx.mode==="static";
-    const fails=genFailList(it),why=(it.eval&&it.eval.notes&&it.eval.notes[0])||"";
-    note=fails.length?genFailNote(fails):(!common&&why&&why!==ctx.shared?why:"");
+    const why=(it.eval&&it.eval.notes&&it.eval.notes[0])||"";
+    note=!common&&why&&why!==ctx.shared?why:"";
     if(common)badge=null;
     else if(!it.eval)badge={tone:"neutral",text:"还没有检查"};
   }else if(v.key!=="pass")note=v.text;
   return{key:v.key,tone:meta.tone,name:meta.name,badge,note};
 }
-/* 检查结果: 「运行检查 5/6」「代码关键词 3/5」, 旧版本(没有 eval)也是关键词 */
+/* 检查结果: 「运行检查 3/4」只算「能不能用」的检查项(能打开 / 不白屏 / 不报错 / 核心操作有反应);
+   没有实际运行的只有「代码关键词 3/5」, 灰色, 不算分、只作参考(旧版本没有 eval 的也一样) */
 function genScore(it){
+  if(it.error)return null;
   const e=it.eval;
-  if(it.error||!(it.total>0))return null;
-  const label=!e||e.method==="static"?"代码关键词":"运行检查";
-  const pct=typeof it.exec_score==="number"?it.exec_score:100*it.pass/it.total;
-  return{label,text:`${label} ${it.pass}/${it.total}`,cls:scoreCls(pct)};
+  if(e&&e.method==="browser"){
+    const g=genChecks(it);
+    return g.total?{label:"运行检查",text:`运行检查 ${g.pass}/${g.total}`,cls:scoreCls(g.score)}:null;
+  }
+  const kw=e?(e.checks||[]).filter(c=>/^f\d+$/.test(String(c.id))):null;
+  const p=kw?kw.filter(c=>c.pass).length:it.pass,n=kw?kw.length:it.total;
+  return n>0?{label:"代码关键词",text:`代码关键词 ${p}/${n}`,cls:"ref",tip:t("没有实际运行，只在代码里找了关键词，不算分，仅供参考")}:null;
 }
+/* 检查条: 一格一项算分的检查; 没有实际运行的不画(只有灰色的关键词数) */
 function genCheckSegs(it){
   const e=it.eval;
-  if(e&&Array.isArray(e.checks))return e.checks.map(c=>({pass:!!c.pass,tip:(c.pass?"通过："+plainCheck(c):"没通过："+failText(c))+(c.detail?"\n"+c.detail:"")}));
-  if(Array.isArray(it.checks))return it.checks.map((p,i)=>{const f=(it.features||[])[i];return{pass:!!p,tip:(p?"通过":"没通过")+(f?"：代码里"+(p?"有":"没有")+"「"+f+"」":"")}});
+  if(e&&Array.isArray(e.checks)){
+    const g=genChecks(it);
+    return g.core.map(c=>({pass:!!c.pass,tip:(c.pass?"通过："+plainCheck(c):"没通过："+failText(c))+(c.detail?"\n"+c.detail:"")}));
+  }
   return[];
 }
 function genDataLine(it){
@@ -3697,7 +3742,7 @@ function genCard(run,it,v,ctx,{tag="",inPair=false}={}){
     ?`<header class="work-head"><span class="run-tag" style="background:${tag==="A"?C.a:C.b}">${tag}</span><span class="work-name" title="${esc(genLabel(run))}">${esc([run.model||"?",runFw(run)].filter(Boolean).join(" · "))}</span>${flag}${judge}</header>`
     :`<header class="work-head"><h3 class="work-name" title="${esc(it.name)}">${esc(it.name)}</h3><span class="badge">${esc(tierOf(it)||"—")}</span>${flag}${judge}</header>`;
   const note=info.note?`<p class="work-note is-${info.tone==="bad"?"bad":"warn"}" title="${esc(info.note)}">${icon(info.tone==="bad"?"x-circle":"alert","icon-sm")}<span>${esc(info.note)}</span></p>`:`<p class="work-note"></p>`;
-  const bar=segs.length?`<span class="checkbar">${segs.map(s=>`<i class="${s.pass?"":"fail"}" title="${esc(s.tip)}"></i>`).join("")}</span>`:"",score=sc?`<span class="work-score score ${sc.cls}">${esc(sc.text)}</span>`:"";
+  const bar=segs.length?`<span class="checkbar">${segs.map(s=>`<i class="${s.pass?"":"fail"}" title="${esc(s.tip)}"></i>`).join("")}</span>`:"",score=sc?`<span class="work-score score ${sc.cls}"${sc.tip?` title="${esc(sc.tip)}"`:""}>${esc(sc.text)}</span>`:"";
   const checks=!bar&&!score?(hasTrace&&!it.error?`<div class="work-checks"><button type="button" class="btn btn-ghost btn-sm" data-gen="trace" ${ref} title="看模型每一轮的原始输出">${icon("layers")}<span>生成过程</span></button></div>`:`<div class="work-checks"></div>`)
     :e?`<button type="button" class="work-checks" data-gen="detail" ${ref} tabindex="-1" title="点一下看每一项检查、截图和生成过程" aria-label="${esc(sc?sc.text:"检查结果")}，点开看每一项检查">${bar}${score}${icon("chevron-right","icon-sm")}</button>`
     :`<div class="work-checks">${bar}${score}</div>`;
@@ -3731,10 +3776,10 @@ function genRenderWorks(opt={}){
   const{a,b,rows,ctx,ctxB}=GW,list=$("gwList");
   if(!a||!list)return;
   const st={status:GEN_FILTER,tier:GEN_TIER,q:GEN_Q};
-  /* 状态标签: 全部 / 有问题的 / 各类问题(整个测试里有的才列出, 选中的一直在) / 全部通过 / (对比时)A 更好 · 差不多 · B 更好 */
+  /* 状态标签: 全部 / 有问题的 / 各类问题(整个测试里有的才列出, 选中的一直在) / 能用 / (对比时)A 更好 · 差不多 · B 更好 */
   const has=k=>genFilterRows(rows,{status:k}).length>0;
   const kinds=VERDICTS.map(([k])=>k).filter(k=>k!=="pass"&&(has(k)||k===GEN_FILTER));
-  const statuses=[["all","全部"],["issues","有问题的"],...kinds.map(k=>[k,VERDICT_META[k].name]),["pass","全部通过"]];
+  const statuses=[["all","全部"],["issues","有问题的"],...kinds.map(k=>[k,VERDICT_META[k].name]),["pass",VERDICT_META.pass.name]];
   const wins=b?[["win-a","A 更好"],["tie","差不多"],["win-b","B 更好"]]:[];
   const tiers=TIER_ORDER.filter(t=>rows.some(r=>(r.it.tags||[]).includes(t)));
   const cnt=genCounts(rows,st,[...statuses,...wins].map(x=>x[0]),tiers);
@@ -3817,14 +3862,15 @@ function renderGen(){
   if(!s.v2)alerts+=alertBox("warn","这个任务用的是旧版检查（只在代码里找关键词），分数不可信。在「更多」里点「重新检查作品」按新方式在浏览器里实际运行，人工评分会保留。");
   if(s.v2&&s.mode==="browser"&&verLt(ev.eval_version,"1.1.0"))
     alerts+=alertBox("warn",`这个任务的运行检查用的是 ${esc(ev.eval_version||"1.0")} 版规则：会把自带动画、鼠标悬停效果误判为“操作有反应”，输入“.”会丢字符，手机适配检查不生效。建议重新检查，人工评分会保留。`);
+  if(s.v2&&(s.mode==="browser"||s.mode==="mixed")&&verLt(ev.eval_version,"1.4.0"))
+    alerts+=alertBox("info",t("这个任务生成于新的评分标准之前：页面上已经按新标准重新算了分——只算「能打开、不白屏、不报错、核心操作有反应」，动画、手机适配、外网依赖、代码写没写完整只作提示。存下来的检查记录没有改动。"));
   if(a.thinking_dropped)alerts+=alertBox("warn","模型服务不接受“开启思考”的参数，这个任务实际上可能没有思考。");
   /* ---- 关键数字: 没有数据的不占位 ---- */
-  const passN=count("pass");
-  const execLabel=s.mode==="static"?"只看代码的命中率":"实际运行检查通过率";
+  const passN=count("pass"),unknownN=items.filter(it=>!it.error&&!(it.eval&&it.eval.method==="browser")).length,knownN=items.length-unknownN;   /* unknownN: 没有实际运行(或还没检查), 看不出能不能用 */
   let stats=stat("完成的作品",`${s.ok.length}<small>/ ${s.planned}</small>`,"",{sub:items.length-s.ok.length?`${items.length-s.ok.length} 题没生成出来`:"全部生成出来了"})+
-    stat("全部检查通过",`${passN}<small>件</small>`,"",{sub:items.length?`占 ${fmt(100*passN/items.length,0)}%`:""})+
-    stat(s.mode==="static"?execLabel:termHtml("{run|实际运行检查}通过率"),s.exec==null?"—":fmt(s.exec,1),s.exec==null?"":"%",
-      {sub:s.mode==="static"?`<span class="warn">${icon("alert","icon-sm")} 没有实际运行，仅供参考</span>`:s.mode==="mixed"?`只统计实际运行的 ${s.browserN} 件`:"打开、报错、白屏、动画和操作反应"});
+    stat("能用的作品",knownN?`${passN}<small>件</small>`:"—","",{sub:!knownN?t("没有实际运行，看不出能不能用"):`占 ${fmt(100*passN/knownN,0)}%${unknownN?t("（不含没有实际运行的 {n} 件）",{n:unknownN}):""}`})+
+    stat(termHtml("{run|实际运行检查}通过率"),s.exec==null?"—":fmt(s.exec,1),s.exec==null?"":"%",
+      {sub:s.mode==="static"?`<span class="warn">${icon("alert","icon-sm")} ${t("没有实际运行，不打分")}</span>`:s.mode==="mixed"?`只统计实际运行的 ${s.browserN} 件`:t("能打开、不白屏、不报错、核心操作有反应")});
   const missing=[];
   if(s.judge!=null)stats+=stat(term("judge"),fmt(s.judge,1),"/ 100",{sub:`${s.judgeN} 件有分${s.judgeErr?`，${s.judgeErr} 件打分失败`:""}${ev.judge_model?" · "+esc(ev.judge_model):""}`});
   else missing.push(ev.judge_model?termText("{judge}：都没打出分"):termText("没有配置{judge}"));
@@ -3836,7 +3882,8 @@ function renderGen(){
   const envIssues=["static","env"].map(k=>[k,count(k)]).filter(x=>x[1]);
   const ck={};items.forEach(it=>{const k=changeKind(it);ck[k]=(ck[k]||0)+1});
   const concl=[];
-  concl.push({tone:passN===items.length?"good":"info",html:`${items.length} 件作品里，<b>${passN}</b> 件全部检查通过。`});
+  concl.push(!knownN?{tone:"info",html:t("{n} 件作品都没有实际运行，看不出能不能用，所以没有打分。",{n:items.length})}
+    :{tone:passN===knownN?"good":"info",html:`${unknownN?t("实际运行的 {n} 件作品里，",{n:knownN}):t("{n} 件作品里，",{n:items.length})}<b>${passN}</b> 件能用（能打开、不白屏、不报错，核心操作也都有反应）。`});
   if(modelIssues.length)concl.push({tone:"warn",html:"<b>模型自身的问题</b>："+modelIssues.map(([k,n])=>`${VERDICT_META[k].name} ${n} 件`).join("、")+"。"});
   if(count("fail"))concl.push({tone:"bad",html:`<b>${count("fail")}</b> 件没有生成出来（请求出错或没写出有效代码）。`});
   if(envIssues.length)concl.push({tone:"bad",html:"<b>评测环境的问题</b>（不能算在模型头上）："+envIssues.map(([k,n])=>`${VERDICT_META[k].name} ${n} 件`).join("、")+"。"});
@@ -3853,14 +3900,14 @@ function renderGen(){
   const chgT={id:"gen-chg-t",title:"框架对模型输出做过什么",columns:[{key:"name",label:"处理方式",type:"text",sticky:true,wrap:true},{key:"n",label:"件数",type:"int"},{key:"pct",label:"占比",unit:"%",type:"num",digits:0}],
     rows:CHANGE_KINDS.filter(([k])=>ck[k]).map(([k,n])=>({name:n,n:ck[k],pct:100*ck[k]/Math.max(1,items.length)}))};
   /* ---- 各难度: 汇总表为主 + 每档一张逐题进度条小卡 ---- */
-  const tiers=TIER_ORDER.filter(t=>[a,b].some(r=>r&&(r.items||[]).some(it=>(it.tags||[]).includes(t))));
-  const tierRows=tiers.map(t=>{const A=tierInfo(a,t),B=b?tierInfo(b,t):null;
+  const tiers=TIER_ORDER.filter(tg=>[a,b].some(r=>r&&(r.items||[]).some(it=>(it.tags||[]).includes(tg))));
+  const tierRows=tiers.map(tg=>{const A=tierInfo(a,tg),B=b?tierInfo(b,tg):null;
     const dist={};A.its.forEach(it=>{const k=genVerdict(it).key;if(k!=="pass")dist[k]=(dist[k]||0)+1});
-    return{name:tagName(t),n:A.its.length,avg:A.avg,avgB:B&&B.avg,pass:A.pass,fail:A.fail,
+    return{name:tagName(tg),n:A.its.length,avg:A.avg,avgB:B&&B.avg,pass:A.pass,fail:A.fail,
       issues:Object.entries(dist).sort((p,q)=>q[1]-p[1]).map(([k,n])=>`${VERDICT_META[k].name} ${n}`).join(" · ")||"—"}});
   const tierT={id:"gen-tier-t",title:"难度汇总",columns:[{key:"name",label:"难度",type:"text",sticky:true},{key:"n",label:"件数",type:"int"},
       {key:"avg",label:b?"A 平均通过率":"平均通过率",unit:"%",type:"bar",color:C.a,max:100},...(b?[{key:"avgB",label:"B 平均通过率",unit:"%",type:"bar",color:C.b,max:100}]:[]),
-      {key:"pass",label:"全部通过",type:"int"},{key:"fail",label:"没生成出来",type:"int"},{key:"issues",label:"主要问题分布",type:"text",wrap:true}],rows:tierRows};
+      {key:"pass",label:"能用",type:"int"},{key:"fail",label:"没生成出来",type:"int"},{key:"issues",label:"主要问题分布",type:"text",wrap:true}],rows:tierRows};
   /* ---- 作品: 卡片(分页) | 表格(作品表 + 检查矩阵); 筛选、搜索、排序、翻页只重画这一节 ---- */
   GW.a=a;GW.b=b;GW.ctx=genRunCtx(s,ev,items);GW.ctxB=b?genRunCtx(genStats(b),b.eval||{},b.items||[]):null;
   genViewSync(a,b);
@@ -3876,10 +3923,10 @@ function renderGen(){
         <div class="ccard"><div class="ccard-head"><div><h3 class="ccard-title">框架有没有改动模型写的代码</h3><p class="ccard-desc">除这些处理外，保存的作品和模型写的逐字一致</p></div></div><div class="chart" id="genChange"></div>
           ${ck.legacy?`<p class="ccard-note">${ck.legacy===items.length?"这个任务":"其中 "+ck.legacy+" 件"}生成于 2.3 之前，没有保存模型原始输出；之后的新任务会自动保存，可以在作品的「生成过程」里逐字核对。</p>`:""}</div>
       </div>`,tables:[whyT,chgT],tcols:1})+
-    panel({id:"gen-tier",title:"各难度的表现",jump:"难度",desc:`${s.mode==="static"?"只看代码的命中率（没有实际运行，仅供参考）":"实际运行检查的通过率"}，每张卡里按分数从高到低排列${b?"；右侧数字是 A / B":""}`,
+    panel({id:"gen-tier",title:"各难度的表现",jump:"难度",desc:`${s.mode==="static"?"没有实际运行，不打分":"实际运行检查的通过率（能打开、不白屏、不报错、核心操作有反应）"}，每张卡里按分数从高到低排列${b?"；右侧数字是 A / B":""}`,
       chart:dataTable(tierT)+tierCards(a,b,s.mode),tables:[tierT,genTaskTable(a,b)],tcols:1})+
     `<section class="sec" id="gen-works" data-jump="作品" data-pv="${worksMode}">
-      <div class="sec-head"><div class="sec-head-text"><h2 class="sec-title">作品</h2><p class="sec-desc">点缩略图或「新标签页打开」直接玩；点检查结果看截图和每一项检查（模型的原始输出在里面的「生成过程」）${b?"；每道题 A 在左、B 在右，题名前写着谁更好（先比人工星级，再比 AI 打分，最后比检查通过的比例）":""}${onlyB?`。B 里还有 ${onlyB} 道 A 没做的题，这里不显示`:""}</p></div>
+      <div class="sec-head"><div class="sec-head-text"><h2 class="sec-title">作品</h2><p class="sec-desc">点缩略图或「新标签页打开」直接玩；点检查结果看截图和每一项检查（模型的原始输出在里面的「生成过程」）${b?"；每道题 A 在左、B 在右，题名前写着谁更好（先比能不能用，一样再比人工星级和 AI 打分）":""}${onlyB?`。B 里还有 ${onlyB} 道 A 没做的题，这里不显示`:""}</p></div>
         <div class="sec-tools">${segHTML("data-pv-set",worksMode,[["chart","列表","rows"],["table","表格","table"]])}
           <button type="button" class="btn btn-ghost btn-icon btn-sm" data-pv-export title="导出作品表与检查矩阵（CSV）" aria-label="导出作品表">${icon("download")}</button></div></div>
       <div class="work-tools">
@@ -3944,17 +3991,29 @@ function genWorksTable(a,b,shown,ctx){
       {key:"act",label:"",type:"html",noSort:true,get:x=>genTableActions(a,x.it),text:()=>""}],
     rows:shown,note:b?"B 列按同一道题对齐":""};
 }
-/* 检查矩阵: 作品 × 通用检查项(✓ / ✗ / —), 题目专属的交互与功能检查合成一列 */
+/* 检查矩阵: 作品 × 通用检查项(过 / 没过 / 提示 / —); 算分的没过是红色「没过」, 只作提示的没过是黄色「提示」;
+   题目专属的核心操作合成一列, 代码关键词(只在没实际运行时有)单独一列 */
 const MATRIX_CHECKS=[["load","能打开"],["nonblank","不白屏"],["no_error","没报错"],["animated","有动画"],["responsive","手机适配"],["self_contained","不依赖外网"],["complete","代码完整"]];
 function genCheckMatrix(a,shown){
-  const st=(it,id)=>{const c=it.eval&&(it.eval.checks||[]).find(x=>x.id===id);return !c?{tone:"neutral",text:"—"}:c.pass?{tone:"good",text:"过",tip:plainCheck(c)}:{tone:"bad",text:"没过",tip:failText(c)}};
-  const own=it=>{const cs=(it.eval&&it.eval.checks||[]).filter(c=>/^(step|f\d)/.test(c.id));return cs.length?{p:cs.filter(c=>c.pass).length,n:cs.length}:null};
+  const find=(it,id)=>it.eval&&(it.eval.checks||[]).find(x=>String(x.id)===id);
+  const st=(it,id)=>{
+    const c=find(it,id);
+    if(!c)return{tone:"neutral",text:"—"};
+    if(c.pass)return{tone:"good",text:"过",tip:plainCheck(c)};
+    const g=genChecks(it);
+    if(g.env===c)return{tone:"warn",text:t("提示",null,"检查项"),tip:failText(c)+t("（在干净页面里没有复现，可能是检测引起的，没算分）")};
+    return g.core.includes(c)?{tone:"bad",text:"没过",tip:failText(c)}:{tone:"warn",text:t("提示",null,"检查项"),tip:failText(c)+t("（只作提示，不算分）")};
+  };
+  const pick=(it,re)=>{const cs=(it.eval&&it.eval.checks||[]).filter(c=>re.test(String(c.id)));return cs.length?{p:cs.filter(c=>c.pass).length,n:cs.length}:null};
+  const ratioCol=(key,label,re,tip)=>({key,label,type:"html",align:"right",get:x=>{const o=pick(x.it,re);return o?`<span class="${o.p===o.n?"good":o.p?"":"bad"}">${o.p}/${o.n}</span>`:"—"},
+    sortValue:x=>{const o=pick(x.it,re);return o?o.p/o.n:null},text:(v,x)=>{const o=pick(x.it,re);return o?`${o.p}/${o.n}`:""},tip});
   return{id:"gen-matrix-t",title:"检查矩阵（作品 × 检查项）",pageSize:100,rowKey:x=>x.it.id,
     columns:[{key:"name",label:"作品",type:"text",sticky:true,get:x=>x.it.name},
-      ...MATRIX_CHECKS.map(([id,label])=>({key:"c_"+id,label,type:"status",align:"center",get:x=>x.it.error?{tone:"neutral",text:"—"}:st(x.it,id),tip:CHECK_PLAIN[id]})),
-      {key:"own",label:"题目专属检查",type:"html",align:"right",get:x=>{const o=own(x.it);return o?`<span class="${o.p===o.n?"good":o.p?"":"bad"}">${o.p}/${o.n}</span>`:"—"},
-        sortValue:x=>{const o=own(x.it);return o?o.p/o.n:null},text:(v,x)=>{const o=own(x.it);return o?`${o.p}/${o.n}`:""},tip:"按题目模拟的操作和功能检查"}],
-    rows:shown,note:"✓ 过 / ✗ 没过 / — 这件作品没做这项检查"};
+      ...MATRIX_CHECKS.map(([id,label])=>({key:"c_"+id,label,type:"status",align:"center",get:x=>x.it.error?{tone:"neutral",text:"—"}:st(x.it,id),
+        tip:CHECK_PLAIN[id]+(id==="load"||id==="nonblank"||id==="no_error"?t("（算分）"):id==="animated"?t("（没有操作步骤的纯动画题里算分，其余只作提示）"):t("（只作提示，不算分）"))})),
+      ratioCol("own","核心操作",GEN_STEP_RE,t("按题目模拟的核心操作，算分")),
+      ratioCol("kw","代码关键词",/^f\d/,t("只在没有实际运行时才有，只作参考，不算分"))],
+    rows:shown,note:t("能打开、不白屏、没报错、核心操作有反应算分（没过是红色）；其余只作提示（没过是黄色「提示」）；没有实际运行的只有代码关键词；「—」是这件作品没做这项检查")};
 }
 /* 各难度逐题得分(表格视图) */
 function genTaskTable(a,b){
@@ -3972,17 +4031,22 @@ function tierInfo(r,t){
   return{its,avg:avgOf(its.filter(x=>!x.error).map(x=>x.exec_score)),pass:its.filter(x=>genVerdict(x).key==="pass").length,fail:its.filter(x=>x.error).length};
 }
 function tierCards(a,b,mode){
-  const tiers=TIER_ORDER.filter(t=>[a,b].some(r=>r&&(r.items||[]).some(it=>(it.tags||[]).includes(t))));
-  const cards=tiers.map((t,i)=>{
-    const A=tierInfo(a,t),B=b?tierInfo(b,t):null;
-    const notes=[`${A.its.length} 题`,A.pass?`${A.pass} 题全部通过`:"",A.fail?`${A.fail} 题没生成出来`:""].filter(Boolean).join(" · ");
-    return `<div class="ccard" style="order:${i}"><div class="tier-head"><div><h3 class="ccard-title">${esc(tagName(t))}</h3><p class="ccard-desc">${esc(notes)}</p></div>
+  const tiers=TIER_ORDER.filter(tg=>[a,b].some(r=>r&&(r.items||[]).some(it=>(it.tags||[]).includes(tg))));
+  const noScore=t("没有打分");
+  const cards=tiers.map((tg,i)=>{
+    const A=tierInfo(a,tg),B=b?tierInfo(b,tg):null;
+    const notes=[`${A.its.length} 题`,A.pass?`${A.pass} 题能用`:"",A.fail?`${A.fail} 题没生成出来`:""].filter(Boolean).join(" · ");
+    return `<div class="ccard" style="order:${i}"><div class="tier-head"><div><h3 class="ccard-title">${esc(tagName(tg))}</h3><p class="ccard-desc">${esc(notes)}</p></div>
       <div class="tier-score"><div class="tier-num">${A.avg==null?"—":fmt(A.avg,1)}<small>%</small></div>
-        <div class="tier-sub">${B?`B ${B.avg==null?"—":fmt(B.avg,1)+"%"}`:(mode==="static"?"平均命中率":"平均通过率")}</div></div></div>
+        <div class="tier-sub">${B?`B ${B.avg==null?"—":fmt(B.avg,1)+"%"}`:(mode==="static"?noScore:"平均通过率")}</div></div></div>
       <div class="chart" id="genTier${i}"></div></div>`;
   });
   /* 两列各自往下排(左: 第 1、3 张; 右: 第 2、4 张), 卡片高度不被同一行拉齐, 不留空白; 窄屏按原顺序排成一列 */
   return `<div class="tier-cols"><div class="tier-col">${cards.filter((c,i)=>i%2===0).join("")}</div><div class="tier-col">${cards.filter((c,i)=>i%2===1).join("")}</div></div>`;
+}
+/* 图表提示里一件作品的得分文字(没有这道题 / 没生成出来 / 没有实际运行 / 得分与通过项数) */
+function genScoreTip(it){
+  return !it?"没有这道题":it.error?"没生成出来":it.total?`${fmt(it.exec_score,0)}%（${it.pass}/${it.total} 项）`:t("没有实际运行");
 }
 function drawGenCharts(a,b,verdicts,ck){
   const total=Math.max(1,verdicts.length);
@@ -4000,18 +4064,18 @@ function drawGenCharts(a,b,verdicts,ck){
   meterChart("genChange",{rows:cRows,max:total,nameWidth:250});
   /* 各难度: 每张小卡一张进度条清单, 按分数从高到低 */
   const runs=[{tag:"A",color:C.a,r:a},b?{tag:"B",color:C.b,r:b}:null].filter(Boolean);
-  const tiers=TIER_ORDER.filter(t=>runs.some(x=>(x.r.items||[]).some(it=>(it.tags||[]).includes(t))));
+  const tiers=TIER_ORDER.filter(tg=>runs.some(x=>(x.r.items||[]).some(it=>(it.tags||[]).includes(tg))));
   const scoreOf=(r,id)=>{const it=(r.items||[]).find(z=>z.id===id);return !it?undefined:(it.error?null:it.exec_score)};
-  const pct=v=>v===undefined?"—":v==null?"没生成出来":Math.round(v)+"%";
-  tiers.forEach((t,i)=>{
-    const ids=[...new Set(runs.flatMap(x=>(x.r.items||[]).filter(it=>(it.tags||[]).includes(t)).map(it=>it.id)))];
+  const pctOf=(r,id)=>{const it=(r.items||[]).find(z=>z.id===id);return !it?"—":it.error?"没生成出来":typeof it.exec_score==="number"?Math.round(it.exec_score)+"%":t("没打分")};
+  tiers.forEach((tg,i)=>{
+    const ids=[...new Set(runs.flatMap(x=>(x.r.items||[]).filter(it=>(it.tags||[]).includes(tg)).map(it=>it.id)))];
     ids.sort((p,q)=>(scoreOf(a,q)??-1)-(scoreOf(a,p)??-1));
     const rows=ids.map(id=>{const cat=TASK_CATALOG.find(z=>z.id===id);
       const vals=runs.map(x=>scoreOf(x.r,id));
-      return{id,name:cat?cat.name:id,values:vals.map(v=>v==null?null:v),right:runs.length>1?vals.map(pct).join(" / "):pct(vals[0])}});
+      return{id,name:cat?cat.name:id,values:vals.map(v=>v==null?null:v),right:runs.map(x=>pctOf(x.r,id)).join(" / ")}});
     meterChart("genTier"+i,{rows,max:100,series:runs.map(x=>({name:x.tag,color:x.color})),nameWidth:130,
       tip:r=>{const lines=runs.map(x=>{const it=(x.r.items||[]).find(z=>z.id===r.id);
-        return [x.color,x.tag,it?(it.error?"没生成出来":`${fmt(it.exec_score,0)}%（${it.pass}/${it.total} 项）`):"没有这道题"]});
+        return [x.color,x.tag,genScoreTip(it)]});
         const it=(a.items||[]).find(z=>z.id===r.id);return tt(r.name,lines,it?(VERDICT_META[genVerdict(it).key]||{}).name:"")}});
   });
 }
@@ -4091,11 +4155,11 @@ function genDetail(r,it,tab){
   const e=it.eval;
   const tabs=[e&&["checks","运行检查"],e&&["judge",termText("{judge}")],(it.trace||it.rounds)&&["trace","生成过程"]].filter(Boolean);
   if(!tabs.length)return;
-  if(!tabs.some(t=>t[0]===tab))tab=tabs[0][0];
+  if(!tabs.some(x=>x[0]===tab))tab=tabs[0][0];
   const v=genVerdict(it);
   Modal.open(it.name,`<div class="tabs" role="tablist">${tabs.map(([k,n])=>`<button class="tab" role="tab" data-tab="${k}" aria-selected="${k===tab}">${n}</button>`).join("")}</div>
     ${tabs.map(([k])=>`<div data-panel="${k}" ${k===tab?"":"hidden"}>${k==="checks"?checksPanel(it):k==="judge"?judgePanel(it):`<div class="faint">加载中…</div>`}</div>`).join("")}`,
-    {badges:`<span class="badge is-${(VERDICT_META[v.key]||{}).tone==="good"?"good":(VERDICT_META[v.key]||{}).tone==="bad"?"bad":"warn"}">${esc((VERDICT_META[v.key]||{}).name||"")}</span>`+(e?`<span class="badge">${e.method==="static"?"代码关键词":"运行检查"} ${it.pass}/${it.total}</span>`:"")});
+    {badges:`<span class="badge is-${(VERDICT_META[v.key]||{}).tone==="good"?"good":(VERDICT_META[v.key]||{}).tone==="bad"?"bad":"warn"}">${esc((VERDICT_META[v.key]||{}).name||"")}</span>`+(e&&e.method==="browser"?`<span class="badge">运行检查 ${it.pass}/${it.total}</span>`:e?`<span class="badge">${t("没有实际运行")}</span>`:"")});
   let traceLoaded=false;
   const show=k=>{
     document.querySelectorAll("#modalBody [data-tab]").forEach(b=>b.setAttribute("aria-selected",String(b.dataset.tab===k)));
@@ -4107,16 +4171,25 @@ function genDetail(r,it,tab){
   if(tab==="trace")show("trace");
 }
 function checksPanel(it){
-  const e=it.eval;
+  const e=it.eval,g=genChecks(it);
   const dir=it.file.replace(/[^/]+$/,"")+e.shots_dir+"/";
-  const rows=(e.checks||[]).map(c=>`<tr><td style="width:72px"><span class="badge ${c.pass?"is-good":"is-bad"}">${c.pass?"通过":"没通过"}</span></td>
-    <td class="text-left"><span title="${esc(c.label)}">${esc(c.pass?plainCheck(c):failText(c))}</span>${c.detail?`<span class="sub">${esc(c.detail)}</span>`:""}</td></tr>`).join("");
+  const row=(c,scored)=>`<tr><td style="width:72px"><span class="badge ${c.pass?"is-good":scored?"is-bad":"is-warn"}">${c.pass?"通过":scored?"没通过":t("提示",null,"检查项")}</span></td>
+    <td class="text-left"><span title="${esc(c.label)}">${esc(c.pass?plainCheck(c):failText(c))}</span>${c.detail?`<span class="sub">${esc(c.detail)}</span>`:""}</td></tr>`;
+  const envRow=g.env?`<tr><td style="width:72px"><span class="badge is-warn">${t("提示",null,"检查项")}</span></td>
+    <td class="text-left"><span title="${esc(g.env.label)}">${esc(t("运行时报错，但在干净页面里没有复现，可能是检测引起的（没算分）"))}</span>${g.env.detail?`<span class="sub">${esc(g.env.detail)}</span>`:""}</td></tr>`:"";
+  const table=rows=>`<div class="table-wrap" style="max-height:none"><table class="table"><tbody>${rows}</tbody></table></div>`;
+  const hintRows=envRow+g.hints.map(c=>row(c,false)).join("");
   const ctl=e.control;
   const ctlHtml=ctl&&ctl.errors?alertBox(ctl.reproduced?"info":"warn",`<b>${term("control")}</b>：${ctl.reproduced?"在不加任何检测代码的干净页面里按同样步骤运行，同样报错，说明是作品本身的问题：":"在干净页面里运行没有报错，这些错误可能是检测环境引起的，请人工确认。"}${ctl.reproduced?`<ul class="hint-list">${ctl.errors.map(x=>`<li class="mono small">${esc(x)}</li>`).join("")}</ul>`:""}`):"";
+  const head=g.run
+    ?`<h4>${esc(t("能不能用 {pass} / {total}",{pass:g.pass,total:g.total}))}<span class="faint" style="font-weight:400"> · ${t("在后台浏览器里实际运行")}</span></h4>
+      <p class="faint small" style="margin:0 0 8px">${t("只算：能打开、不白屏、不报错、题目要求的核心操作有反应。")}</p>${ctlHtml}${table(g.core.map(c=>row(c,true)).join(""))}`
+    :`<h4>${t("没有实际运行")}</h4><p class="faint small" style="margin:0 0 8px">${t("只在代码里找了关键词，看不出能不能用，所以不打分；下面的结果只作参考。")}</p>`;
+  const hints=hintRows?`<h4 style="margin-top:16px">${t("只作提示（不算分）")}</h4>
+      <p class="faint small" style="margin:0 0 8px">${t("动画、手机适配、外网依赖、代码是否写完整不影响「能不能用」，页面没坏就只提示一句。")}</p>${table(hintRows)}`:"";
   return `<div class="detail-layout">
     <div><div class="shot-grid">${(e.shots||[]).map(s=>`<figure class="shot"><img src="${esc(workUrl(dir+s.file))}" alt="${esc(s.caption)}" loading="lazy"><figcaption>${esc(s.caption)}</figcaption></figure>`).join("")||emptyState("没有截图","只看代码的检查不会截图",{inline:true})}</div></div>
-    <div><section class="detail-section"><h4>检查项 ${it.pass} / ${it.total}<span class="faint" style="font-weight:400"> · ${e.method==="browser"?"在后台浏览器里实际运行":"只看了代码"}</span></h4>
-      ${ctlHtml}<div class="table-wrap" style="max-height:none"><table class="table"><tbody>${rows}</tbody></table></div>
+    <div><section class="detail-section">${head}${hints}
       ${(e.notes||[]).length?`<p class="faint small" style="margin-top:8px">${e.notes.map(esc).join("<br>")}</p>`:""}</section></div></div>`;
 }
 function judgePanel(it){
@@ -5247,7 +5320,8 @@ function mdRunSummary(r){
   }
   if(r.kind==="iq")return s.acc!=null?`正确率 ${fmt(s.acc,1)}%${s.n?`（答对 ${fmtInt(s.correct)} / ${fmtInt(s.n)} 题）`:""}`:"没有成绩";
   const p=[`完成 ${fmtInt(s.done||0)} / ${fmtInt(s.planned||0)} 题`];
-  if(s.exec!=null)p.push(`${s.method==="static"?"只看了代码":"运行检查"}通过 ${fmt(s.exec,0)}%`);
+  if(s.exec!=null)p.push(`运行检查通过 ${fmt(s.exec,0)}%`);
+  else if(s.method==="static")p.push(t("没有实际运行"));
   if(s.judge!=null)p.push(`AI 打分 ${fmt(s.judge,0)}`);
   return p.join(" · ");
 }

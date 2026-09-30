@@ -730,6 +730,7 @@ button.work-checks{cursor:pointer;border-radius:var(--r-sm)}
 button.work-checks:hover .work-score{text-decoration:underline;text-underline-offset:3px}
 button.work-checks>.icon{flex:none;color:var(--text-3)}
 .work-score{flex:none;font-size:var(--fs-12);white-space:nowrap}
+.work-score.ref{color:var(--text-3);font-weight:400}
 .checkbar{display:flex;align-items:center;gap:3px;flex:1 1 auto;min-width:0}
 .checkbar i{flex:1 1 0;min-width:5px;max-width:18px;height:6px;border-radius:3px;background:var(--good)}
 .checkbar i.fail{background:var(--bad)}

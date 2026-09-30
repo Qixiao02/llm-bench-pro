@@ -845,8 +845,12 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
 
 def _eval_brief(item):
     ev = item.get("eval") or {}
-    s = "运行检测 %d/%d" % (item["pass"], item["total"])
-    fails = [c["label"] for c in ev.get("checks", []) if not c["pass"]]
+    if ev.get("method") == "static":
+        s = i18n.t("没有实际运行，只看了代码")
+        fails = []
+    else:
+        s = "运行检测 %d/%d" % (item["pass"], item["total"])
+        fails = [c["label"] for c in ev.get("checks", []) if c.get("scored") and not c["pass"]]  # 提示项没通过不算问题, 不写
     if fails:
         s += "（未通过：%s）" % "、".join(fails[:3])
     j = ev.get("judge") or {}

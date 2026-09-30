@@ -19,9 +19,10 @@ import urllib.error
 import urllib.parse
 
 try:
-    from . import bench, i18n  # 包内导入
+    from . import bench, gen_specs, i18n  # 包内导入
 except ImportError:
     import bench  # server.py 以包目录为 sys.path 顶层导入
+    import gen_specs
     import i18n
 
 t = i18n.t
@@ -204,11 +205,22 @@ def perf_summary(phases):
     return s
 
 
+def _usable_score(it):
+    """作品按「能不能用」得的分(0-100): 只算 能打开 / 不白屏 / 不报错 / 核心操作有反应; 没有实际运行返回 None。
+    旧任务的记录里没有 scored 标记, 按检查项现算(规则见 gen_specs.score_checks, 与代码生成页相同)。"""
+    e = it.get("eval")
+    if not isinstance(e, dict) or e.get("method") != "browser":
+        return None
+    if isinstance(e.get("checks"), list) and e["checks"]:
+        return gen_specs.score_checks(e["checks"], "browser", e.get("control"))["score"]
+    return it["exec_score"] if _num(it.get("exec_score")) else None
+
+
 def gen_summary(items, planned=None):
-    """代码生成: 完成几题 / 计划几题、检查通过率(每件作品通过的检查项占比, 再求平均, 与代码生成页相同)、
+    """代码生成: 完成几题 / 计划几题、检查通过率(每件作品「能不能用」的得分再求平均, 与代码生成页相同; 没有实际运行的不算)、
     有没有只看了代码(没在浏览器里实际运行)、AI 看图打分的平均分。"""
     done = [it for it in items if isinstance(it, dict) and not it.get("error")]
-    execs = [it["exec_score"] for it in done if _num(it.get("exec_score"))]
+    execs = [s for s in (_usable_score(it) for it in done) if s is not None]
     judges = [it["judge_score"] for it in done if _num(it.get("judge_score"))]
     methods = {(it.get("eval") or {}).get("method") for it in done if isinstance(it.get("eval"), dict)}
     s = {"done": len(done), "planned": planned if isinstance(planned, int) and planned > 0 else len(items)}

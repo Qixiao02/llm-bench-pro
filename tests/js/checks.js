@@ -358,7 +358,7 @@ T("代码生成页的名词(对照运行 / 陷入重复输出 / AI 看图打分 
   /* 作品卡、排序、检查方式这些「标签」里的词也跟着走 */
   const card = h => stripTags(h);
   const work = {id: "snake", name: "贪吃蛇", tags: ["普通"], continuations: 4, lines: 10, out_tokens: 100, pass: 3, total: 4, eval: {method: "browser", checks: [], judge: {score: 88, model: "j"}}};
-  const verdict = {key: "pass", text: "全部检查通过"}, gctx = {v2: true, mode: "browser", shared: ""};
+  const verdict = {key: "pass", text: "能用"}, gctx = {v2: true, mode: "browser", shared: ""};
   withMode("plain", () => {
     assert.ok(card(genCard({run_id: "r"}, work, verdict, gctx)).includes("10 行 · 接着写 4 轮 · 100 token"));
     assert.ok(genCard({run_id: "r"}, work, verdict, gctx).includes('title="AI 看图打分"'));
@@ -445,6 +445,143 @@ T("genVerdict: 按优先级只取一个主要问题", () => {
   assert.equal(genVerdict({eval: {method: "browser", checks: [{id: "no_error", pass: false}], control: {reproduced: true}}}).key, "error");
   assert.equal(genVerdict({eval: {method: "browser", checks: [{id: "step1", label: "交互：跳", pass: false}]}}).key, "partial");
   assert.equal(genVerdict({eval: {method: "browser", checks: [{id: "load", pass: true}]}}).key, "pass");
+});
+T("评分标准「能不能用」: 只有 能打开 / 不白屏 / 不报错 / 核心操作有反应 算分, 与后端共用同一份用例", () => {
+  const fs = require("node:fs"), path = require("node:path");
+  const cases = JSON.parse(fs.readFileSync(path.join(process.env.LLMB_ROOT || process.cwd(), "tests", "js", "gen_score_cases.json"), "utf8"));
+  assert.ok(cases.length >= 12);
+  const mk = (c, flags) => ({eval: {method: c.method, control: c.control || undefined,
+    checks: c.checks.map(([id, p]) => Object.assign({id, label: id, pass: !!p}, flags ? {scored: c.expect.core.includes(id)} : {}))}});
+  for (const c of cases) {
+    for (const flags of [false, true]) {              /* 旧任务没有 scored 标记按 id 现算; 新任务带标记, 两种结果必须一样 */
+      const g = genChecks(mk(c, flags)), e = c.expect, why = c.name + (flags ? "（带标记）" : "（现算）");
+      assert.deepEqual(g.core.map(x => x.id), e.core, why);
+      assert.deepEqual(g.env ? [g.env.id] : [], e.env, why);
+      assert.deepEqual([g.pass, g.total, g.score], [e.pass, e.total, e.score], why);
+      assert.equal(g.run, c.method === "browser", why);
+    }
+  }
+  assert.deepEqual(genChecks({}).core, []);                                         /* 没有 eval */
+  assert.equal(genChecks(null).score, null);
+});
+T("载入时按新标准换算 pass / total / exec_score: 旧任务也一样, 没实际运行的没有分, 没生成出来的不动, 可以重复换算", () => {
+  const old = {id: "a", pass: 3, total: 8, exec_score: 37.5, eval: {method: "browser", checks: [
+    {id: "complete", pass: true}, {id: "load", pass: true}, {id: "nonblank", pass: true}, {id: "animated", pass: false}, {id: "step1", pass: true},
+    {id: "no_error", pass: true}, {id: "responsive", pass: false}, {id: "self_contained", pass: false}]}};
+  const stat = {id: "b", pass: 3, total: 5, exec_score: 60, eval: {method: "static", checks: [{id: "f1", pass: true}]}};
+  const bad = {id: "c", error: "x", pass: 0, total: 0, exec_score: 0}, none = {id: "d", pass: 2, total: 4};
+  [old, stat, bad, none].forEach(genNormalize);
+  assert.deepEqual([old.pass, old.total, old.exec_score], [4, 4, 100]);            /* 提示项没通过不再扣分 */
+  assert.deepEqual([stat.pass, stat.total, stat.exec_score], [0, 0, null]);
+  assert.deepEqual([bad.pass, bad.total, bad.exec_score], [0, 0, 0]);
+  assert.deepEqual([none.pass, none.total], [2, 4]);                                /* 更早的旧版本(没有 eval): 不动 */
+  genNormalize(old);
+  assert.deepEqual([old.pass, old.total, old.exec_score], [4, 4, 100]);
+  const r = {items: [old, stat, bad, Object.assign({}, old, {id: "e", pass: 0, total: 0, exec_score: 50, eval: {method: "browser", checks: [{id: "load", pass: true}, {id: "no_error", pass: false}]}})]};
+  r.items[3].pass = 0; genNormalize(r.items[3]);
+  const s = genStats({eval: {method: "mixed", eval_version: "1.4.0"}, items: r.items, planned: 4});
+  assert.equal(s.exec, 75);                                                          /* 只平均实际运行的两件: (100 + 50) / 2 */
+});
+T("genVerdict: 页面能用时「代码没写完整」只是提示, 页面坏了时它才是原因; 提示项没通过不算有问题", () => {
+  const ck = (extra) => ({eval: {method: "browser", checks: [{id: "load", pass: true}, {id: "nonblank", pass: true}, {id: "step1", label: "交互：跳", pass: true}, {id: "no_error", pass: true}, ...extra]}});
+  let v = genVerdict(ck([{id: "complete", pass: false}]));
+  assert.ok(v.key === "pass" && v.text.includes("结尾不完整"), v.text);
+  assert.equal(genVerdict(Object.assign(ck([]), {unfinished: true})).key, "pass");
+  assert.equal(genVerdict(ck([{id: "animated", pass: false}, {id: "responsive", pass: false}, {id: "self_contained", pass: false}])).key, "pass");
+  const broken = ck([{id: "complete", pass: false}]); broken.eval.checks[2].pass = false;
+  assert.equal(genVerdict(broken).key, "unfinished");                              /* 操作没反应又没写完: 没写完是最可能的原因 */
+  assert.equal(genVerdict(Object.assign(ck([]), {unfinished: true, eval: {method: "browser", checks: [{id: "load", pass: false}]}})).key, "unfinished");
+  const anim = {eval: {method: "browser", checks: [{id: "load", pass: true}, {id: "nonblank", pass: true}, {id: "animated", pass: false}, {id: "no_error", pass: true}]}};
+  v = genVerdict(anim);
+  assert.ok(v.key === "partial" && v.text.includes("画面不动"), v.text);           /* 纯动画题: 不动就是没用 */
+  anim.eval.checks.splice(2, 0, {id: "step1", label: "交互：点", pass: true});
+  assert.equal(genVerdict(anim).key, "pass");                                       /* 有操作步骤的题: 动画只作提示 */
+  const envOnly = {eval: {method: "browser", control: {reproduced: false}, checks: [{id: "load", pass: true}, {id: "nonblank", pass: true}, {id: "no_error", pass: false}]}};
+  assert.equal(genVerdict(envOnly).key, "env");                                     /* 检测引起的报错: 不算作品的问题, 也不算通过 */
+  assert.equal(genVerdict({eval: {method: "browser", checks: [{id: "load", pass: false}]}}).key, "blank");
+  assert.equal(VERDICT_META.pass.name, "能用");
+  /* 没有实际运行: 看不出能不能用; 只有代码没写完是这时也能确定的问题 */
+  assert.equal(genVerdict({unfinished: true, eval: {method: "static", checks: []}}).key, "unfinished");
+  assert.equal(genVerdict({eval: {method: "static", checks: [{id: "complete", pass: false}]}}).key, "unfinished");
+  assert.equal(genVerdict({unfinished: true}).key, "unfinished");                        /* 更早的旧版本(没有 eval) */
+  assert.equal(genVerdict({eval: {method: "static", checks: [{id: "complete", pass: true}]}}).key, "static");
+});
+T("坏了又依赖外部网络资源: 说明可能是没联网加载不出来; 没坏就不提; 各难度小卡和图表提示在「没有实际运行」时不报错", () => {
+  const ck = (extra, ...more) => ({eval: {method: "browser", checks: [{id: "load", pass: true}, {id: "nonblank", pass: true}, {id: "step1", label: "交互：拖", pass: false}, {id: "no_error", pass: true},
+    {id: "self_contained", pass: false}, ...more], ...extra}});
+  let v = genVerdict(ck());
+  assert.ok(v.key === "partial" && v.text.includes("没联网"), v.text);
+  v = genVerdict(ck({}, {id: "nonblank", pass: false}));
+  assert.ok(v.text.includes("白屏") && v.text.includes("没联网"), v.text);
+  const errNet = ck({control: {reproduced: true}}); errNet.eval.checks[2].pass = true; errNet.eval.checks[3].pass = false;
+  v = genVerdict(errNet);
+  assert.ok(v.key === "error" && v.text.includes("同样报错") && !v.text.includes("是作品本身的问题") && v.text.includes("没联网"), v.text);   /* 依赖外网: 不断言是作品自己的问题 */
+  const ok = ck(); ok.eval.checks[2].pass = true;
+  assert.deepEqual([genVerdict(ok).key, genVerdict(ok).text], ["pass", "能用"]);       /* 依赖外网但没坏: 只提示, 不写进结论 */
+  const fine = ck(); fine.eval.checks.splice(4, 1);
+  assert.ok(!genVerdict(fine).text.includes("没联网"));
+  /* 在以难度名当循环变量的函数里调用了 t(): 没有实际运行时也要能画出来 */
+  const a = {run_id: "a", items: [{id: "x", tags: ["普通"], exec_score: null, pass: 0, total: 0, eval: {method: "static", checks: []}}]};
+  const h = tierCards(a, null, "static");
+  assert.ok(h.includes("没有打分") && h.includes(tagName("普通")), h);
+  assert.equal(genScoreTip(a.items[0]), "没有实际运行");
+  assert.equal(genScoreTip({exec_score: 66.7, pass: 2, total: 3}), "67%（2/3 项）");
+  assert.equal(genScoreTip({error: "x"}), "没生成出来");
+  assert.equal(genScoreTip(undefined), "没有这道题");
+});
+T("检查矩阵的列说明写明算不算分", () => {
+  const cols = genCheckMatrix({run_id: "r"}, []).columns;
+  const tip = id => cols.find(c => c.key === "c_" + id).tip;
+  assert.ok(["load", "nonblank", "no_error"].every(id => tip(id).includes("（算分）")));
+  assert.ok(tip("animated").includes("纯动画题") && tip("responsive").includes("只作提示") && tip("self_contained").includes("不算分"));
+});
+T("genScore / genCheckSegs: 运行检查只数算分的; 没实际运行是灰色的代码关键词, 没有检查条", () => {
+  const it = {eval: {method: "browser", checks: [{id: "complete", pass: false}, {id: "load", pass: true}, {id: "step1", label: "交互：跳", pass: false}, {id: "no_error", pass: true},
+    {id: "responsive", pass: false}]}};
+  let sc = genScore(it);
+  assert.deepEqual([sc.text, sc.cls], ["运行检查 2/3", "mid"]);
+  assert.equal(genCheckSegs(it).length, 3);                                          /* 一格一项算分的检查 */
+  assert.deepEqual(genCheckSegs(it).map(s => s.pass), [true, false, true]);
+  const kw = {eval: {method: "static", checks: [{id: "doctype", pass: true}, {id: "f1", pass: true}, {id: "f2", pass: false}]}};
+  sc = genScore(kw);
+  assert.deepEqual([sc.text, sc.cls], ["代码关键词 1/2", "ref"]);
+  assert.deepEqual(genCheckSegs(kw), []);
+  assert.equal(genScore({pass: 2, total: 4}).text, "代码关键词 2/4");                /* 更早的旧版本 */
+  assert.equal(genScore({error: "x"}), null);
+  assert.equal(genScore({eval: {method: "browser", checks: []}}), null);
+});
+T("检查矩阵: 算分的没过是红色「没过」, 只作提示的没过是黄色「提示」; 纯动画题里「有动画」算分; 核心操作和代码关键词分开数", () => {
+  const spec = genCheckMatrix({run_id: "r"}, []);
+  const col = k => spec.columns.find(c => c.key === k);
+  const withSteps = {eval: {method: "browser", checks: [{id: "load", pass: true}, {id: "step1", pass: false}, {id: "step2", pass: true}, {id: "animated", pass: false},
+    {id: "responsive", pass: false}, {id: "self_contained", pass: true}, {id: "no_error", pass: true}]}};
+  const cell = (k, it) => col(k).get({it});
+  assert.equal(cell("c_animated", withSteps).tone, "warn");
+  assert.equal(cell("c_animated", withSteps).text, "提示");
+  assert.ok(cell("c_animated", withSteps).tip.includes("只作提示"));
+  assert.deepEqual([cell("c_load", withSteps).tone, cell("c_self_contained", withSteps).text], ["good", "过"]);
+  assert.equal(col("own").get({it: withSteps}), '<span class="">1/2</span>');
+  const anim = {eval: {method: "browser", checks: [{id: "load", pass: true}, {id: "animated", pass: false}, {id: "no_error", pass: true}]}};
+  assert.deepEqual([cell("c_animated", anim).tone, cell("c_animated", anim).text], ["bad", "没过"]);
+  const env = {eval: {method: "browser", control: {reproduced: false}, checks: [{id: "load", pass: true}, {id: "no_error", pass: false}]}};
+  assert.ok(cell("c_no_error", env).tone === "warn" && cell("c_no_error", env).tip.includes("检测引起"));
+  const kw = {eval: {method: "static", checks: [{id: "doctype", pass: true}, {id: "f1", pass: true}, {id: "f2", pass: false}]}};
+  assert.equal(col("kw").get({it: kw}), '<span class="">1/2</span>');
+  assert.equal(col("own").get({it: kw}), "—");
+  assert.equal(cell("c_load", {eval: {method: "browser", checks: []}}).text, "—");
+});
+T("详情里的检查项: 算分的一组(能不能用 3 / 4)和只作提示的一组分开写; 没实际运行的只有提示组", () => {
+  const it = {file: "works/r/x.html", eval: {method: "browser", shots_dir: "x.shots", shots: [], checks: [{id: "load", label: "l", pass: true}, {id: "step1", label: "交互：跳", pass: false},
+    {id: "no_error", label: "e", pass: true}, {id: "self_contained", label: "s", pass: false, detail: "外部依赖被拦截：https://cdn.x/three.js"}, {id: "complete", label: "c", pass: true}]}};
+  let h = stripTags(checksPanel(it));
+  assert.ok(h.includes("能不能用 2 / 3") && h.includes("只作提示（不算分）") && h.includes("外部依赖被拦截"), h);
+  assert.ok(h.indexOf("能不能用 2 / 3") < h.indexOf("只作提示（不算分）") && h.indexOf("操作“跳”没反应") < h.indexOf("只作提示（不算分）"));
+  const raw = checksPanel(it);
+  assert.equal((raw.match(/badge is-bad/g) || []).length, 1);                        /* 只有算分的没通过是红色 */
+  assert.ok(raw.includes("badge is-warn") && raw.includes(">提示<"));
+  h = stripTags(checksPanel({file: "works/r/x.html", eval: {method: "static", shots_dir: "x.shots", checks: [{id: "f1", label: "源码特征 /click/", pass: false}]}}));
+  assert.ok(h.includes("没有实际运行") && h.includes("不打分") && h.includes("只作提示（不算分）") && !h.includes("能不能用 "));
+  assert.equal(stripTags(checksPanel({file: "works/r/x.html", eval: {method: "browser", shots_dir: "x.shots", checks: [{id: "load", pass: true}]}})).includes("只作提示"), false);
 });
 T("changeKind: 区分原样保存 / 只去掉说明 / 拼接续写 / 旧任务", () => {
   assert.equal(changeKind({}), "legacy");
@@ -930,7 +1067,8 @@ T("模型管理: 用过的测试一行摘要(速度 / 能力 / 代码生成)与�
   assert.ok(mdRunSummary({kind: "iq", summary: {acc: 79.2, correct: 19, n: 24}}).startsWith("正确率 79.2%（答对 19 / 24 题）"));
   assert.equal(mdRunSummary({kind: "iq", summary: {acc: null}}), "没有成绩");
   assert.equal(mdRunSummary({kind: "gen", summary: {done: 30, planned: 33, exec: 78.4, method: "browser", judge: 71}}), "完成 30 / 33 题 · 运行检查通过 78% · AI 打分 71");
-  assert.ok(mdRunSummary({kind: "gen", summary: {done: 1, planned: 1, exec: 60, method: "static"}}).includes("只看了代码"));
+  assert.ok(mdRunSummary({kind: "gen", summary: {done: 1, planned: 1, method: "static"}}).includes("没有实际运行"));       /* 没实际运行: 不打分 */
+  assert.ok(!mdRunSummary({kind: "gen", summary: {done: 1, planned: 1, method: "static"}}).includes("%"));
   assert.deepEqual([mdRunSetting({kind: "perf", suite: "quick"}), mdRunSetting({kind: "iq", thinking: true}), mdRunSetting({kind: "gen", thinking: null})], ["快速", "思考", "—"]);
   assert.deepEqual([mdRunStatus({status: "done"}).tone, mdRunStatus({status: "failed", error: "x"}).tip, mdRunStatus({status: "interrupted"}).text], ["good", "x", "已中断"]);
 });
@@ -997,54 +1135,59 @@ T("作品缩略图: 优先「空闲后」的桌面截图, 其次首屏, 手机�
   assert.equal(genPickShot(shotIt(["02_idle"])).caption, "图 02_idle");
 });
 
-T("A / B 谁更好: 没生成 > 人工星级 > AI 分(差 5 分以内算差不多) > 检查通过比例; 检查方式不同不比", () => {
+T("A / B 谁更好, 以「能不能用」为准: 没生成 > 运行检查通过比例 > (一样时)人工星级 > AI 分(差 5 分以内算差不多); 检查方式不同不比", () => {
   const ok = (pass, total, x) => Object.assign({id: "t", file: "f", pass, total, eval: {method: "browser", checks: []}}, x || {});
   assert.equal(genWinner(null, ok(1, 2)), null);                                        /* B 没有这道题 */
   assert.equal(genWinner(ok(1, 2), undefined), null);
   assert.equal(genWinner({error: "x"}, ok(1, 2)).side, "b");
   assert.equal(genWinner(ok(0, 5), {error: "x"}).side, "a");
   assert.equal(genWinner({error: "x"}, {error: "y"}).side, "none");
-  /* 人工星级压过 AI 分和检查 */
-  let w = genWinner(ok(6, 6, {stars: 3, judge_score: 90}), ok(2, 6, {stars: 4, judge_score: 10}));
-  assert.deepEqual([w.side, w.basis], ["b", "stars"]);
-  assert.equal(genWinner(ok(6, 6, {stars: 3}), ok(2, 6, {stars: 3})).side, "tie");
-  w = genWinner(ok(2, 6, {stars: 5}), ok(6, 6));                                        /* 只有一边有星级: 不比星级 */
+  /* 两边都实际运行: 先比能不能用, 星级和 AI 分压不过它(打不开的作品不会因为星级更高而更好) */
+  let w = genWinner(ok(6, 6, {stars: 3, judge_score: 90}), ok(2, 6, {stars: 4, judge_score: 95}));
+  assert.deepEqual([w.side, w.basis], ["a", "checks"]);
+  w = genWinner(ok(2, 6, {stars: 5}), ok(6, 6));
   assert.deepEqual([w.side, w.basis], ["b", "checks"]);
-  /* AI 分压过检查; 差 5 分以内算差不多, 刚好差 5 分算有差别 */
-  w = genWinner(ok(2, 6, {judge_score: 82}), ok(6, 6, {judge_score: 60}));
-  assert.deepEqual([w.side, w.basis], ["a", "judge"]);
-  assert.equal(genWinner(ok(2, 6, {judge_score: 82}), ok(6, 6, {judge_score: 79})).side, "tie");
-  assert.equal(genWinner(ok(2, 6, {judge_score: 82}), ok(6, 6, {judge_score: 77})).side, "a");
-  assert.equal(genWinner(ok(6, 6, {judge_score: 70}), ok(2, 6, {judge_score: 75.1})).side, "b");
-  /* 检查通过比例: 通过数一样是差不多; 总数不同时比比例 */
   assert.equal(genWinner(ok(6, 6), ok(4, 6)).side, "a");
   assert.equal(genWinner(ok(4, 6), ok(6, 6)).side, "b");
-  assert.equal(genWinner(ok(5, 6), ok(5, 6)).side, "tie");
-  assert.equal(genWinner(ok(6, 7), ok(6, 6)).side, "b");
+  assert.equal(genWinner(ok(6, 7), ok(6, 6)).side, "b");                                 /* 比例: 6/7 比 6/6 */
   assert.ok(genWinner(ok(6, 6), ok(4, 6)).text.includes("A 6/6") && genWinner(ok(6, 6), ok(4, 6)).text.includes("B 4/6"));
-  /* 一边实际运行、一边只看代码: 不比; 都只看代码 / 都是旧版本可以比, 写「代码关键词」 */
-  const st = (pass, total) => ok(pass, total, {eval: {method: "static", checks: []}});
+  /* 通过比例一样: 再比人工星级(两边都有才比), 再比 AI 分(差 5 分以内算差不多, 刚好差 5 分算有差别) */
+  w = genWinner(ok(6, 6, {stars: 3, judge_score: 90}), ok(6, 6, {stars: 4, judge_score: 10}));
+  assert.deepEqual([w.side, w.basis], ["b", "stars"]);
+  assert.equal(genWinner(ok(6, 6, {stars: 3}), ok(6, 6, {stars: 3})).side, "tie");
+  w = genWinner(ok(6, 6, {stars: 5}), ok(6, 6));                                        /* 只有一边有星级: 不比星级, 也没有 AI 分: 一样 */
+  assert.deepEqual([w.side, w.basis], ["tie", "checks"]);
+  w = genWinner(ok(6, 6, {judge_score: 82}), ok(6, 6, {judge_score: 60}));
+  assert.deepEqual([w.side, w.basis], ["a", "judge"]);
+  assert.equal(genWinner(ok(6, 6, {judge_score: 82}), ok(6, 6, {judge_score: 79})).side, "tie");
+  assert.equal(genWinner(ok(6, 6, {judge_score: 82}), ok(6, 6, {judge_score: 77})).side, "a");
+  assert.equal(genWinner(ok(6, 6, {judge_score: 70}), ok(6, 6, {judge_score: 75.1})).side, "b");
+  assert.equal(genWinner(ok(5, 6), ok(5, 6)).side, "tie");
+  /* 一边实际运行、一边只看代码: 运行检查比不了, 星级和 AI 分照常比, 都没有就不比 */
+  const st = (pass, total, x) => ok(pass, total, Object.assign({eval: {method: "static", checks: []}}, x || {}));
   assert.equal(genWinner(st(5, 6), ok(3, 6)).side, "none");
+  assert.equal(genWinner(st(5, 6, {stars: 4}), ok(3, 6, {stars: 2})).side, "a");
+  /* 两边都没实际运行(只看代码 / 旧版本): 关键词不算分, 也不比; 星级和 AI 分照常比 */
   w = genWinner(st(5, 6), st(3, 6));
-  assert.ok(w.side === "a" && w.text.includes("代码关键词"), w.text);
-  assert.equal(genWinner({file: "f", pass: 3, total: 4}, {file: "f", pass: 2, total: 4}).side, "a");
+  assert.ok(w.side === "none" && w.text.includes("都没有实际运行"), w.text);
+  assert.equal(genWinner({file: "f", pass: 3, total: 4}, {file: "f", pass: 2, total: 4}).side, "none");
+  assert.equal(genWinner(st(5, 6, {stars: 4}), st(3, 6, {stars: 2})).side, "a");
   assert.equal(genWinner({file: "f", pass: 3, total: 4}, ok(2, 4)).side, "none");
   assert.equal(genWinner(ok(0, 0), ok(0, 0)).side, "none");                             /* 没有检查结果 */
   assert.deepEqual(["a", "b", "tie", "none"].map(s => genWinLabel({side: s})), ["A 更好", "B 更好", "差不多", "没法比"]);
   assert.equal(genWinLabel(null), "");
-  assert.ok(["人工星级", "AI", "检查", "5 分", "没生成"].every(k => genWinRule().includes(k)));   /* 悬停提示写全了判断规则 */
+  assert.ok(["人工星级", "AI", "检查", "5 分", "没生成", "能打开"].every(k => genWinRule().includes(k)));   /* 悬停提示写全了判断规则 */
 });
 
 T("卡片上的说明: 整次测试共同的情况不重复, 只写这件作品自己的问题", () => {
-  const stat = (fails, notes) => ({pass: 1, total: 3, eval: {method: "static", notes: notes || [],
+  const stat = (fails, notes) => ({pass: 0, total: 0, eval: {method: "static", notes: notes || [],
     checks: [{id: "doctype", pass: true}, ...fails.map((f, i) => ({id: "f" + (i + 1), label: "源码特征 /" + f + "/", pass: false}))]}});
   const all = {v2: true, mode: "static", shared: "没找到浏览器"}, mix = {v2: true, mode: "mixed", shared: "没找到浏览器"};
   const info = (it, ctx) => genCardInfo(it, genVerdict(it), ctx);
   let i = info(stat([]), all);
   assert.deepEqual([i.badge, i.note], [null, ""]);                                       /* 整次都只看代码: 无标签、无说明 */
   i = info(stat(["click"]), all);
-  assert.ok(i.badge === null && i.note.includes("click"));                              /* 只写这件作品自己没找到的关键词 */
-  assert.ok(!i.note.includes("没有在浏览器里实际运行"));
+  assert.deepEqual([i.badge, i.note], [null, ""]);                                       /* 代码关键词只作参考, 在详情里, 卡片上不写 */
   i = info(stat([]), mix);
   assert.deepEqual([i.badge.text, i.note], ["没有实际运行", ""]);                       /* 混合: 标出是哪几件, 原因同顶部就不再写 */
   i = info(stat([], ["浏览器崩了一次"]), mix);
@@ -1055,13 +1198,13 @@ T("卡片上的说明: 整次测试共同的情况不重复, 只写这件作品�
   assert.deepEqual([i.badge, i.note], [null, ""]);
   i = genCardInfo({pass: 0, total: 0}, genVerdict({pass: 0, total: 0}), {v2: true, mode: "browser", shared: ""});   /* 新版测试里个别没检查: 写「还没有检查」 */
   assert.equal(i.badge.text, "还没有检查");
-  /* 其余都是这件作品自己的问题: 原样写一句; 全部通过没有说明 */
+  /* 其余都是这件作品自己的问题: 原样写一句; 能用没有说明 */
   const fail = {error: "timed out"};
   i = info(fail, all);
   assert.ok(i.badge.text === "生成失败" && i.note.includes("timed out"));
   const pass = {pass: 2, total: 2, eval: {method: "browser", checks: [{id: "load", pass: true}, {id: "step1", label: "交互：按键", pass: true}]}};
   i = info(pass, {v2: true, mode: "browser", shared: ""});
-  assert.deepEqual([i.badge.text, i.note], ["全部检查通过", ""]);
+  assert.deepEqual([i.badge.text, i.note], ["能用", ""]);
   const part = {pass: 1, total: 2, eval: {method: "browser", checks: [{id: "load", pass: true}, {id: "step1", label: "交互：按键", pass: false}]}};
   i = info(part, {v2: true, mode: "browser", shared: ""});
   assert.ok(i.badge.text === "部分功能没反应" && i.note.includes("按键"));
@@ -1135,8 +1278,9 @@ T("作品列表: 换测试回到第 1 页并清掉筛选, 只换对照只回第 
 
 T("作品行: 缩略图 / 名称与问题 / 检查 / 数据 / 操作按固定顺序, 只有「新标签页打开」(没有内嵌预览), 缩略图懒加载, 没有截图是占位", () => {
   const run = {run_id: "gen_1", model: "m", items: []};
-  const it = {id: "snake", name: "贪吃蛇", file: "works/gen_1/snake.html", tags: ["困难", "游戏"], lines: 293, continuations: 4, out_tokens: 80000, pass: 3, total: 5,
-    eval: {method: "static", checks: [{id: "doctype", pass: true}, {id: "f1", label: "源码特征 /click/", pass: false}], notes: ["没找到浏览器"], shots: []}};
+  const it = {id: "snake", name: "贪吃蛇", file: "works/gen_1/snake.html", tags: ["困难", "游戏"], lines: 293, continuations: 4, out_tokens: 80000, pass: 0, total: 0,
+    eval: {method: "static", notes: ["没找到浏览器"], shots: [], checks: [{id: "doctype", pass: true}, {id: "f1", label: "源码特征 /click/", pass: false},
+      {id: "f2", label: "源码特征 /keydown/", pass: true}, {id: "f3", label: "源码特征 /score/", pass: true}, {id: "f4", label: "源码特征 /canvas/", pass: true}, {id: "f5", label: "源码特征 /next/", pass: false}]}};
   const ctx = {v2: true, mode: "static", shared: "没找到浏览器"};
   let h = genCard(run, it, genVerdict(it), ctx);
   assert.ok(!h.includes("没有在浏览器里实际运行"), "整次测试共同的话只在页面顶部说一次");
@@ -1145,7 +1289,8 @@ T("作品行: 缩略图 / 名称与问题 / 检查 / 数据 / 操作按固定顺
   assert.ok(h.includes("work-ph") && h.includes("<span>没有截图</span>"));
   assert.equal((h.match(/<img /g) || []).length, 0);
   assert.match(h, /293 行 · 接着写 4 轮 · 80\D?000 token/);                              /* 行数 · 接着写几轮 · token 在同一行 */
-  assert.ok(h.includes("接着写 4 轮") && h.includes("代码关键词 3/5") && h.includes("click"));
+  assert.ok(h.includes("接着写 4 轮") && h.includes("代码关键词 3/5") && h.includes("不算分") && !h.includes("click"));   /* 没实际运行: 灰色关键词数, 只作参考 */
+  assert.ok(h.includes("work-score score ref") && !h.includes("checkbar"));
   ["新标签页打开：贪吃蛇", "1 分", "5 分"].forEach(l => assert.ok(h.includes(`aria-label="${l}"`), l));
   /* 不在页面里内嵌预览: 没有「预览」按钮 / 并排预览 / iframe; 缩略图和按钮都是新标签页链接 */
   assert.ok(!h.includes('data-gen="preview"') && !h.includes("<iframe") && !h.includes("预览"));
