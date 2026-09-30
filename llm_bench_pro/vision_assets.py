@@ -15,6 +15,13 @@ import os
 import struct
 import zlib
 
+try:
+    from . import i18n  # 包内导入
+except ImportError:
+    import i18n  # server.py 以包目录为 sys.path 顶层导入
+
+t = i18n.t
+
 MIN_SIDE = 28                     # 每边至少 28 像素, 更小的看图模型会拒绝
 GOOD_SIDE = 224                   # 小于它收下但提示: 细节太少, 可能影响回答
 MAX_SIDE = 8192                   # 边长上限
@@ -50,7 +57,7 @@ def image_info(data):
 
 
 def _cut(fmt):
-    return ImageError("broken", "文件不完整（%s 没有正常结束，可能下载或拷贝时被截断了）" % fmt)
+    return ImageError("broken", t("文件不完整（{fmt} 没有正常结束，可能下载或拷贝时被截断了）", fmt=fmt))
 
 
 def _png_size(d):
@@ -64,16 +71,16 @@ def _png_size(d):
         if end > len(d):
             raise _cut("PNG")
         if zlib.crc32(d[pos + 4:end - 4]) & 0xFFFFFFFF != struct.unpack(">I", d[end - 4:end])[0]:
-            raise ImageError("broken", "文件已损坏（PNG 数据校验不通过）")
+            raise ImageError("broken", t("文件已损坏（PNG 数据校验不通过）"))
         if size is None:
             if typ != b"IHDR" or n != 13:
-                raise ImageError("broken", "文件已损坏（PNG 缺少文件头）")
+                raise ImageError("broken", t("文件已损坏（PNG 缺少文件头）"))
             size = struct.unpack(">II", d[pos + 8:pos + 16])
         elif typ == b"IDAT":
             has_data = True
         elif typ == b"IEND":
             if not has_data:
-                raise ImageError("broken", "文件已损坏（PNG 里没有图像数据）")
+                raise ImageError("broken", t("文件已损坏（PNG 里没有图像数据）"))
             return size
         pos = end
 
@@ -113,7 +120,7 @@ def _jpeg_size(d):
                 break
             return w, h
         pos += seg
-    raise ImageError("broken", "文件已损坏（JPEG 里读不出宽高）")
+    raise ImageError("broken", t("文件已损坏（JPEG 里读不出宽高）"))
 
 
 def _webp_size(d):
@@ -128,7 +135,7 @@ def _webp_size(d):
         return (b & 0x3FFF) + 1, ((b >> 14) & 0x3FFF) + 1
     if kind == b"VP8X" and len(d) >= 30:  # 扩展格式(带透明/动画)
         return int.from_bytes(d[24:27], "little") + 1, int.from_bytes(d[27:30], "little") + 1
-    raise ImageError("broken", "文件已损坏（WebP 里读不出宽高）")
+    raise ImageError("broken", t("文件已损坏（WebP 里读不出宽高）"))
 
 
 def _gif_size(d):
@@ -142,7 +149,7 @@ def _gif_size(d):
 
 def _unknown_format(d):
     if not d:
-        return "文件是空的"
+        return t("文件是空的")
     head = d[:64].lstrip().lower()
     kind = None
     if d[:2] == b"BM":
@@ -156,8 +163,8 @@ def _unknown_format(d):
     elif head.startswith((b"<svg", b"<?xml")):
         kind = "SVG"
     if kind:
-        return "是 %s 格式，暂不支持，请转成 JPG 或 PNG 再用" % kind
-    return "不是能识别的图片（只支持 JPG / PNG / WebP / GIF）"
+        return t("是 {kind} 格式，暂不支持，请转成 JPG 或 PNG 再用", kind=kind)
+    return t("不是能识别的图片（只支持 JPG / PNG / WebP / GIF）")
 
 
 # ---------------------------------------------------------------- 逐张检查
@@ -173,7 +180,7 @@ def check_image(data, name=None):
     out = {"name": name or "", "bytes": len(data), "format": None, "width": None, "height": None, "ext": None,
            "ok": False, "level": "bad", "code": "", "msg": ""}
     if not data:
-        out.update(code="empty", msg="文件是空的")
+        out.update(code="empty", msg=t("文件是空的"))
         return out
     try:
         fmt, w, h = image_info(data)
@@ -182,20 +189,27 @@ def check_image(data, name=None):
         return out
     out.update(format=fmt, width=w, height=h, ext=FORMATS[fmt][1])
     if len(data) > MAX_BYTES:
-        out.update(code="too_big", msg="有 %s，超过单张 20 MB 的上限" % _mb(len(data)))
+        out.update(code="too_big", msg=t("有 {size}，超过单张 20 MB 的上限", size=_mb(len(data))))
     elif w < MIN_SIDE or h < MIN_SIDE:
-        out.update(code="too_small", msg="只有 %d×%d 像素，太小，看图模型会直接拒绝（每边至少 %d 像素）" % (w, h, MIN_SIDE))
+        out.update(code="too_small", msg=t("只有 {w}×{h} 像素，太小，看图模型会直接拒绝（每边至少 {min_side} 像素）",
+                                            w=w, h=h, min_side=MIN_SIDE))
     elif max(w, h) > MAX_SIDE:
-        out.update(code="too_large", msg="尺寸 %d×%d，边长超过 %d 像素，请缩小后再用" % (w, h, MAX_SIDE))
+        out.update(code="too_large", msg=t("尺寸 {w}×{h}，边长超过 {max_side} 像素，请缩小后再用", w=w, h=h, max_side=MAX_SIDE))
     else:
         notes = []
         if min(w, h) < GOOD_SIDE:
-            notes.append("尺寸 %d×%d 偏小，可能影响回答效果（推荐 %d×%d 以上）" % (w, h, GOOD_SIDE, GOOD_SIDE))
+            notes.append(t("尺寸 {w}×{h} 偏小，可能影响回答效果（推荐 {rec}×{rec} 以上）", w=w, h=h, rec=GOOD_SIDE))
         ext = os.path.splitext(name or "")[1].lower()
         if ext in EXT_FORMAT and EXT_FORMAT[ext] != fmt:
-            notes.append("扩展名是 %s，实际是 %s 图片，已按 %s 处理" % (ext, FORMATS[fmt][2], FORMATS[fmt][2]))
-        out.update(ok=True, level="warn" if notes else "ok", msg="；".join(notes))
+            notes.append(t("扩展名是 {ext}，实际是 {actual} 图片，已按 {actual} 处理", ext=ext, actual=FORMATS[fmt][2]))
+        out.update(ok=True, level="warn" if notes else "ok", msg=t("；", ctx="图片检查").join(notes))
     return out
+
+
+def check_line(c):
+    """一张图片的检查结果拼成一句「名称 说明」: 上传汇总、素材列表、启动检查的报错里用。中文用空格连接 (和以前一样);
+    英文的说明是首字母大写的短语, 用冒号接在名称后面。(连接符不走词典: 词典的键必须含汉字, 而这里中文那一边只是一个空格。)"""
+    return "%s%s%s" % (c["name"], ": " if i18n.current_lang() == "en" else " ", c["msg"])
 
 
 def scan_dir(d, keep_data=True):
@@ -210,7 +224,7 @@ def scan_dir(d, keep_data=True):
         data = None
         if size > MAX_BYTES:  # 太大的不读进内存
             c = {"name": n, "bytes": size, "format": None, "width": None, "height": None, "ext": None,
-                 "ok": False, "level": "bad", "code": "too_big", "msg": "有 %s，超过单张 20 MB 的上限" % _mb(size)}
+                 "ok": False, "level": "bad", "code": "too_big", "msg": t("有 {size}，超过单张 20 MB 的上限", size=_mb(size))}
         else:
             with open(p, "rb") as f:
                 data = f.read()

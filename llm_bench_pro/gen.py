@@ -23,6 +23,7 @@ except ImportError:
     import iq
     import sinks
     import store
+t, tn = i18n.t, i18n.tn
 
 # 2.0: 源码正则特征 -> 无头浏览器运行检测(逐题交互脚本/功能断言) + 可选视觉模型清单评审, 与 1.x 结果不可直接比较
 # 2.1: 流式生成(思考模式不再整体超时)、续写携带完整已生成内容并按行去重、HTML 提取修正、取消即停
@@ -179,14 +180,14 @@ def resolve_sampling(thinking, sampling=None):
             try:
                 v = cast(v)
             except (TypeError, ValueError):
-                raise ValueError("采样参数 %s 无效: %r" % (key, sampling.get(key)))
+                raise ValueError(t("采样参数 {key} 无效: {value!r}", key=key, value=sampling.get(key)))
             if not lo <= v <= hi:
-                raise ValueError("采样参数 %s 应在 %s 到 %s 之间: %s" % (key, lo, hi, v))
+                raise ValueError(t("采样参数 {key} 应在 {lo} 到 {hi} 之间: {value}", key=key, lo=lo, hi=hi, value=v))
             out[key] = v
         out.setdefault("temperature", base["temperature"])
         out.setdefault("seed", 42)
         return out
-    raise ValueError("未知的采样方式: %r" % (sampling,))
+    raise ValueError(t("未知的采样方式: {sampling!r}", sampling=sampling))
 
 
 def sampling_record(sampling):
@@ -266,8 +267,8 @@ class RepetitionWatch:
 def repetition_text(rep):
     """重复输出的大白话描述。"""
     if rep.get("kind") == "loop":
-        return "每 %d 个字符循环一次，已重复 %d 次" % (rep["period"], rep["repeats"])
-    return "最近几千字内容高度雷同（压缩率 %.2f，正常代码约 0.2 以上）" % (rep.get("ratio") or 0)
+        return t("每 {period} 个字符循环一次，已重复 {repeats} 次", period=rep["period"], repeats=rep["repeats"])
+    return t("最近几千字内容高度雷同（压缩率 {ratio:.2f}，正常代码约 0.2 以上）", ratio=rep.get("ratio") or 0)
 
 
 def scan_repetition(text):
@@ -478,7 +479,7 @@ def gen_complete(url, model, prompt, tier_max, headers, thinking=False, cancel=N
             if fit and 512 <= fit < mt:
                 mt = fit
                 continue
-            plog("    ⚠ 续写失败, 保留已生成部分: %s" % str(e)[:80])
+            plog(t("    ⚠ 续写失败, 保留已生成部分: {error}", error=str(e)[:80]))
             rounds.append({"n": len(rounds) + 1, "mode": mode, "error": str(e)[:240]})
             break
         if extra and "continue_final_message" in iq._DROPPED.get(url, ()):
@@ -501,7 +502,7 @@ def gen_complete(url, model, prompt, tier_max, headers, thinking=False, cancel=N
         if cont == 0 or mode == "restart":
             full = resp
         elif re.match(r"\s*(```[\w-]*\s*)?<!doctype|\s*(```[\w-]*\s*)?<html", resp, re.I) and "<html" in full.lower():
-            plog("    ↻ 续写从头重新输出了整个文件, 改用新内容")
+            plog(t("    ↻ 续写从头重新输出了整个文件, 改用新内容"))
             full = resp
             rec["join"] = {"replaced": True}
         else:
@@ -510,26 +511,27 @@ def gen_complete(url, model, prompt, tier_max, headers, thinking=False, cancel=N
         if rep and rep["where"] == "content":
             trace["degenerate"] = {k: rep.get(k) for k in ("kind", "period", "repeats", "ratio", "sample")}
             trace["degenerate"]["round"] = rec["n"]
-            plog("    ⚠ 模型陷入重复输出(%s), 停止生成、不再续写" % repetition_text(rep))
+            plog(t("    ⚠ 模型陷入重复输出({detail}), 停止生成、不再续写", detail=repetition_text(rep)))
             break
         if rep:  # 思考过程陷入重复: 与思考用完输出长度同样处理(正文为空时改为不思考重新生成)
             trace["degenerate_reasoning"] = {k: rep.get(k) for k in ("kind", "period", "repeats", "ratio", "sample")}
             trace["degenerate_reasoning"]["round"] = rec["n"]
-            plog("    ⚠ 思考过程陷入重复输出, 停止思考")
+            plog(t("    ⚠ 思考过程陷入重复输出, 停止思考"))
             finish = "length"
         if finish != "length":
             break
         cont += 1
         if cont >= 4:
-            plog("    ⚠ 续写 %d 轮仍未闭合" % cont)
+            plog(tn("    ⚠ 续写 {n} 轮仍未闭合", cont))
             trace["unfinished"] = True
             break
-        plog("    ↻ 截断, 续写第 %d 轮(关闭思考直出代码)" % cont)
+        plog(t("    ↻ 截断, 续写第 {n} 轮(关闭思考直出代码)", n=cont))
         visible = iq.strip_think(full) if "<think>" in full or "</think>" in full else full
         if not visible.strip():
             msgs = [{"role": "user", "content": prompt + "\n\n（直接输出完整 HTML 代码，不要思考过程。）"}]
             full, extra, mode = "", {}, "restart"
-            trace["rescued"] = "思考过程%s，没写出代码；改为不思考、直接重新生成" % ("陷入重复" if rep else "用完了输出长度")
+            trace["rescued"] = (t("思考过程陷入重复，没写出代码；改为不思考、直接重新生成") if rep
+                                else t("思考过程用完了输出长度，没写出代码；改为不思考、直接重新生成"))
         elif url not in iq._DROPPED or "continue_final_message" not in iq._DROPPED[url]:
             msgs = [{"role": "user", "content": prompt}, {"role": "assistant", "content": visible}]
             extra, full, mode = {"continue_final_message": True, "add_generation_prompt": False}, visible, "prefix"
@@ -542,7 +544,9 @@ def gen_complete(url, model, prompt, tier_max, headers, thinking=False, cancel=N
 
 def describe_changes(raw, html, trace=None):
     """用大白话列出框架对模型原始输出做过的全部处理。除列出的处理外, 保存的作品与模型输出逐字一致,
-    用于回答"作品是不是被框架弄坏了"。没有任何处理时返回 ["原样保存…"]。"""
+    用于回答"作品是不是被框架弄坏了"。没有任何处理时返回 ["原样保存…"]。
+    文字按任务语言生成。前端 (app.js 的 changeKind) 靠里面的关键词给作品分类: 中文 续写|重写 / 原样保存 (trace["rescued"] 是 改为不思考),
+    英文 continuation / as is (rescued 是 regenerated without thinking); 改写这些句子时关键词要留着。"""
     trace = trace or {}
     out = []
     if trace.get("rescued"):
@@ -552,35 +556,46 @@ def describe_changes(raw, html, trace=None):
             continue
         j = r.get("join") or {}
         if j.get("replaced"):
-            out.append("第 %d 轮续写时模型从头重写了整个文件，采用了重写后的版本" % r["n"])
+            out.append(t("第 {n} 轮续写时模型从头重写了整个文件，采用了重写后的版本", n=r["n"]))
             continue
         bits = []
         if j.get("line_restart"):
-            bits.append("模型从被截断的那一行重新写，去掉了重复的半行（%d 个字符）" % j.get("overlap", 0))
+            bits.append(tn("模型从被截断的那一行重新写，去掉了重复的半行（{n} 个字符）", j.get("overlap", 0)))
         elif j.get("overlap"):
-            bits.append("去掉了与上文重复的 %d 个字符" % j["overlap"])
+            bits.append(tn("去掉了与上文重复的 {n} 个字符", j["overlap"]))
         if j.get("fence"):
-            bits.append("去掉了开头的代码块标记")
+            bits.append(t("去掉了开头的代码块标记"))
         if j.get("newline"):
-            bits.append("补了 1 个换行")
-        out.append("接上第 %d 轮续写（%s）" % (r["n"], "，".join(bits) if bits else "直接拼接"))
+            bits.append(t("补了 1 个换行"))
+        if bits:   # 有没有细节各写成整句, 不拼碎片
+            out.append(t("接上第 {n} 轮续写（{detail}）", n=r["n"], detail=t("，").join(bits)))
+        else:
+            out.append(t("接上第 {n} 轮续写（直接拼接）", n=r["n"]))
     no_think = iq.strip_think(raw)
     cut = len(raw.strip()) - len(no_think)
     if cut > 0:
-        out.append("去掉了混在正文里的思考过程（%d 个字符）" % cut)
+        out.append(tn("去掉了混在正文里的思考过程（{n} 个字符）", cut))
     pos = no_think.find(html) if html else -1
     if pos >= 0:
-        for where, text in (("前面", no_think[:pos]), ("后面", no_think[pos + len(html):])):
+        for is_front, text in ((True, no_think[:pos]), (False, no_think[pos + len(html):])):
             prose = re.sub(r"```[\w-]*", "", text).strip()
+            fenced = "```" in text
             if prose:
-                out.append("去掉了代码%s的说明文字（%d 个字符）%s：「%s」" % (
-                    where, len(prose), "和代码块标记" if "```" in text else "",
-                    prose[:40].replace("\n", " ") + ("…" if len(prose) > 40 else "")))
-            elif "```" in text:
-                out.append("去掉了代码%s的 Markdown 代码块标记" % where)
+                snippet = prose[:40].replace("\n", " ") + ("…" if len(prose) > 40 else "")
+                # 前面 / 后面、带不带代码块标记, 共 4 个整句
+                if is_front and fenced:
+                    out.append(tn("去掉了代码前面的说明文字（{n} 个字符）和代码块标记：「{snippet}」", len(prose), snippet=snippet))
+                elif is_front:
+                    out.append(tn("去掉了代码前面的说明文字（{n} 个字符）：「{snippet}」", len(prose), snippet=snippet))
+                elif fenced:
+                    out.append(tn("去掉了代码后面的说明文字（{n} 个字符）和代码块标记：「{snippet}」", len(prose), snippet=snippet))
+                else:
+                    out.append(tn("去掉了代码后面的说明文字（{n} 个字符）：「{snippet}」", len(prose), snippet=snippet))
+            elif fenced:
+                out.append(t("去掉了代码前面的 Markdown 代码块标记") if is_front else t("去掉了代码后面的 Markdown 代码块标记"))
     elif html:
-        out.append("删除了续写接缝处多余的代码块标记")
-    return out or ["原样保存了模型输出，没有做任何修改"]
+        out.append(t("删除了续写接缝处多余的代码块标记"))
+    return out or [t("原样保存了模型输出，没有做任何修改")]
 
 
 def _drop_seam_fences(text):
@@ -623,18 +638,18 @@ def normalize_task_ids(raw):
     if isinstance(raw, str):
         raw = [x.strip() for x in raw.split(",") if x.strip()]
     if not isinstance(raw, (list, tuple)):
-        raise ValueError("tasks 应为题目 id 数组")
+        raise ValueError(t("tasks 应为题目 id 数组"))
     ids = []
     for x in raw:
         if not isinstance(x, str) or not x.strip():
-            raise ValueError("tasks 应为题目 id 数组")
+            raise ValueError(t("tasks 应为题目 id 数组"))
         ids.append(x.strip())
     if not ids:
-        raise ValueError("请至少选择 1 道题目")
-    known = {t["id"] for t in GEN_TASKS}
+        raise ValueError(t("请至少选择 1 道题目"))
+    known = {task["id"] for task in GEN_TASKS}
     bad = [x for x in ids if x not in known]
     if bad:
-        raise ValueError("未知题目：" + "、".join(bad[:8]))
+        raise ValueError(tn("未知题目：{ids}", len(bad[:8]), ids=t("、").join(bad[:8])))
     return ids
 
 
@@ -662,7 +677,7 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
     if task_ids is not None:
         task_ids = set(normalize_task_ids(task_ids))
-    tasks = [t for t in GEN_TASKS if task_ids is None or t["id"] in task_ids]
+    tasks = [task for task in GEN_TASKS if task_ids is None or task["id"] in task_ids]
 
     run_id = "gen_%s_%s" % (datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"),
                             re.sub(r"[^A-Za-z0-9.-]", "_", model))
@@ -684,10 +699,10 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
         sink.save(result)
 
     first = resolve_sampling(thinking, sampling)
-    plog("== gen v%s | %s | %d 题 | conc=%d | 采样 %s | 评测: %s%s ==" % (
-        GEN_VERSION, model, len(tasks), conc, json.dumps(first, ensure_ascii=False),
-        "无头浏览器运行检测" if evaluator.method == "browser" else "源码检查(未找到浏览器)",
-        " + 视觉评审 " + judge["model"] if evaluator.judge_cfg else ""))
+    plog(tn("== gen v{version} | {model} | {n} 题 | conc={conc} | 采样 {sampling} | 评测: {method}{judge} ==", len(tasks),
+            version=GEN_VERSION, model=model, conc=conc, sampling=json.dumps(first, ensure_ascii=False),
+            method=t("无头浏览器运行检测") if evaluator.method == "browser" else t("源码检查(未找到浏览器)"),
+            judge=t(" + 视觉评审 {model}", model=judge["model"]) if evaluator.judge_cfg else ""))
 
     def keep_trace(task, trace, raw, html):
         """逐题留档: 模型每一轮的原始输出 + 框架做过的处理; 返回写进作品条目的摘要字段。"""
@@ -705,7 +720,7 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
                 json.dump(doc, f, ensure_ascii=False)
             os.replace(path + ".tmp", path)
         except OSError as e:
-            plog("  ⚠ [%s] 原始输出留档失败: %s" % (task["name"], e))
+            plog(t("  ⚠ [{name}] 原始输出留档失败: {error}", name=task["name"], error=e))
             rel = None
         brief = {"rounds": [{k: r.get(k) for k in ("n", "mode", "thinking", "finish", "completion_tokens", "tokens_estimated",
                                                    "content_chars", "reasoning_chars", "seconds", "error")}
@@ -727,7 +742,7 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
     def worker(task):
         if cancel is not None and cancel.is_set():
             return None
-        plog("▶ 开始: %s (%s)" % (task["name"], "/".join(task["tags"])))
+        plog(t("▶ 开始: {name} ({tags})", name=task["name"], tags="/".join(task["tags"])))
         trace = {}
         try:
             base_max = 16000 if "地狱" in task["tags"] else (12000 if "困难" in task["tags"] else 8000)
@@ -739,18 +754,22 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
         except Exception as e:
             done_ct[0] += 1
             detail = getattr(e, "detail", "")
-            plog("  ✗ [%s] 失败: %s · 进度 %d/%d" % (task["name"], str(e)[:60], done_ct[0], len(tasks)))
+            plog(t("  ✗ [{name}] 失败: {error} · 进度 {done}/{total}",
+                   name=task["name"], error=str(e)[:60], done=done_ct[0], total=len(tasks)))
             item = failed(task, (str(e) + ((" " + detail[:120]) if detail else ""))[:240])
             item.update(keep_trace(task, trace, None, None))
             return item
         html = extract_html(resp)
         if len(html) < 200 or "<" not in html:
             done_ct[0] += 1
-            why = ("思考耗尽未产出正文(思考%d字)" % reason_len) if thinking and reason_len and not iq.strip_think(resp).strip() \
-                else "输出中没有有效的 HTML(提取到 %d 字)" % len(html)
+            if thinking and reason_len and not iq.strip_think(resp).strip():
+                why = tn("思考耗尽未产出正文(思考{n}字)", reason_len)
+            else:
+                why = tn("输出中没有有效的 HTML(提取到 {n} 字)", len(html))
             if trace.get("degenerate"):
-                why = "模型陷入重复输出，没有写出有效的 HTML"
-            plog("  ✗ [%s] %s · 进度 %d/%d" % (task["name"], why, done_ct[0], len(tasks)))
+                why = t("模型陷入重复输出，没有写出有效的 HTML")
+            plog(t("  ✗ [{name}] {reason} · 进度 {done}/{total}",
+                   name=task["name"], reason=why, done=done_ct[0], total=len(tasks)))
             item = failed(task, why)
             item.update(keep_trace(task, trace, resp, html))
             return item
@@ -770,15 +789,18 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
                 report = evaluator.evaluate(task, fpath, html, cancel)
                 geneval.apply_eval(item, report)
             else:
-                plog("  · [%s] 已生成，取消于评测前" % task["name"])
+                plog(t("  · [{name}] 已生成，取消于评测前", name=task["name"]))
         except Cancelled:
             return None
         except Exception as e:
             done_ct[0] += 1
-            plog("  ✗ [%s] 失败: %s · 进度 %d/%d" % (task["name"], str(e)[:60], done_ct[0], len(tasks)))
+            plog(t("  ✗ [{name}] 失败: {error} · 进度 {done}/{total}",
+                   name=task["name"], error=str(e)[:60], done=done_ct[0], total=len(tasks)))
             return failed(task, str(e)[:240])
         done_ct[0] += 1
-        plog("  ✓ [%s] %s · 进度 %d/%d" % (task["name"], _eval_brief(item) if item.get("eval") else "已生成、未评测", done_ct[0], len(tasks)))
+        # 各处「进度 N/M」(英文 progress N/M): 前端 (app.js 运行日志) 靠这个格式画进度条, 改文字时格式要留着
+        plog(t("  ✓ [{name}] {summary} · 进度 {done}/{total}", name=task["name"],
+               summary=_eval_brief(item) if item.get("eval") else t("已生成、未评测"), done=done_ct[0], total=len(tasks)))
         return item
 
     result["status"] = "running"
@@ -802,7 +824,7 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
 
     try:
         ex = i18n.executor(max_workers=conc)
-        futures.extend(ex.submit(worker, t) for t in tasks)
+        futures.extend(ex.submit(worker, task) for task in tasks)
         try:
             pending = set(futures)
             while pending:
@@ -817,8 +839,8 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
             ex.shutdown(wait=True)  # 等进行中的题收尾, 避免返回后仍有线程写作品/启动浏览器
         flush(final=True)
         if cancel is not None and cancel.is_set():
-            result["status"], result["error"] = "cancelled", "用户取消"
-            plog("已取消: 保留已完成的 %d 件作品" % len(result["items"]))
+            result["status"], result["error"] = "cancelled", t("用户取消")
+            plog(tn("已取消: 保留已完成的 {n} 件作品", len(result["items"])))
         else:
             result["status"] = "done"
     except BaseException as e:
@@ -839,22 +861,22 @@ def run_gen(url, model, api_key="", task_ids=None, conc=4, outdir=None, tag="",
             result["thinking_dropped"] = True
         result["finished_utc"] = datetime.now(timezone.utc).isoformat()
         save()
-    plog("完成 => %s" % sink.location)
+    plog(t("完成 => {location}", location=sink.location))
     return sink.location
 
 
 def _eval_brief(item):
     ev = item.get("eval") or {}
-    s = "运行检测 %d/%d" % (item["pass"], item["total"])
+    s = t("运行检测 {passed}/{total}", passed=item["pass"], total=item["total"])
     fails = [c["label"] for c in ev.get("checks", []) if not c["pass"]]
     if fails:
-        s += "（未通过：%s）" % "、".join(fails[:3])
+        s += t("（未通过：{names}）", names=t("、").join(fails[:3]))
     j = ev.get("judge") or {}
     if j.get("score") is not None:
-        s += " · 评审 %.0f 分" % j["score"]
+        s += t(" · 评审 {score:.0f} 分", score=j["score"])
     elif j.get("error"):
-        s += " · 评审失败"
-    return s + " · %d 行" % item["lines"]
+        s += t(" · 评审失败")
+    return s + tn(" · {n} 行", item["lines"])
 
 
 def reevaluate(run_id, judge=None, only=None, db_path=None, browsers=2, log=None, cancel=None):
@@ -863,14 +885,14 @@ def reevaluate(run_id, judge=None, only=None, db_path=None, browsers=2, log=None
     log = log or plog
     doc = store.get_run(run_id, db_path=db_path)
     if not doc or doc.get("kind") != "gen":
-        raise KeyError("生成运行不存在: %s" % run_id)
-    tasks = {t["id"]: t for t in GEN_TASKS}
+        raise KeyError(t("生成运行不存在: {run_id}", run_id=run_id))
+    tasks = {task["id"]: task for task in GEN_TASKS}
     evaluator = geneval.Evaluator(judge, browsers=browsers, log=log)
     evaluator.reap()
     targets = [it for it in doc.get("items", []) if not it.get("error") and it.get("id") in tasks
                and (not only or it["id"] in only)]
-    log("== 重新评测 %s | %d 件作品 | %s%s ==" % (run_id, len(targets), evaluator.method,
-                                              " + 视觉评审 " + judge["model"] if evaluator.judge_cfg else ""))
+    log(tn("== 重新评测 {run_id} | {n} 件作品 | {method}{judge} ==", len(targets), run_id=run_id, method=evaluator.method,
+           judge=t(" + 视觉评审 {model}", model=judge["model"]) if evaluator.judge_cfg else ""))
     done = [0]
 
     def one(it):
@@ -878,7 +900,7 @@ def reevaluate(run_id, judge=None, only=None, db_path=None, browsers=2, log=None
             return
         path = work_path(it["file"])
         if not os.path.isfile(path):
-            log("  ✗ [%s] 作品文件缺失: %s" % (it["name"], it["file"]))
+            log(t("  ✗ [{name}] 作品文件缺失: {file}", name=it["name"], file=it["file"]))
             return
         with open(path, encoding="utf-8", errors="replace") as f:
             html = f.read()
@@ -886,7 +908,7 @@ def reevaluate(run_id, judge=None, only=None, db_path=None, browsers=2, log=None
         old_judge = old_eval.get("judge") if isinstance(old_eval.get("judge"), dict) else None
         report = evaluator.evaluate(tasks[it["id"]], path, html, cancel)
         if report.get("method") != "browser" and old_eval.get("method") == "browser":
-            log("  · [%s] 浏览器检测失败，保留上次的运行检测和评审" % it["name"])
+            log(t("  · [{name}] 浏览器检测失败，保留上次的运行检测和评审", name=it["name"]))
             return
         j = report.get("judge") or {}
         if j.get("score") is None and old_judge and old_judge.get("score") is not None:
@@ -899,7 +921,8 @@ def reevaluate(run_id, judge=None, only=None, db_path=None, browsers=2, log=None
         geneval.apply_eval(it, report)
         store.update_gen_item(run_id, it, db_path=db_path)
         done[0] += 1
-        log("  ✓ [%s] %s · 进度 %d/%d" % (it["name"], _eval_brief(it), done[0], len(targets)))
+        log(t("  ✓ [{name}] {summary} · 进度 {done}/{total}",
+              name=it["name"], summary=_eval_brief(it), done=done[0], total=len(targets)))
 
     try:
         with i18n.executor(max_workers=max(1, browsers)) as ex:
@@ -922,4 +945,4 @@ def reevaluate(run_id, judge=None, only=None, db_path=None, browsers=2, log=None
             meta["method"] = mode  # 以作品上的实际检测方式为准, 不因本机有 Chrome 就写成浏览器
         if done[0]:
             store.update_run_meta(run_id, {"eval": meta}, db_path=db_path)  # 一件都没更新时不改运行口径
-    log("重新评测已取消" if cancel is not None and cancel.is_set() else "重新评测完成")
+    log(t("重新评测已取消") if cancel is not None and cancel.is_set() else t("重新评测完成"))

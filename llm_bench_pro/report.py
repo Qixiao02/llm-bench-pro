@@ -2,9 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 llm-bench-pro — 离线压测报告生成 (自包含 HTML, 内联 SVG, 无 JS/外链, 打印友好)。
-render(a, b=None) -> HTML 字符串; a/b 为性能测试 run 文档, 传 b 时做 A/B 对比。
+render(a, b=None, lang=None) -> HTML 字符串; a/b 为性能测试 run 文档, 传 b 时做 A/B 对比。
 结构"结论先行": KPI → 结论要点 → 图表 → 明细表 → 方法论 → 失败/重跑披露。
 所有来自结果的字符串都经 esc() 转义; 报告不含脚本, 可直接发给他人离线打开。
+页面文字 (标题、表头、图表说明、结论、方法说明、页脚) 按当前语言生成 (i18n.current_lang(), 服务端每个请求
+在调用前设好); lang 参数 ("zh" / "en") 只在这一次调用里换成指定语言, 不传就用当前语言。
 """
 import html as _html
 import math
@@ -12,11 +14,14 @@ import re
 from datetime import datetime, timezone
 
 try:
-    from . import bench  # 报告引用引擎版本号
+    from . import bench, i18n  # 报告引用引擎版本号
     from .version import APP_VERSION
 except ImportError:
     import bench
+    import i18n
     from version import APP_VERSION
+
+t, tn = i18n.t, i18n.tn
 
 REPORT_VERSION = "1.0.0"
 
@@ -134,7 +139,7 @@ def svg_chart(x_labels, series, w=780, h=230, right=None):
 def svg_area(x_labels, values, note=None, color=CA, w=780, h=150):
     """面积图(开环在途时间线): 值下的面积 + 峰值参考线。"""
     if not values:
-        return '<p class="muted">无在途采样数据</p>'
+        return '<p class="muted">%s</p>' % t("无在途采样数据")
     pad_l, pad_r, pad_t, pad_b = 54, 12, 10, 22
     iw, ih = w - pad_l - pad_r, h - pad_t - pad_b
     vmax = _nice(max(values) * 1.15)
@@ -156,8 +161,8 @@ def svg_area(x_labels, values, note=None, color=CA, w=780, h=150):
     out.append('<path d="%s" fill="none" stroke="%s" stroke-width="1.8"/>' % (path, color))
     for i in range(0, n, max(1, n // 8)):
         out.append('<circle cx="%.1f" cy="%.1f" r="2.2" fill="%s"/>' % (X(i), Y(values[i]), color))
-    out.append('<text x="%d" y="%d" text-anchor="middle" font-size="10" fill="%s">时间 (s)</text>'
-               % (pad_l + iw // 2, h - 2, MUTED))
+    out.append('<text x="%d" y="%d" text-anchor="middle" font-size="10" fill="%s">%s</text>'
+               % (pad_l + iw // 2, h - 2, MUTED, t("时间 (s)")))
     out.append("</svg>")
     return "".join(out)
 
@@ -167,7 +172,7 @@ def svg_area(x_labels, values, note=None, color=CA, w=780, h=150):
 def _tbl(headers, rows):
     head = "".join("<th>%s</th>" % h for h in headers)
     body = "".join("<tr>%s</tr>" % "".join("<td>%s</td>" % c for c in r) for r in rows) or \
-        '<tr><td colspan="%d" class="muted">无数据</td></tr>' % len(headers)
+        '<tr><td colspan="%d" class="muted">%s</td></tr>' % (len(headers), t("无数据", ctx="表格"))
     return '<table><thead><tr>%s</tr></thead><tbody>%s</tbody></table>' % (head, body)
 
 
@@ -207,14 +212,34 @@ def _kpi_cards(docs):
         ]
     vals = [best(d) for d in docs]
     cards = []
-    for label, unit, i, lb in (("最高并发聚合吞吐", "tok/s", 0, False), ("单流解码吞吐", "tok/s", 1, False),
-                               ("最高并发 TTFT p95", "s", 2, True), ("Prefill 吞吐(峰值中位)", "tok/s", 3, False)):
+    for label, unit, i, lb in ((t("最高并发聚合吞吐"), "tok/s", 0, False), (t("单流解码吞吐"), "tok/s", 1, False),
+                               (t("最高并发 TTFT p95"), "s", 2, True), (t("Prefill 吞吐(峰值中位)"), "tok/s", 3, False)):
         a = vals[0][i]
         b = vals[1][i] if len(vals) > 1 else None
         body = _delta(a, b, 1, lb) if b is not None else fmt(a, 1)
         cards.append('<div class="kpi"><div class="kpi-l">%s</div><div class="kpi-v">%s</div>'
                      '<div class="kpi-u">%s</div></div>' % (label, body, unit))
     return '<div class="kpis">%s</div>' % "".join(cards)
+
+
+def _builtin_scn_names(tpl):
+    """内置场景 tpl 在中英文下的显示名 (bench.scenario_label): 结果里存的 task.label 是任务当时的语言写下的, 可能是中文也可能是英文。"""
+    out = set()
+    for lang in ("zh", "en"):
+        with i18n.use_lang(lang):
+            out.add(bench.scenario_label(tpl))
+    return out
+
+
+def _scn_label(p, fallback):
+    """场景 (阶段 p) 的显示名。结果里存的 label 是内置场景的显示名 (中文或英文) 时, 换成当前语言的名字
+    (中文模式下中文结果就是原名, 输出不变); 用户自己起的名字、旧结果里别的写法原样显示。fallback: 没有 label 时用什么。"""
+    task = p.get("task") or {}
+    label = task.get("label") or fallback
+    tpl = task.get("tpl", (p.get("id") or "")[4:])
+    if isinstance(tpl, str) and tpl in bench.SCN_TEMPLATES and label in _builtin_scn_names(tpl):
+        return bench.scenario_label(tpl)
+    return label
 
 
 def _findings(docs):
@@ -240,18 +265,18 @@ def _findings(docs):
             if ea and eb and ea[1] and eb[1]:
                 d = (ea[1] - eb[1]) / eb[1] * 100
                 who = "A (%s)" % docs[0]["model"] if d >= 0 else "B (%s)" % docs[1]["model"]
-                f.append("并发 %d 下聚合吞吐: %s 更高 %.1f%%（%s vs %s tok/s）"
-                         % (common[-1], who, abs(d), fmt(ea[1]), fmt(eb[1])))
+                f.append(t("并发 {conc} 下聚合吞吐: {who} 更高 {pct:.1f}%（{a} vs {b} tok/s）",
+                           conc=int(common[-1]), who=who, pct=abs(d), a=fmt(ea[1]), b=fmt(eb[1])))
             if ea and eb and ea[2] and eb[2]:
                 d = (ea[2] - eb[2]) / eb[2] * 100
                 who = "A (%s)" % docs[0]["model"] if d < 0 else "B (%s)" % docs[1]["model"]
-                f.append("并发 %d 下 TTFT p95: %s 更低 %.1f%%（%s vs %s s）"
-                         % (common[-1], who, abs(d), fmt(ea[2]), fmt(eb[2])))
+                f.append(t("并发 {conc} 下 TTFT p95: {who} 更低 {pct:.1f}%（{a} vs {b} s）",
+                           conc=int(common[-1]), who=who, pct=abs(d), a=fmt(ea[2]), b=fmt(eb[2])))
         if (a.get("overrides") or {}).get("fixed_output") != (docs[1].get("overrides") or {}).get("fixed_output"):
-            f.append("⚠ 两次运行的固定输出长度(ignore_eos)设置不一致, 吞吐不可直接比较")
+            f.append(t("⚠ 两次运行的固定输出长度(ignore_eos)设置不一致, 吞吐不可直接比较"))
     ov = a.get("overrides") or {}
     if ov.get("fixed_output") is False:
-        f.append("⚠ 本次运行未固定输出长度(端点不支持 ignore_eos), 模型提前结束时吞吐会偏低, 跨后端对比需注意口径")
+        f.append(t("⚠ 本次运行未固定输出长度(端点不支持 ignore_eos), 模型提前结束时吞吐会偏低, 跨后端对比需注意口径"))
     for doc in docs[1:]:
         for p in doc.get("phases") or []:
             for pt in p.get("points") or []:
@@ -259,31 +284,33 @@ def _findings(docs):
                     retries += 1
                 fails += pt.get("fail") or 0
     if retries:
-        f.append("%d 个格子失败后整格重跑(明细见「失败与重跑」)" % retries)
+        f.append(tn("{n} 个格子失败后整格重跑(明细见「失败与重跑」)", retries))
     if fails:
-        f.append("共 %d 个请求失败(已计入失败率, 未从结果中剔除)" % fails)
+        f.append(tn("共 {n} 个请求失败(已计入失败率, 未从结果中剔除)", int(fails)))
     for p in a.get("phases") or []:
         if not (p.get("id") or "").startswith("scn_"):
             continue
-        label = (p.get("task") or {}).get("label") or p["id"][4:]
+        label = _scn_label(p, p["id"][4:])
         worst = min(((pt.get("json_rate") if pt.get("json_rate") is not None else 1.0, pt.get("conc"))
                      for pt in p.get("points") or []), default=(1.0, None))
         if worst[0] < 0.95:
-            f.append("⚠ 场景「%s」JSON 合法率最低 %.0f%% (并发 %s): 结构化输出稳定性需关注" % (label, worst[0] * 100, worst[1]))
+            f.append(t("⚠ 场景「{label}」JSON 合法率最低 {pct:.0f}% (并发 {conc}): 结构化输出稳定性需关注",
+                       label=label, pct=worst[0] * 100, conc=worst[1]))
     ol = _ph(a, "openloop")
     if ol:
         for pt in ol.get("points") or []:
             rate, done = pt.get("rate"), pt.get("completed_rps") or 0
             if done < rate * 0.9:
-                f.append("⚠ 开环速率 %g req/s 下只完成 %g req/s (最大在途 %d): 到达速率已超过服务能力, 请求越排越长"
-                         % (rate, done, pt.get("max_inflight") or 0))
+                f.append(t("⚠ 开环速率 {rate:g} req/s 下只完成 {done:g} req/s (最大在途 {inflight}): 到达速率已超过服务能力, 请求越排越长",
+                           rate=rate, done=done, inflight=int(pt.get("max_inflight") or 0)))
             if pt.get("shed"):
-                f.append("⚠ 开环速率 %g 有 %d 个请求因在途超限(%d)被丢弃计数" % (rate, pt["shed"], bench.MAX_OPEN_INFLIGHT))
+                f.append(tn("⚠ 开环速率 {rate:g} 有 {n} 个请求因在途超限({cap})被丢弃计数", int(pt["shed"]),
+                            rate=rate, cap=int(bench.MAX_OPEN_INFLIGHT)))
     rp = a.get("replay") or (docs[1].get("replay") if len(docs) > 1 else None)
     if isinstance(rp, dict) and rp.get("wrapped"):
-        f.append("回放池已回绕: 部分请求被重复发送, 若端点前缀缓存跨格生效, 后段吞吐可能偏高")
+        f.append(t("回放池已回绕: 部分请求被重复发送, 若端点前缀缓存跨格生效, 后段吞吐可能偏高"))
     if not f:
-        f.append("未发现需要关注的异常; 各阶段请求全部成功")
+        f.append(t("未发现需要关注的异常; 各阶段请求全部成功"))
     return '<ul class="findings">%s</ul>' % "".join("<li>%s</li>" % x for x in f)
 
 
@@ -300,7 +327,8 @@ def _len_label(pt):
     if not (m and tok) or abs(tok / (float(m.group(1)) * 1000) - 1) <= 0.1:
         return lab
     k = tok / 1000.0
-    return "%sK（原标 %s）" % (("%.1f" % k).rstrip("0").rstrip(".") if k < 100 else "%d" % round(k), lab)
+    size = ("%.1f" % k).rstrip("0").rstrip(".") if k < 100 else "%d" % round(k)
+    return t("{size}K（原标 {label}）", size=size, label=lab)
 
 
 def _same_len(a, b):
@@ -321,14 +349,15 @@ def _prefill_sec(docs):
     # B 按档位对齐, 但实际长度差得多(新旧算法的测试放在一起)时不比
     s2 = [(pb[i].get("prefill_tps_med") if _same_len(pa[i], pb[i]) else None) if i < len(pb) else None
           for i in range(len(pa))] if pb else []
-    chart = svg_chart(labels, [("Prefill 吞吐 A", CA, s1)] + ([("B", CB, s2)] if s2 else []))
+    chart = svg_chart(labels, [(t("Prefill 吞吐 A", ctx="图例"), CA, s1)] + ([("B", CB, s2)] if s2 else []))
     rows = []
     for i, lab in enumerate(labels):
         rows.append([esc(lab),
                      _delta(s1[i] if i < len(s1) else None,
                             s2[i] if (s2 and i < len(s2)) else None, 1)])
-    return _sec("Prefill 阶梯", chart + _tbl(["输入长度", "Prefill 吞吐 tok/s" + (" (A / B)" if s2 else "")], rows),
-                note="单并发, 每档重复取中位; 唯一批次号避免前缀缓存命中虚高")
+    return _sec(t("Prefill 阶梯", ctx="章节"),
+                chart + _tbl([t("输入长度", ctx="表头"), t("Prefill 吞吐 tok/s", ctx="表头") + (" (A / B)" if s2 else "")], rows),
+                note=t("单并发, 每档重复取中位; 唯一批次号避免前缀缓存命中虚高"))
 
 
 def _matrix_sec(docs):
@@ -341,11 +370,13 @@ def _matrix_sec(docs):
     def row(pt):
         return [esc(_len_label(pt)), fmt(pt.get("in_tokens"), 0), "%d/%d" % (pt.get("ok", 0), pt.get("ok", 0) + pt.get("fail", 0)),
                 fmt(pt.get("ttft_avg_ms")), fmt(pt.get("itl_avg_ms")), fmt(pt.get("prefill_tps_agg"), 0),
-                fmt(pt.get("decode_tps_agg")), ('<span class="tag warn">重跑×%d</span>' % pt["attempts"]) if pt.get("attempts", 1) > 1 else ""]
+                fmt(pt.get("decode_tps_agg")),
+                ('<span class="tag warn">%s</span>' % t("重跑×{n}", n=int(pt["attempts"]))) if pt.get("attempts", 1) > 1 else ""]
 
-    return _sec("提示词长度 × 并发矩阵 (并发 %s)" % esc(p.get("conc")), _tbl(
-        ["档位", "in tokens", "ok/total", "TTFT 均值 ms", "ITL p50 均值 ms", "Prefill 聚合 tok/s", "Decode 聚合 tok/s", ""],
-        [row(x) for x in pts]), note="屏障同步起跑; 聚合吞吐 = 该档全部成功请求的 token ÷ 最大单请求耗时")
+    return _sec(t("提示词长度 × 并发矩阵 (并发 {conc})", ctx="章节", conc=esc(p.get("conc"))), _tbl(
+        [t("档位", ctx="表头"), "in tokens", "ok/total", t("TTFT 均值 ms", ctx="表头"), t("ITL p50 均值 ms", ctx="表头"),
+         t("Prefill 聚合 tok/s", ctx="表头"), t("Decode 聚合 tok/s", ctx="表头"), ""],
+        [row(x) for x in pts]), note=t("屏障同步起跑; 聚合吞吐 = 该档全部成功请求的 token ÷ 最大单请求耗时"))
 
 
 def _conc_sec(docs):
@@ -361,7 +392,7 @@ def _conc_sec(docs):
         else:
             l2 = [x.get("agg_tps") for x in pts]
             r2 = [x.get("ttft_p95_s") for x in pts]
-    left = [("聚合吞吐 A", CA, l1)] + ([("B", CB, l2)] if l2 else [])
+    left = [(t("聚合吞吐 A", ctx="图例"), CA, l1)] + ([("B", CB, l2)] if l2 else [])
     right = [("TTFT p95 A", "#D97F06", r1)] + ([("B", "#D6408E", r2)] if r2 else [])
     chart = svg_chart(labels, left, right=right)
     pa, pb = (_ph(docs[0], "concurrency") or {}).get("points") or [], \
@@ -373,28 +404,30 @@ def _conc_sec(docs):
                      _delta(pt.get("agg_tps"), q.get("agg_tps") if q else None),
                      _delta(pt.get("per_stream_tps_med"), q.get("per_stream_tps_med") if q else None),
                      _delta(pt.get("ttft_p95_s"), q.get("ttft_p95_s") if q else None, 3, True)])
-    return _sec("并发阶梯", chart + _tbl(
-        ["并发", "ok/fail", "聚合吞吐 tok/s", "单流吞吐 tok/s", "TTFT p95 s"], rows),
-        note="实线=聚合吞吐(左轴), 虚线=TTFT p95(右轴); 固定输出长度(ignore_eos)保证跨后端可比" if
+    return _sec(t("并发阶梯", ctx="章节"), chart + _tbl(
+        [t("并发", ctx="表头"), "ok/fail", t("聚合吞吐 tok/s", ctx="表头"), t("单流吞吐 tok/s", ctx="表头"), "TTFT p95 s"], rows),
+        note=t("实线=聚合吞吐(左轴), 虚线=TTFT p95(右轴); 固定输出长度(ignore_eos)保证跨后端可比") if
         (docs[0].get("overrides") or {}).get("fixed_output") else
-        "实线=聚合吞吐(左轴), 虚线=TTFT p95(右轴); 本次未固定输出长度")
+        t("实线=聚合吞吐(左轴), 虚线=TTFT p95(右轴); 本次未固定输出长度"))
 
 
 def _decode_sec(docs):
     cases = (_ph(docs[0], "decode") or {}).get("cases") or []
     if not cases:
         return ""
-    rows = [[{"zh": "中文", "en": "英文"}.get(c.get("lang"), c.get("lang")), fmt(c.get("out_tokens"), 0),
+    langs = {"zh": t("中文", ctx="解码语言"), "en": t("英文", ctx="解码语言")}
+    rows = [[langs.get(c.get("lang"), c.get("lang")), fmt(c.get("out_tokens"), 0),
              fmt(c.get("decode_tps_med")), fmt(c.get("decode_tps_best")), fmt(c.get("itl_p50_ms_med"), 2),
              fmt(c.get("itl_p95_ms")), fmt(c.get("spec_burst_med"), 2)] for c in cases]
-    return _sec("单流解码", _tbl(
-        ["语言", "输出 tokens", "吞吐 tok/s", "最佳 tok/s", "ITL p50 ms", "ITL p95 ms", "投机 burst tok/chunk"], rows),
-        note="spec_burst > 1 提示投机采样生效(每 chunk 平均 token 数)")
+    return _sec(t("单流解码", ctx="章节"), _tbl(
+        [t("语言", ctx="表头"), t("输出 tokens", ctx="表头"), t("吞吐 tok/s", ctx="表头"), t("最佳 tok/s", ctx="表头"),
+         "ITL p50 ms", "ITL p95 ms", t("投机 burst tok/chunk", ctx="表头")], rows),
+        note=t("spec_burst > 1 提示投机采样生效(每 chunk 平均 token 数)"))
 
 
 def _scn_row(pt, q, has_json):
     jr = ("%s (%.0f%%)" % (fmt(pt.get("json_ok"), 0), (pt.get("json_rate") or 0) * 100)) if pt.get("json_total") else "—"
-    badge = ' <span class="tag warn">重跑×%d</span>' % pt["attempts"] if pt.get("attempts", 1) > 1 else ""
+    badge = ' <span class="tag warn">%s</span>' % t("重跑×{n}", n=int(pt["attempts"])) if pt.get("attempts", 1) > 1 else ""
     return [fmt(pt.get("ctx_tokens"), 0) if pt.get("ctx_tokens") else pt.get("conc"),
             "%d/%d" % (pt.get("ok", 0), pt.get("total", 0)),
             _delta(pt.get("req_s"), q.get("req_s") if q else None, 2),
@@ -412,7 +445,7 @@ def _scenarios_sec(docs):
         if not pid.startswith("scn_"):
             continue
         tpl = (p.get("task") or {}).get("tpl", pid[4:])
-        label = (p.get("task") or {}).get("label") or tpl
+        label = _scn_label(p, tpl)
         pb = None
         if len(docs) > 1:
             pb = _ph(docs[1], pid)
@@ -423,22 +456,25 @@ def _scenarios_sec(docs):
         for pt in p.get("points") or []:
             q = next((x for x in (pb or {}).get("points") or [] if x.get(key_field) == pt.get(key_field)), None)
             rows.append(_scn_row(pt, q, has_json))
-        headers = (["上下文 tokens" if is_rag else "并发", "ok/total", "请求/秒", "TTFT p95 s", "端到端 p95 s",
-                    "输出 tokens 均值" + ("–p90" if any(x.get("out_tokens_p90") for x in p.get("points") or []) else ""),
-                    "最大在途"] + (["JSON 合法"] if has_json else []))
+        headers = ([t("上下文 tokens", ctx="表头") if is_rag else t("并发", ctx="表头"), "ok/total", t("请求/秒", ctx="表头"),
+                    "TTFT p95 s", t("端到端 p95 s", ctx="表头"),
+                    t("输出 tokens 均值", ctx="表头") + ("–p90" if any(x.get("out_tokens_p90") for x in p.get("points") or []) else ""),
+                    t("最大在途", ctx="表头")] + ([t("JSON 合法", ctx="表头")] if has_json else []))
         task = p.get("task") or {}
-        note = "任务模板: %s · max_tokens %s · 每并发 %s 请求 · 不发送 ignore_eos, 测真实任务行为%s%s" % (
-            esc(label), esc(task.get("max_tokens")), esc(task.get("requests_per_worker")),
-            (" · 图片 %s 张/请求" % esc(task.get("images_per_request"))) if tpl == "vision" else "",
-            (" · 任务集 %s 条" % esc(task.get("pool_size"))) if tpl == "custom" else "")
+        note = t("任务模板: {label} · max_tokens {max_tokens} · 每并发 {rpw} 请求 · 不发送 ignore_eos, 测真实任务行为",
+                 label=esc(label), max_tokens=esc(task.get("max_tokens")), rpw=esc(task.get("requests_per_worker")))
         if tpl == "vision":
-            note += "; 图片池 %s 张%s" % (esc(task.get("images")),
-                                         "(内置示例图片)" if task.get("image_source") == "builtin" else "")
+            note += " · " + t("图片 {n} 张/请求", n=esc(task.get("images_per_request")))
+            images = task.get("images")
+            note += "; " + (tn("图片池 {n} 张(内置示例图片)", images, n=esc(images)) if task.get("image_source") == "builtin"
+                            else tn("图片池 {n} 张", images, n=esc(images)))
             if task.get("images_skipped"):
-                note += ", 另有 %s 张不能用已跳过" % esc(task.get("images_skipped"))
+                note += ", " + tn("另有 {n} 张不能用已跳过", task["images_skipped"], n=esc(task["images_skipped"]))
+        elif tpl == "custom":
+            note += " · " + t("任务集 {n} 条", n=esc(task.get("pool_size")))
         cols = len(headers)
         fixed_rows = [r[:6] + [r[6]] + ([r[7]] if has_json else []) for r in rows]
-        secs.append(_sec("场景 · " + label, _tbl(headers, fixed_rows), note=note))
+        secs.append(_sec(t("场景 · {label}", ctx="章节", label=label), _tbl(headers, fixed_rows), note=note))
     return "".join(secs)
 
 
@@ -455,12 +491,13 @@ def _replay_sec(docs):
                      _delta(pt.get("ttft_p95_s"), q.get("ttft_p95_s") if q else None, 3, True),
                      _delta(pt.get("e2e_p95_s"), q.get("e2e_p95_s") if q else None, 3, True),
                      fmt(pt.get("prompt_tokens_avg"), 0), fmt(pt.get("out_tokens_avg"), 0),
-                     pt.get("max_inflight"), "是" if pt.get("pool_wrapped") else ""])
+                     pt.get("max_inflight"), t("是", ctx="表格") if pt.get("pool_wrapped") else ""])
     info = p.get("pool") or {}
-    return _sec("真实请求回放 · 闭环", _tbl(
-        ["并发", "ok/total", "请求/秒", "TTFT p95 s", "端到端 p95 s", "入 tokens 均值", "出 tokens 均值", "最大在途", "池回绕"], rows),
-        note="回放池 %s 条(跳过 %s, 坏行 %s); cursor 跨格推进避免重复请求命中前缀缓存"
-             % (esc(info.get("size")), esc(info.get("skipped")), esc(info.get("bad"))))
+    return _sec(t("真实请求回放 · 闭环", ctx="章节"), _tbl(
+        [t("并发", ctx="表头"), "ok/total", t("请求/秒", ctx="表头"), "TTFT p95 s", t("端到端 p95 s", ctx="表头"),
+         t("入 tokens 均值", ctx="表头"), t("出 tokens 均值", ctx="表头"), t("最大在途", ctx="表头"), t("池回绕", ctx="表头")], rows),
+        note=tn("回放池 {size} 条(跳过 {skipped}, 坏行 {bad}); cursor 跨格推进避免重复请求命中前缀缓存", info.get("size"),
+                size=esc(info.get("size")), skipped=esc(info.get("skipped")), bad=esc(info.get("bad"))))
 
 
 def _openloop_sec(docs):
@@ -471,21 +508,23 @@ def _openloop_sec(docs):
     rows, charts = [], []
     for pt in p.get("points") or []:
         q = next((x for x in (pb or {}).get("points") or [] if x.get("rate") == pt.get("rate")), None)
-        done = "%s / 目标 %g" % (fmt(pt.get("completed_rps"), 2), pt.get("rate") or 0)
+        done = t("{done} / 目标 {rate:g}", done=fmt(pt.get("completed_rps"), 2), rate=pt.get("rate") or 0)
         rows.append([pt.get("rate"), pt.get("sent"), pt.get("shed") or 0, "%d/%d" % (pt.get("ok", 0), pt.get("total", 0)),
                      _delta(pt.get("ttft_p95_s"), q.get("ttft_p95_s") if q else None, 3, True),
                      _delta(pt.get("e2e_p95_s"), q.get("e2e_p95_s") if q else None, 3, True),
                      done, pt.get("max_inflight")])
         ts = pt.get("inflight_ts") or []
         if ts:
-            charts.append('<h3>在途请求时间线 · %g req/s <span class="muted">(峰值 %d, 曲线持续抬升 = 排队堆积)</span></h3>%s'
-                          % (pt.get("rate"), pt.get("max_inflight") or 0,
-                             svg_area([("%.0f" % t) for t, _ in ts], [v for _, v in ts])))
-    return _sec("真实请求回放 · 开环 (泊松到达)", _tbl(
-        ["速率 req/s", "发送", "丢弃", "ok/total", "TTFT p95 s", "端到端 p95 s", "完成 req/s", "最大在途"], rows)
+            charts.append('<h3>%s <span class="muted">%s</span></h3>%s'
+                          % (t("在途请求时间线 · {rate:g} req/s", rate=pt.get("rate")),
+                             t("(峰值 {peak}, 曲线持续抬升 = 排队堆积)", peak=int(pt.get("max_inflight") or 0)),
+                             svg_area([("%.0f" % sec) for sec, _ in ts], [v for _, v in ts])))
+    return _sec(t("真实请求回放 · 开环 (泊松到达)", ctx="章节"), _tbl(
+        [t("速率 req/s", ctx="表头"), t("发送", ctx="表头"), t("丢弃", ctx="表头"), "ok/total", "TTFT p95 s",
+         t("端到端 p95 s", ctx="表头"), t("完成 req/s", ctx="表头"), t("最大在途", ctx="表头")], rows)
         + "".join(charts),
-        note="泊松到达持续 %s 秒(固定种子, 两次运行到达时间轴相同); 在途上限 %d, 超限丢弃并计数"
-             % (esc(p.get("duration_s")), bench.MAX_OPEN_INFLIGHT))
+        note=t("泊松到达持续 {duration} 秒(固定种子, 两次运行到达时间轴相同); 在途上限 {cap}, 超限丢弃并计数",
+               duration=esc(p.get("duration_s")), cap=int(bench.MAX_OPEN_INFLIGHT)))
 
 
 def _retry_sec(docs):
@@ -506,22 +545,23 @@ def _retry_sec(docs):
                                      esc((pt.get("errors") or [""])[0])[:120]])
     if not rows:
         return ""
-    return _sec("失败与重跑披露", _tbl(["运行", "阶段", "尝试", "ok/total", "错误样本"], rows),
-                note="整格重跑: 有失败的格子等 30s 后重跑(最多 3 次), 这里列出每轮失败; 最终结果以最后一轮为准")
+    return _sec(t("失败与重跑披露", ctx="章节"),
+                _tbl([t("运行", ctx="表头"), t("阶段", ctx="表头"), t("尝试", ctx="表头"), "ok/total", t("错误样本", ctx="表头")], rows),
+                note=t("整格重跑: 有失败的格子等 30s 后重跑(最多 3 次), 这里列出每轮失败; 最终结果以最后一轮为准"))
 
 
 def _meta_sec(docs):
     d = docs[0]
     badges = []
-    for label, v in (("套件", d.get("suite")), ("框架", (d.get("framework") or {}).get("name")),
-                     ("框架版本", (d.get("framework") or {}).get("version")), ("标签", d.get("tag")),
+    for label, v in ((t("套件", ctx="徽章"), d.get("suite")), (t("框架", ctx="徽章"), (d.get("framework") or {}).get("name")),
+                     (t("框架版本", ctx="徽章"), (d.get("framework") or {}).get("version")), (t("标签", ctx="徽章"), d.get("tag")),
                      ("bench", d.get("bench_version")), ("run", d.get("run_id"))):
         if v:
             badges.append('<span class="badge">%s: %s</span>' % (label, esc(v)))
     rows = [["A", esc(docs[0].get("model")), esc((docs[0].get("started_utc") or "")[:19].replace("T", " "))]]
     if len(docs) > 1:
         rows.append(["B", esc(docs[1].get("model")), esc((docs[1].get("started_utc") or "")[:19].replace("T", " "))])
-    return "<p>%s</p>%s" % (" ".join(badges), _tbl(["运行", "模型", "开始时间 (UTC)"], rows))
+    return "<p>%s</p>%s" % (" ".join(badges), _tbl([t("运行", ctx="表头"), t("模型", ctx="表头"), t("开始时间 (UTC)", ctx="表头")], rows))
 
 
 CSS = """
@@ -551,39 +591,53 @@ footer{margin-top:40px;color:#9CA3AF;font-size:12px;border-top:1px solid #E5E7EB
 @media print{body{background:#fff;padding:0}svg,table{break-inside:avoid}}
 """
 
-METHOD = """<section><h2>测量口径</h2><ul class="findings" style="border-left-color:#0E9AB0">
-<li>TTFT = SSE 首个 content/reasoning 增量; 解码吞吐 = (completion_tokens−1)/流内解码跨度(usage 精确计数)</li>
-<li>主流程默认固定输出长度(ignore_eos)保证不同后端吞吐可比; 业务/回放场景<b>不</b>发送 ignore_eos, 测真实任务行为</li>
-<li>每次测量带唯一批次号防前缀缓存命中虚高; 并发轮屏障同步起跑; 聚合吞吐 = 轮总 token ÷ 轮墙钟</li>
-<li>TTFT/TPOT/端到端分位均"先逐请求计算、再排序取分位", 非聚合比值</li>
-<li>开环回放为泊松到达、绝对时间调度(无累计漂移), 到达时间轴按固定种子生成 — 两次运行的对比收到相同到达序列</li>
-<li>失败请求计为失败并保留错误样本; 基础设施型失败的格子整格重跑(最多 3 次)并全量披露</li>
-</ul></section>"""
+def _method_sec():
+    """测量口径 (函数, 不是常量: 文字按调用时的语言生成)。每条一个整句, 词典里各有各的英文。"""
+    items = [
+        t("TTFT = SSE 首个 content/reasoning 增量; 解码吞吐 = (completion_tokens−1)/流内解码跨度(usage 精确计数)"),
+        t("主流程默认固定输出长度(ignore_eos)保证不同后端吞吐可比; 业务/回放场景<b>不</b>发送 ignore_eos, 测真实任务行为"),
+        t("每次测量带唯一批次号防前缀缓存命中虚高; 并发轮屏障同步起跑; 聚合吞吐 = 轮总 token ÷ 轮墙钟"),
+        t('TTFT/TPOT/端到端分位均"先逐请求计算、再排序取分位", 非聚合比值'),
+        t("开环回放为泊松到达、绝对时间调度(无累计漂移), 到达时间轴按固定种子生成 — 两次运行的对比收到相同到达序列"),
+        t("失败请求计为失败并保留错误样本; 基础设施型失败的格子整格重跑(最多 3 次)并全量披露"),
+    ]
+    return '<section><h2>%s</h2><ul class="findings" style="border-left-color:#0E9AB0">\n%s\n</ul></section>' % (
+        t("测量口径", ctx="章节"), "\n".join("<li>%s</li>" % x for x in items))
 
 
-def render(a, b=None):
-    """生成自包含 HTML 报告; a/b 为性能测试 run 文档。非 perf 文档抛 ValueError。"""
+def render(a, b=None, lang=None):
+    """生成自包含 HTML 报告; a/b 为性能测试 run 文档。非 perf 文档抛 ValueError。
+    文字按当前语言生成; 传 lang ("zh" / "en") 时只在这一次调用里换成这个语言。"""
+    if lang:
+        with i18n.use_lang(lang):
+            return _render(a, b)
+    return _render(a, b)
+
+
+def _render(a, b):
     if not isinstance(a, dict) or not a.get("run_id", "").startswith("run_") or not isinstance(a.get("phases"), list):
-        raise ValueError("仅支持性能测试运行 (run_*) 的报告")
+        raise ValueError(t("仅支持性能测试运行 (run_*) 的报告"))
     docs = [a] + ([b] if b else [])
-    title = "%s 压测报告" % a.get("model", "")
+    title = t("{model} 压测报告", model=a.get("model", ""))
     if b:
-        title += " · A/B 对比"
+        title += " · " + t("A/B 对比")
     if a.get("tag"):
         title += " · %s" % a["tag"]
     sections = [
         _meta_sec(docs), _kpi_cards(docs),
-        '<h2>结论要点</h2><p class="sub">%s</p>%s' % (_legend(docs), _findings(docs)),
+        '<h2>%s</h2><p class="sub">%s</p>%s' % (t("结论要点", ctx="章节"), _legend(docs), _findings(docs)),
         _conc_sec(docs), _prefill_sec(docs), _matrix_sec(docs), _decode_sec(docs),
         _scenarios_sec(docs), _replay_sec(docs), _openloop_sec(docs), _retry_sec(docs),
-        METHOD,
+        _method_sec(),
     ]
-    return """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+    footer = t("LLM Bench Pro v{app} · 报告生成 v{report} · 引擎 v{engine} · 生成于 {time} (UTC) · "
+               "数据与口径详见各节说明; 本文件自包含, 可离线打开与打印",
+               app=esc(APP_VERSION), report=REPORT_VERSION, engine=esc(a.get("bench_version")),
+               time=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"))
+    return """<!doctype html><html lang="%s"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>%s</title><style>%s</style></head><body><main>
 <h1>%s</h1>
 %s
-<footer>LLM Bench Pro v%s · 报告生成 v%s · 引擎 v%s · 生成于 %s (UTC) · 数据与口径详见各节说明; 本文件自包含, 可离线打开与打印</footer>
-</main></body></html>""" % (esc(title), CSS, esc(title), "".join(x for x in sections if x),
-                           esc(APP_VERSION), REPORT_VERSION, esc(a.get("bench_version")),
-                           datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"))
+<footer>%s</footer>
+</main></body></html>""" % (i18n.html_lang(), esc(title), CSS, esc(title), "".join(x for x in sections if x), footer)

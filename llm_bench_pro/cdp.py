@@ -27,6 +27,8 @@ try:
 except ImportError:
     import i18n  # server.py 以包目录为 sys.path 顶层导入
 
+t, tn = i18n.t, i18n.tn
+
 
 # ---------------------------------------------------------------- 浏览器定位与启动
 
@@ -155,7 +157,7 @@ def reap_orphans(log=None):
         _remove_profile(d, tries=10)
         n += 1
         if log:
-            log("  已关闭遗留的后台浏览器(所属进程 %s 已退出): %s" % (owner.get("pid"), name))
+            log(t("  已关闭遗留的后台浏览器(所属进程 {pid} 已退出): {name}", pid=owner.get("pid"), name=name))
     return n
 
 
@@ -165,7 +167,7 @@ class Browser:
     def __init__(self, path=None, timeout=30):
         self.path = path or find_browser()
         if not self.path:
-            raise RuntimeError("未找到 Chrome/Edge/Chromium (可设 LLM_BENCH_BROWSER 指定路径)")
+            raise RuntimeError(t("未找到 Chrome/Edge/Chromium (可设 LLM_BENCH_BROWSER 指定路径)"))
         self.profile = tempfile.mkdtemp(prefix=PROFILE_PREFIX)
         self.proc, self.port, self._log = None, None, None
         self.relaunched = False
@@ -192,7 +194,7 @@ class Browser:
             self.proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=self._log, creationflags=flags)
         except OSError as e:
             self.close()
-            raise RuntimeError("无法启动浏览器 %s: %s" % (self.path, e))
+            raise RuntimeError(t("无法启动浏览器 {path}: {error}", path=self.path, error=e))
         t0 = time.time()
         exited = None
         while True:
@@ -212,7 +214,7 @@ class Browser:
             self.version = self._http("GET", "/json/version").get("Browser", "")
         except Exception as e:
             self.close()
-            raise RuntimeError("浏览器已启动但无法连接调试端口 %s: %s" % (self.port, e))
+            raise RuntimeError(t("浏览器已启动但无法连接调试端口 {port}: {error}", port=self.port, error=e))
 
     def _failure_reason(self, exited, waited):
         tail = ""
@@ -222,15 +224,18 @@ class Browser:
                 tail = f.read()[-800:].decode("utf-8", "replace").strip()
         except Exception:
             pass
-        if exited:
-            msg = "浏览器启动后立即退出（退出码 %s）" % self.proc.returncode
-        else:
-            msg = "浏览器 %d 秒内没有准备好" % waited
-        msg += "：%s" % self.path
         lines = [x for x in tail.splitlines() if x.strip()]
-        if lines:
-            msg += "。浏览器输出：" + " / ".join(lines[-3:])[:300]
-        return msg
+        output = " / ".join(lines[-3:])[:300] if lines else ""
+        # 整句翻译: 退出 / 没准备好 x 有 / 没有浏览器输出, 共四句 (英文的语序和中文不一样, 不拼碎片)
+        if exited:
+            if output:
+                return t("浏览器启动后立即退出（退出码 {code}）：{path}。浏览器输出：{output}",
+                         code=self.proc.returncode, path=self.path, output=output)
+            return t("浏览器启动后立即退出（退出码 {code}）：{path}", code=self.proc.returncode, path=self.path)
+        if output:
+            return t("浏览器 {waited} 秒内没有准备好：{path}。浏览器输出：{output}",
+                     waited=int(waited), path=self.path, output=output)
+        return t("浏览器 {waited} 秒内没有准备好：{path}", waited=int(waited), path=self.path)
 
     def _http(self, method, path):
         req = urllib.request.Request("http://127.0.0.1:%d%s" % (self.port, path), method=method)
@@ -291,11 +296,11 @@ class WebSocket:
         while b"\r\n\r\n" not in resp:
             chunk = self.sock.recv(4096)
             if not chunk:
-                raise ConnectionError("WebSocket 握手失败")
+                raise ConnectionError(t("WebSocket 握手失败"))
             resp += chunk
         head, self._buf = resp.split(b"\r\n\r\n", 1)
         if b" 101 " not in head.split(b"\r\n")[0]:
-            raise ConnectionError("WebSocket 握手被拒: %r" % head[:120])
+            raise ConnectionError(t("WebSocket 握手被拒: {head}", head=repr(head[:120])))
         self._send_lock = threading.Lock()
 
     def send(self, text):
@@ -316,7 +321,7 @@ class WebSocket:
         while len(self._buf) < n:
             chunk = self.sock.recv(max(65536, n - len(self._buf)))
             if not chunk:
-                raise ConnectionError("WebSocket 连接关闭")
+                raise ConnectionError(t("WebSocket 连接关闭"))
             self._buf += chunk
         out, self._buf = self._buf[:n], self._buf[n:]
         return out
@@ -337,7 +342,7 @@ class WebSocket:
             else:
                 payload = self._read_exact(n)
             if op == 0x8:
-                raise ConnectionError("WebSocket 被对端关闭")
+                raise ConnectionError(t("WebSocket 被对端关闭"))
             if op == 0x9:
                 with self._send_lock:
                     self.sock.sendall(struct.pack("!BB", 0x8A, 0x80 | len(payload)) + b"\0\0\0\0" + payload)
@@ -403,7 +408,7 @@ class Page:
             while mid not in self._results:
                 left = deadline - time.monotonic()
                 if left <= 0 or not self._alive:
-                    raise CDPError("%s 超时或连接断开(页面可能卡死)" % method)
+                    raise CDPError(t("{method} 超时或连接断开(页面可能卡死)", method=method))
                 self._cond.wait(left)
             msg = self._results.pop(mid)
         if "error" in msg:
@@ -414,8 +419,8 @@ class Page:
         deadline = time.monotonic() + timeout
         with self._cond:
             while True:
-                for t, m, p in self.events:
-                    if m == method and t >= since:
+                for ts, m, p in self.events:
+                    if m == method and ts >= since:
                         return p
                 left = deadline - time.monotonic()
                 if left <= 0 or not self._alive:
@@ -425,7 +430,7 @@ class Page:
     def evaluate(self, expr, timeout=10):
         r = self.send("Runtime.evaluate", {"expression": expr, "returnByValue": True, "awaitPromise": True}, timeout)
         if r.get("exceptionDetails"):
-            raise CDPError("evaluate 异常: %s" % r["exceptionDetails"].get("text"))
+            raise CDPError(t("evaluate 异常: {text}", text=r["exceptionDetails"].get("text")))
         return (r.get("result") or {}).get("value")
 
     def screenshot(self, fmt="png", scale=1.0, quality=70, width=1280, height=800):
@@ -446,7 +451,7 @@ class Page:
 def decode_png(data):
     """返回 (width, height, channels, bytes)。仅支持 8-bit 灰度/RGB/RGBA、非隔行。"""
     if data[:8] != b"\x89PNG\r\n\x1a\n":
-        raise ValueError("非 PNG")
+        raise ValueError(t("非 PNG"))
     pos, idat, w = 8, [], None
     while pos < len(data):
         n, typ = struct.unpack("!I4s", data[pos:pos + 8])
@@ -454,7 +459,7 @@ def decode_png(data):
         if typ == b"IHDR":
             w, h, depth, ctype, _, _, interlace = struct.unpack("!IIBBBBB", chunk)
             if depth != 8 or interlace or ctype not in (0, 2, 6):
-                raise ValueError("不支持的 PNG 格式")
+                raise ValueError(t("不支持的 PNG 格式"))
             ch = {0: 1, 2: 3, 6: 4}[ctype]
         elif typ == b"IDAT":
             idat.append(chunk)
@@ -537,22 +542,26 @@ def reap_all_legacy(log=print):
         closed = close_via_devtools(port) if port else False
         removed = _remove_profile(d, tries=10)
         n += 1
-        log("%s  浏览器%s  目录%s" % (name, "已关闭" if closed else "未在运行", "已删除" if removed else "删除失败(可能仍被占用)"))
+        # 两个状态是各自独立的取值 (整行的框架不变), 语序不受影响, 所以状态词单独翻译
+        log(t("{name}  浏览器{browser}  目录{folder}", name=name,
+              browser=t("已关闭", ctx="回收浏览器") if closed else t("未在运行", ctx="回收浏览器"),
+              folder=t("已删除", ctx="回收浏览器") if removed else t("删除失败(可能仍被占用)", ctx="回收浏览器")))
     return n
 
 
 def main(argv=None):
     import argparse
     i18n.preparse_lang(argv)  # 要在创建 argparse 之前: --help 的文字也是 --lang 指定的语言
-    ap = argparse.ArgumentParser(description="后台浏览器维护")
-    ap.add_argument("--reap", action="store_true", help="回收所属进程已退出的后台浏览器")
-    ap.add_argument("--reap-all", action="store_true", help="关闭全部 llmbench 后台浏览器(含旧版本遗留), 确认没有评测在运行时使用")
+    ap = argparse.ArgumentParser(description=t("后台浏览器维护"))
+    ap.add_argument("--reap", action="store_true", help=t("回收所属进程已退出的后台浏览器"))
+    ap.add_argument("--reap-all", action="store_true",
+                    help=t("关闭全部 llmbench 后台浏览器(含旧版本遗留), 确认没有评测在运行时使用"))
     i18n.add_lang_arg(ap)
     args = ap.parse_args(argv)
     if args.reap_all:
-        print("共处理 %d 个" % reap_all_legacy())
+        print(tn("共处理 {n} 个", reap_all_legacy()))
     elif args.reap:
-        print("共处理 %d 个" % reap_orphans(print))
+        print(tn("共处理 {n} 个", reap_orphans(print)))
     else:
         ap.print_help()
     return 0

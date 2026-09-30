@@ -235,10 +235,10 @@ def running_run_ids():
 def iq_wrong(run_id, sid, limit=300):
     """某次能力评测某科目的未答对题目: 题干/选项/标准答案 + 模型答案/截断/错误/正文尾部。"""
     if not run_id.startswith("iq_") or not _RUN_ID_RE.match(run_id):
-        return {"ok": False, "error": "非法 run_id"}
+        return {"ok": False, "error": t("非法 run_id")}
     doc = store.get_run(run_id)
     if not doc:
-        return {"ok": False, "error": "run 不存在"}
+        return {"ok": False, "error": t("run 不存在")}
     try:
         bank = bankman.load_bank(doc.get("bank_id") or "")
         sub_items = next((s["items"] for s in bank["subjects"] if s["id"] == sid), [])
@@ -282,7 +282,7 @@ def _rec_summary(it):
     tail = str(it.get("tail") or "")
     if it.get("resp"):
         r["has"] = "resp"
-    elif "resp" in it or tail.startswith("（无正文"):
+    elif "resp" in it or tail.startswith("（无正文"):  # 旧版数据里的标记, 只用来识别已存的旧数据 (登记在允许清单里), 不是输出
         r["has"] = "empty"  # 模型没有给出正式回答(只有思考或空内容)
     elif tail:
         r["has"] = "tail"  # 旧版: 只有答错的题存了回答最后 240 字
@@ -293,13 +293,13 @@ def iq_items(run_id, cmp_ids=""):
     """逐题查看: 主运行答过的每道题(题干/选项/标准答案/检查规则) + 主运行与对比运行每题的作答摘要。
     对比运行的题集不同时不逐题对照(same_bank=False, 不返回记录)。"""
     if not _valid_iq_id(run_id):
-        return {"ok": False, "error": "非法 run_id"}
+        return {"ok": False, "error": t("非法 run_id")}
     ids = list(dict.fromkeys(x for x in (cmp_ids or "").split(",") if x and x != run_id))[:5]
     if not all(_valid_iq_id(x) for x in ids):
-        return {"ok": False, "error": "非法对比 run_id"}
+        return {"ok": False, "error": t("非法对比 run_id")}
     doc = store.get_run(run_id)
     if not doc:
-        return {"ok": False, "error": "run 不存在"}
+        return {"ok": False, "error": t("run 不存在")}
     bank_id = doc.get("bank_id") or ""
     subs = _bank_subjects(bank_id)
     order = {sid: i for i, sid in enumerate(subs)}
@@ -343,14 +343,14 @@ def iq_answer(ids, sid, idx):
     """某道题在各次运行里的回答原文(按需加载) + 发给模型的原文(仅当前评测版本) + 按要求作答题的逐条检查结果。"""
     ids = list(dict.fromkeys(x for x in (ids or "").split(",") if x))[:6]
     if not ids or not all(_valid_iq_id(x) for x in ids):
-        return {"ok": False, "error": "非法 run_id"}
+        return {"ok": False, "error": t("非法 run_id")}
     try:
         idx = int(idx)
     except (TypeError, ValueError):
-        return {"ok": False, "error": "非法题号"}
+        return {"ok": False, "error": t("非法题号")}
     head = store.get_run(ids[0], items=False)
     if not head:
-        return {"ok": False, "error": "run 不存在"}
+        return {"ok": False, "error": t("run 不存在")}
     sub = _bank_subjects(head.get("bank_id")).get(sid) or {}
     items = sub.get("items") or []
     q = items[idx] if 0 <= idx < len(items) else None
@@ -373,7 +373,7 @@ def _answer_of(it, q, stype):
     tail = str(it.get("tail") or "")
     if "resp" in it:
         a["text"], a["full"] = it["resp"] or "", True  # 新版每题留档; 空串 = 没有正式回答
-    elif tail.startswith("（无正文"):
+    elif tail.startswith("（无正文"):  # 旧版数据里的标记 (同 _rec_summary)
         a["text"], a["full"] = "", True
     elif tail:
         a["text"], a["full"] = tail, len(tail) < 240  # 旧版只存结尾 240 字, 不足 240 字即为全文
@@ -416,10 +416,10 @@ def iq_answers_all(ids):
 
 def iq_compare(a_id, b_id):
     if not (a_id.startswith("iq_") and b_id.startswith("iq_") and _RUN_ID_RE.match(a_id) and _RUN_ID_RE.match(b_id)):
-        return {"ok": False, "error": "非法 run_id"}
+        return {"ok": False, "error": t("非法 run_id")}
     a, b = store.get_run(a_id), store.get_run(b_id)
     if not a or not b:
-        return {"ok": False, "error": "run 不存在"}
+        return {"ok": False, "error": t("run 不存在")}
     return dict(iq.compare_runs(a, b), ok=True, a=a_id, b=b_id)
 
 
@@ -467,19 +467,19 @@ def offline_bundle(page, a_id, cmp_ids):
     返回 {"api": ..., "files": ..., "sel": ...}; 参数不对或测试不存在抛 ValueError。"""
     kind = EXPORT_PAGES.get(page)
     if not kind:
-        raise ValueError("不支持导出这个页面")
+        raise ValueError(t("不支持导出这个页面"))
     ids = list(dict.fromkeys([a_id] + [x for x in cmp_ids if x]))
     if len(ids) > 7:
-        raise ValueError("一次最多导出 7 次测试")
+        raise ValueError(t("一次最多导出 7 次测试"))
     for x in ids:
         if not (_RUN_ID_RE.match(x or "") and x.startswith(_KIND_PREFIX[kind])):
-            raise ValueError("非法 run_id: %s" % x)
+            raise ValueError(t("非法 run_id: {id}", id=x))
     api, files = {}, {}
     if kind == "perf":
         runs = {x: store.get_run(x) for x in ids}
         miss = [x for x, d in runs.items() if d is None]
         if miss:
-            raise ValueError("测试不存在: %s" % ", ".join(miss))
+            raise ValueError(tn("测试不存在: {ids}", len(miss), ids=", ".join(miss)))
         summary = {r["run_id"]: r for r in store.list_runs("perf", summary=True)}
         api["perfList"] = [summary[x] for x in ids if x in summary]
         api["perfRuns"] = runs
@@ -487,7 +487,7 @@ def offline_bundle(page, a_id, cmp_ids):
         lst = {r["run_id"]: r for r in store.list_runs("iq", items=False)}
         miss = [x for x in ids if x not in lst]
         if miss:
-            raise ValueError("测试不存在: %s" % ", ".join(miss))
+            raise ValueError(tn("测试不存在: {ids}", len(miss), ids=", ".join(miss)))
         api["iqList"] = [lst[x] for x in ids]
         api["iqItems"] = iq_items(a_id, ",".join(ids[1:]))
         # 各次测试两两之间的「差异是否可信」: 在报告里换主测试也能看
@@ -498,7 +498,7 @@ def offline_bundle(page, a_id, cmp_ids):
         lst = {r["run_id"]: r for r in store.list_runs("gen")}
         miss = [x for x in ids if x not in lst]
         if miss:
-            raise ValueError("测试不存在: %s" % ", ".join(miss))
+            raise ValueError(tn("测试不存在: {ids}", len(miss), ids=", ".join(miss)))
         api["genList"] = [lst[x] for x in ids]
         for r in api["genList"]:
             for it in r.get("items") or []:
@@ -566,7 +566,7 @@ def _parse_sampling(raw):
     if raw in (None, "", "official", "greedy"):
         return raw or "official"
     if not isinstance(raw, dict):
-        raise ValueError("sampling 格式错误")
+        raise ValueError(t("sampling 格式错误"))
     out = {}
     for k, lo, hi in (("temperature", 0.0, 2.0), ("top_p", 0.0, 1.0), ("top_k", -1, 1000)):
         v = raw.get(k)
@@ -574,7 +574,7 @@ def _parse_sampling(raw):
             continue
         v = int(v) if k == "top_k" else float(v)
         if not lo <= v <= hi:
-            raise ValueError("%s 超出范围 %s–%s" % (k, lo, hi))
+            raise ValueError(t("{name} 超出范围 {lo}–{hi}", name=k, lo=lo, hi=hi))
         out[k] = v
     return out
 
@@ -584,13 +584,13 @@ def _ints(raw, name, lo, hi):
     if isinstance(raw, str):
         raw = [x for x in raw.split(",") if x.strip()]
     if not isinstance(raw, list) or not raw:
-        raise ValueError("%s 应为逗号分隔整数列表" % name)
+        raise ValueError(t("{name} 应为逗号分隔整数列表", name=name))
     try:
         out = sorted({int(x) for x in raw})
     except (TypeError, ValueError):
-        raise ValueError("%s 应为整数列表" % name)
+        raise ValueError(t("{name} 应为整数列表", name=name))
     if not (lo <= min(out) and max(out) <= hi):
-        raise ValueError("%s 超出范围 %d-%d" % (name, lo, hi))
+        raise ValueError(t("{name} 超出范围 {lo}-{hi}", name=name, lo=lo, hi=hi))
     return out
 
 
@@ -622,7 +622,8 @@ def _task_file_check(path, size, mtime_ns):
 
 
 @functools.lru_cache(maxsize=256)
-def _image_pack_check(d, stamp):
+def _image_pack_check(d, stamp, lang):
+    """图片包的逐张检查结果。每张的 msg 是按当前语言写的说明, 所以语言也是缓存键: 中英文界面各缓存一份, 不会互相串。"""
     return vision_assets.scan_dir(d, keep_data=False)
 
 
@@ -638,73 +639,80 @@ def _parse_scenarios(body):
     if scen is None:
         return None
     if not isinstance(scen, dict):
-        raise ValueError("scenarios 应为对象")
+        raise ValueError(t("scenarios 应为对象"))
     tasks = scen.get("tasks") or []
     if isinstance(tasks, str):
-        tasks = [t.strip() for t in tasks.split(",") if t.strip()]
+        tasks = [x.strip() for x in tasks.split(",") if x.strip()]
     if not isinstance(tasks, list) or not tasks:
-        raise ValueError("tasks 应为任务类型列表")
-    for t in tasks:
-        if t not in bench.SCN_TEMPLATES:
-            raise ValueError("未知任务类型 %s (可选: %s)" % (t, "/".join(bench.SCN_TEMPLATES)))
+        raise ValueError(t("tasks 应为任务类型列表"))
+    for task in tasks:
+        if task not in bench.SCN_TEMPLATES:
+            raise ValueError(t("未知任务类型 {name} (可选: {options})", name=task, options="/".join(bench.SCN_TEMPLATES)))
     out = {"tasks": tasks}
     if len(set(tasks)) != len(tasks):
-        raise ValueError("tasks 里有重复的任务类型")
+        raise ValueError(t("tasks 里有重复的任务类型"))
     try:
         out["conc"] = _ints(scen.get("conc") or [4, 8], "scenarios.conc", 1, 128)
         out["requests_per_worker"] = max(1, min(50, int(scen.get("requests_per_worker") or 3)))
         out["max_tokens"] = max(64, min(8192, int(scen.get("max_tokens") or 512)))
     except (TypeError, ValueError):
-        raise ValueError("requests_per_worker / max_tokens 应为整数")
+        raise ValueError(t("requests_per_worker / max_tokens 应为整数"))
     if "rag" in tasks:
         out["rag_ctx"] = _ints(scen.get("rag_ctx") or [4000], "scenarios.rag_ctx", 512, 65536)
     if "vision" in tasks:
         # 图片来源: image_id(上传的图片包) > dir(服务器上的文件夹) > 内置示例图片(默认, builtin 或什么都不给)
         src = scen.get("vision_src") or {}
         if not isinstance(src, dict):
-            raise ValueError("vision_src 应为对象")
-        img_dir, what = "", ""
+            raise ValueError(t("vision_src 应为对象"))
+        # what: 提示里用的名字 (图片包 id 或文件夹路径); is_pack: 是上传的图片包还是服务器上的文件夹。
+        # 英文语序和中文不一样, 「图片包 xx」「图片文件夹 xx」不能拼成碎片, 下面每种情况各写一整句
+        img_dir, what, is_pack = "", "", False
         iid = str(src.get("image_id") or "").strip()
         if iid and iid != "builtin":
             if not re.match(r"^img-[0-9a-f]{12}$", iid):
-                raise ValueError("非法 image_id")
-            img_dir, what = os.path.join(SCN_IMAGES_DIR, iid), "图片包 %s" % iid
+                raise ValueError(t("非法 image_id"))
+            img_dir, what, is_pack = os.path.join(SCN_IMAGES_DIR, iid), iid, True
             if not os.path.isdir(img_dir):
-                raise ValueError("%s 不存在（可能已被删除），请重新上传或改用内置示例图片" % what)
+                raise ValueError(t("图片包 {name} 不存在（可能已被删除），请重新上传或改用内置示例图片", name=what))
         elif not iid and not src.get("builtin") and str(src.get("dir") or "").strip():
-            img_dir = str(src["dir"]).strip()
-            what = "图片文件夹 %s" % img_dir
+            img_dir = what = str(src["dir"]).strip()
             if not os.path.isdir(img_dir):
-                raise ValueError("服务器上没有这个图片文件夹: %s" % img_dir)
+                raise ValueError(t("服务器上没有这个图片文件夹: {dir}", dir=img_dir))
         if img_dir:  # 发送前逐张检查: 一张能用的都没有就不开始(否则要等前面几个阶段跑完才失败)
             good, checks = vision_assets.scan_dir(img_dir, keep_data=False)
             if not checks:
-                raise ValueError("%s 里没有图片（支持 jpg / png / webp / gif）" % what)
+                if is_pack:
+                    raise ValueError(t("图片包 {name} 里没有图片（支持 jpg / png / webp / gif）", name=what))
+                raise ValueError(t("图片文件夹 {name} 里没有图片（支持 jpg / png / webp / gif）", name=what))
             if not good:
-                raise ValueError("%s 里没有能用的图片：%s。请重新上传，或改用内置示例图片" % (
-                    what, "；".join("%s %s" % (c["name"], c["msg"]) for c in checks[:3])))
+                detail = t("；").join(vision_assets.check_line(c) for c in checks[:3])
+                if is_pack:
+                    raise ValueError(t("图片包 {name} 里没有能用的图片：{detail}。请重新上传，或改用内置示例图片",
+                                       name=what, detail=detail))
+                raise ValueError(t("图片文件夹 {name} 里没有能用的图片：{detail}。请重新上传，或改用内置示例图片",
+                                   name=what, detail=detail))
             out["vision_dir"] = img_dir
         try:
             out["vision_images"] = max(1, min(4, int(src.get("images") or 1)))
         except (TypeError, ValueError):
-            raise ValueError("vision_src.images 应为 1-4 的整数")
+            raise ValueError(t("vision_src.images 应为 1-4 的整数"))
     if "custom" in tasks:
         fid = (scen.get("custom_file_id") or "").strip()
         if fid:
             if not tasksets.ID_RE.match(fid):
-                raise ValueError("非法 custom_file_id")
+                raise ValueError(t("非法 custom_file_id"))
             full = tasksets.file_path(SCN_TASKS_DIR, fid)
             if not os.path.isfile(full):
-                raise ValueError("任务集不存在: %s (可能已被删除, 请重新导入)" % fid)
+                raise ValueError(t("任务集不存在: {id} (可能已被删除, 请重新导入)", id=fid))
             out["custom_file"] = full
             # 记进结果: 任务集页面按它统计「用过几次」, 速度测试结果页显示「任务集：名称」
             out["task_set"] = {"id": fid, "name": tasksets.read_meta(SCN_TASKS_DIR, fid)["name"]}
         elif (scen.get("custom_file") or "").strip():
             out["custom_file"] = scen["custom_file"].strip()
             if not os.path.isfile(out["custom_file"]):
-                raise ValueError("任务集文件不存在: %s" % out["custom_file"])
+                raise ValueError(t("任务集文件不存在: {path}", path=out["custom_file"]))
         else:
-            raise ValueError("自定义任务集需要选择已上传的任务集或填写服务器文件路径")
+            raise ValueError(t("自定义任务集需要选择已上传的任务集或填写服务器文件路径"))
     return out
 
 
@@ -716,40 +724,40 @@ def _parse_replay(body):
     if not rp:
         return None
     if not isinstance(rp, dict):
-        raise ValueError("replay 应为对象")
+        raise ValueError(t("replay 应为对象"))
     fid = (rp.get("file_id") or "").strip()
     if fid:
         if not re.match(r"^replay-[0-9a-f]{12}$", fid):
-            raise ValueError("非法 file_id")
+            raise ValueError(t("非法 file_id"))
         full = os.path.join(REPLAY_DIR, fid + ".jsonl")
         if not os.path.isfile(full):
-            raise ValueError("回放文件不存在: %s (可能已被删除, 请重新上传)" % fid)
+            raise ValueError(t("回放文件不存在: {id} (可能已被删除, 请重新上传)", id=fid))
         rp = dict(rp, file=full)
     elif not (rp.get("file") or "").strip():
-        raise ValueError("replay 需要 file_id(上传的文件)或 file(服务器路径)")
+        raise ValueError(t("replay 需要 file_id(上传的文件)或 file(服务器路径)"))
     replay = dict(rp)
     closed = replay.get("closed")
     if closed:
         if not isinstance(closed, dict):
-            raise ValueError("replay.closed 应为对象")
+            raise ValueError(t("replay.closed 应为对象"))
         try:
             rpw = max(1, min(100, int(closed.get("requests_per_worker") or 4)))
         except (TypeError, ValueError):
-            raise ValueError("replay.closed.requests_per_worker 应为整数")
+            raise ValueError(t("replay.closed.requests_per_worker 应为整数"))
         replay["closed"] = {"conc": _ints(closed.get("conc") or [8], "replay.closed.conc", 1, 128),
                             "requests_per_worker": rpw}
     o = replay.get("open")
     if o:
         if not isinstance(o, dict):
-            raise ValueError("replay.open 应为对象")
+            raise ValueError(t("replay.open 应为对象"))
         try:
             rates = [float(x) for x in (o.get("rates") if isinstance(o.get("rates"), list) else
                                         str(o.get("rates") or "").split(",")) if str(x).strip()]
         except (TypeError, ValueError):
-            raise ValueError("replay.open.rates 应为数字列表")
+            raise ValueError(t("replay.open.rates 应为数字列表"))
         rates = sorted({round(r, 3) for r in rates if 0.05 <= r <= 1000})
         if not rates:
-            raise ValueError("replay.open.rates 需要至少一个 0.05-1000 的速率")
+            raise ValueError(t("replay.open.rates 需要至少一个 0.05-1000 的速率"))
         replay["open"] = {"rates": rates,
                           "duration_s": max(5, min(3600, int(o.get("duration_s") or 60)))}
     return replay
@@ -819,7 +827,7 @@ def task_set_detail(fid, offset="", limit="", status="", q="", head=True):
     counts, total, page = tasksets.query(s, status, q, offset, limit)
     texts = tasksets.read_texts(path, page)
     out = {"ok": True, "id": fid, "status": status, "q": q, "offset": offset, "limit": limit, "total": total,
-           "counts": counts, "lines": [tasksets.line_view(r, t) for r, t in zip(page, texts)]}
+           "counts": counts, "lines": [tasksets.line_view(r, text) for r, text in zip(page, texts)]}
     if head:
         uses = store.task_set_uses().get(fid) or []
         item = _task_set_item(fid, {fid: uses}, _busy_task_files())
@@ -952,11 +960,14 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def do_GET(self):
-        i18n.set_lang(i18n.lang_from_headers(self.headers))  # 本请求的语言: X-Lang, 其次 Accept-Language, 都没有用默认
         parts = urllib.parse.urlsplit(self.path)
         path = urllib.parse.unquote(parts.path)
         query = urllib.parse.parse_qs(parts.query)
         q = lambda k: (query.get(k) or [""])[0]  # noqa: E731
+        # 本请求的语言: X-Lang, 其次 Accept-Language, 都没有用默认。旧版 HTML 报告 (/api/report) 常在浏览器地址栏里直接打开,
+        # 发不了请求头, 所以它另认 ?lang=zh|en (写了就优先于请求头; 不认识的值当作没写)
+        url_lang = i18n.normalize_lang(q("lang")) if path == "/api/report" else None
+        i18n.set_lang(url_lang or i18n.lang_from_headers(self.headers))
         token = CONFIG["token"]
         if token and path in ("/", "/index.html") and q("token"):
             if hmac.compare_digest(q("token"), token):  # 带令牌打开页面: 写入 Cookie 后去掉地址栏中的令牌
@@ -1028,7 +1039,7 @@ class Handler(BaseHTTPRequestHandler):
             run_id = q("id")
             doc = store.get_run(run_id) if _RUN_ID_RE.match(run_id) else None
             if doc is None:
-                return self._json({"error": "run 不存在"}, 404)
+                return self._json({"error": t("run 不存在")}, 404)
             data = json.dumps(doc, ensure_ascii=False, indent=1 if path == "/api/export" else None).encode()
             extra = {"Content-Disposition": 'attachment; filename="%s.json"' % run_id} if path == "/api/export" else None
             return self._body(data, "application/json", headers=extra)
@@ -1144,15 +1155,15 @@ class Handler(BaseHTTPRequestHandler):
     def api_run_delete(self, body):
         run_id = body.get("run_id") or ""
         if not isinstance(run_id, str) or not _RUN_ID_RE.match(run_id):
-            return self._json({"ok": False, "error": "非法 run_id"}, 400)
+            return self._json({"ok": False, "error": t("非法 run_id")}, 400)
         if run_id in running_run_ids():
-            return self._json({"ok": False, "error": "该运行尚未结束，请先停止"}, 409)
+            return self._json({"ok": False, "error": t("该运行尚未结束，请先停止")}, 409)
         try:
             kind = store.delete_run(run_id)
         except ValueError as e:
             return self._json({"ok": False, "error": str(e)}, 409)
         if kind is None:
-            return self._json({"ok": False, "error": "run 不存在"}, 404)
+            return self._json({"ok": False, "error": t("run 不存在")}, 404)
         if kind == "gen" and body.get("remove_works", True):
             d = safe_join(WORKS, run_id)
             if d and d != os.path.realpath(WORKS) and os.path.isdir(d):
@@ -1214,14 +1225,14 @@ class Handler(BaseHTTPRequestHandler):
                 d = os.path.join(SCN_IMAGES_DIR, dn)
                 if not (re.match(r"^img-[0-9a-f]{12}$", dn) and os.path.isdir(d)):
                     continue
-                good, checks = _image_pack_check(d, _dir_stamp(d))
+                good, checks = _image_pack_check(d, _dir_stamp(d), i18n.current_lang())
                 if not checks:
                     continue
                 small = sum(1 for c in checks if c["code"] == "too_small")
                 images.append({"image_id": dn, "count": len(checks), "usable": len(good), "too_small": small,
                                "broken": len(checks) - len(good) - small, "size": sum(c["bytes"] for c in checks),
                                "dims": _dims_text(checks), "mtime": _mtime_iso(d),
-                               "problems": ["%s %s" % (c["name"], c["msg"]) for c in checks if not c["ok"]][:3]})
+                               "problems": [vision_assets.check_line(c) for c in checks if not c["ok"]][:3]})
         tasks.sort(key=lambda x: x["mtime"], reverse=True)
         images.sort(key=lambda x: x["mtime"], reverse=True)
         return {"ok": True, "tasks": tasks, "images": images, "builtin_images": vision_assets.sample_summary()}
@@ -1235,14 +1246,18 @@ class Handler(BaseHTTPRequestHandler):
         if kind == "tasks":
             content = body.get("content")
             if not isinstance(content, str) or not content.strip():
-                return self._json({"ok": False, "error": "缺少文件内容 (content 应为 JSONL 文本)"}, 400)
+                return self._json({"ok": False, "error": t("缺少文件内容 (content 应为 JSONL 文本)")}, 400)
             if len(content.encode("utf-8", "ignore")) > 15 * 1024 * 1024:
-                return self._json({"ok": False, "error": "文件超过 15MB 上限; 大文件请放到服务器后用路径引用"}, 400)
+                return self._json({"ok": False, "error": t("文件超过 15MB 上限; 大文件请放到服务器后用路径引用")}, 400)
             check = bench.check_task_text(content)
             if not check["valid"]:
-                first = check["hint"] or ("第 %(line)d 行：%(reason)s" % check["problems"][0] if check["problems"] else "")
-                return self._json({"ok": False, "error": "没有一行能用" + ("（%s）" % first if first else ""),
-                                   "check": check}, 400)
+                first = check["hint"]
+                if not first and check["problems"]:
+                    p0 = check["problems"][0]
+                    first = t("第 {line} 行：{reason}", line=p0["line"], reason=p0["reason"])
+                # 有原因时写进括号; 是两个整句, 不拼碎片
+                error = t("没有一行能用（{first}）", first=first) if first else t("没有一行能用")
+                return self._json({"ok": False, "error": error, "check": check}, 400)
             data = content.encode("utf-8")
             fid = "scn-" + hashlib.sha256(data).hexdigest()[:12]
             os.makedirs(SCN_TASKS_DIR, exist_ok=True)
@@ -1260,21 +1275,21 @@ class Handler(BaseHTTPRequestHandler):
         if kind == "images":
             files = body.get("files")
             if not isinstance(files, list) or not files:
-                return self._json({"ok": False, "error": "缺少 files: [{name, data(base64)}]"}, 400)
+                return self._json({"ok": False, "error": t("缺少 files: [{{name, data(base64)}}]")}, 400)
             report, keep = [], []
             for i, f in enumerate(files):
                 f = f if isinstance(f, dict) else {}
-                name = os.path.basename(str(f.get("name") or "第 %d 张" % (i + 1)))[:120]
+                name = os.path.basename(str(f.get("name") or t("第 {n} 张", n=i + 1)))[:120]
                 if i >= self._MAX_UPLOAD_IMAGES:
-                    report.append(_img_reject(name, "一次最多上传 %d 张，这张没有收" % self._MAX_UPLOAD_IMAGES))
+                    report.append(_img_reject(name, t("一次最多上传 {max} 张，这张没有收", max=self._MAX_UPLOAD_IMAGES)))
                     continue
                 if os.path.splitext(name)[1].lower() not in vision_assets.EXT_FORMAT:
-                    report.append(_img_reject(name, "不是支持的图片类型（只收 jpg / png / webp / gif）"))
+                    report.append(_img_reject(name, t("不是支持的图片类型（只收 jpg / png / webp / gif）")))
                     continue
                 try:
                     raw = base64.b64decode(f.get("data") or "", validate=False)
                 except (ValueError, TypeError):
-                    report.append(_img_reject(name, "上传的数据不是合法的 base64", "broken"))
+                    report.append(_img_reject(name, t("上传的数据不是合法的 base64"), "broken"))
                     continue
                 c = vision_assets.check_image(raw, name=name)
                 report.append(c)
@@ -1282,9 +1297,9 @@ class Handler(BaseHTTPRequestHandler):
                     keep.append((c, raw))
             rejected = sum(1 for c in report if not c["ok"])
             if not keep:
+                detail = t("；").join(vision_assets.check_line(c) for c in report[:3])
                 return self._json({"ok": False, "files": report, "rejected": rejected,
-                                   "error": "没有能用的图片：" + "；".join("%s %s" % (c["name"], c["msg"]) for c in report[:3])},
-                                  400)
+                                   "error": t("没有能用的图片：{detail}", detail=detail)}, 400)
             digest = hashlib.sha256()
             for _, raw in keep:
                 digest.update(raw)
@@ -1297,7 +1312,7 @@ class Handler(BaseHTTPRequestHandler):
                         f.write(raw)
             return self._json({"ok": True, "image_id": iid, "count": len(keep), "size": sum(len(r) for _, r in keep),
                                "dims": _dims_text([c for c, _ in keep]), "files": report, "rejected": rejected})
-        return self._json({"ok": False, "error": "kind 应为 tasks 或 images"}, 400)
+        return self._json({"ok": False, "error": t("kind 应为 tasks 或 images")}, 400)
 
     # ---- 任务集页面: 图片 / 下载 / 改名 / 删除(列表、详情、某行全文见 task_set_* 函数)
     def task_set_image(self, fid, line, idx):
@@ -1361,12 +1376,12 @@ class Handler(BaseHTTPRequestHandler):
         name = (body.get("name") or "").strip()
         content = body.get("content")
         if not isinstance(content, str) or not content.strip():
-            return self._json({"ok": False, "error": "缺少文件内容 (content 应为 JSONL 文本)"}, 400)
+            return self._json({"ok": False, "error": t("缺少文件内容 (content 应为 JSONL 文本)")}, 400)
         if len(content.encode("utf-8", "ignore")) > 15 * 1024 * 1024:
-            return self._json({"ok": False, "error": "文件超过 15MB 上限; 大文件请放到服务器后用路径引用"}, 400)
+            return self._json({"ok": False, "error": t("文件超过 15MB 上限; 大文件请放到服务器后用路径引用")}, 400)
         check = bench.check_task_text(content)
         if not check["valid"]:
-            return self._json({"ok": False, "error": "没有可用行: 每行应为 {\"messages\": [...], \"params\": {...}}",
+            return self._json({"ok": False, "error": t('没有可用行: 每行应为 {{"messages": [...], "params": {{...}}}}'),
                                "check": check}, 400)
         data = content.encode("utf-8")
         fid = "replay-" + hashlib.sha256(data).hexdigest()[:12]
@@ -1381,21 +1396,22 @@ class Handler(BaseHTTPRequestHandler):
                            "bad_lines": check["total"] - check["valid"], "check": check})
 
     def report_html(self, run_id, cmp_id=None):
-        """离线自包含 HTML 报告 (?id=run_a&cmp=run_b 做 A/B); 浏览器直接打开, 无需服务。"""
+        """离线自包含 HTML 报告 (?id=run_a&cmp=run_b 做 A/B); 浏览器直接打开, 无需服务。
+        报告和错误提示的语言: ?lang=zh|en (地址栏直接打开发不了请求头, 见 do_GET) 优先, 其次 X-Lang / Accept-Language。"""
         if not _RUN_ID_RE.match(run_id or ""):
-            return self._json({"ok": False, "error": "非法 run_id"}, 400)
+            return self._json({"ok": False, "error": t("非法 run_id")}, 400)
         a = store.get_run(run_id)
         if a is None:
-            return self._json({"ok": False, "error": "run 不存在"}, 404)
+            return self._json({"ok": False, "error": t("run 不存在")}, 404)
         b = None
         if cmp_id:
             if not _RUN_ID_RE.match(cmp_id):
-                return self._json({"ok": False, "error": "非法 cmp run_id"}, 400)
+                return self._json({"ok": False, "error": t("非法 cmp run_id")}, 400)
             b = store.get_run(cmp_id)
             if b is None:
-                return self._json({"ok": False, "error": "cmp run 不存在"}, 404)
+                return self._json({"ok": False, "error": t("cmp run 不存在")}, 404)
         try:
-            html_text = report.render(a, b)
+            html_text = report.render(a, b)  # 报告的语言取当前请求的语言 (do_GET 已按 ?lang= / X-Lang 设好)
         except ValueError as e:
             return self._json({"ok": False, "error": str(e)}, 400)
         fn = "%s_report%s.html" % (run_id, "_ab" if b else "")
@@ -1409,7 +1425,7 @@ class Handler(BaseHTTPRequestHandler):
         if isinstance(cmp, str):
             cmp = [x for x in cmp.split(",") if x]
         if not isinstance(cmp, list):
-            return self._json({"ok": False, "error": "cmp 格式错误"}, 400)
+            return self._json({"ok": False, "error": t("cmp 格式错误")}, 400)
         try:
             bundle = offline_bundle(page, str(body.get("id") or ""), [str(x) for x in cmp])
         except ValueError as e:
@@ -1430,9 +1446,9 @@ class Handler(BaseHTTPRequestHandler):
         model = (body.get("model") or "").strip()
         suite = body.get("suite", "standard")
         if not base or not model:
-            return self._json({"ok": False, "error": "缺少 base/model"}, 400)
+            return self._json({"ok": False, "error": t("缺少 base/model")}, 400)
         if suite not in bench.SUITES:
-            return self._json({"ok": False, "error": "未知测试套件"}, 400)
+            return self._json({"ok": False, "error": t("未知测试套件")}, 400)
         ladder = None
         raw_ladder = (body.get("conc_ladder") or "").strip().strip(",")
         if raw_ladder:
@@ -1441,7 +1457,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not (1 <= min(ladder) and max(ladder) <= 128):
                     raise ValueError("range")
             except (ValueError, TypeError):
-                return self._json({"ok": False, "error": "并发梯度格式错误：应为 1-128 的逗号分隔整数，如 1,2,4,8"}, 400)
+                return self._json({"ok": False, "error": t("并发梯度格式错误：应为 1-128 的逗号分隔整数，如 1,2,4,8")}, 400)
         matrix_conc = None
         raw_mc = str(body.get("matrix_conc") or "").strip()
         if raw_mc:
@@ -1450,7 +1466,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not (1 <= matrix_conc <= 32):
                     raise ValueError("range")
             except ValueError:
-                return self._json({"ok": False, "error": "矩阵并发数应为 1-32 的整数"}, 400)
+                return self._json({"ok": False, "error": t("矩阵并发数应为 1-32 的整数")}, 400)
         lens = None
         raw_lens = (body.get("lens") or "").strip().strip(",")
         if raw_lens:
@@ -1459,19 +1475,19 @@ class Handler(BaseHTTPRequestHandler):
                 if not (1 <= min(lens) and max(lens) <= 256):
                     raise ValueError("range")
             except (ValueError, TypeError):
-                return self._json({"ok": False, "error": "输入长度梯度格式错误：应为 1-256 的逗号分隔整数（K），如 1,2,4,8,16"}, 400)
+                return self._json({"ok": False, "error": t("输入长度梯度格式错误：应为 1-256 的逗号分隔整数（K），如 1,2,4,8,16")}, 400)
         try:
             scen_cfg = _parse_scenarios(body)
             replay_cfg = _parse_replay(body)
         except ValueError as e:
-            return self._json({"ok": False, "error": "场景配置错误：%s" % e}, 400)
+            return self._json({"ok": False, "error": t("场景配置错误：{error}", error=e)}, 400)
         warmup_shapes = body.get("warmup_shapes", True) is not False
         if self._busy_or_conflict("perf", base, body):
             return
         job = JOBS["perf"]
         files = [x for x in ((scen_cfg or {}).get("custom_file"), (replay_cfg or {}).get("file")) if x]
         if not job.try_start(base, model, files=files):  # 测试期间这些文件不能删(任务集页面的删除会检查)
-            return self._json({"ok": False, "error": "已有性能测试在运行"}, 409)
+            return self._json({"ok": False, "error": t("已有{name}在运行", name=job_name("perf"))}, 409)
         framework = (body.get("framework") or "").strip()[:60]
         fw_version = (body.get("fw_version") or "").strip()[:60]
         metrics_url = base + "/metrics" if body.get("metrics", True) else None
@@ -1502,18 +1518,18 @@ class Handler(BaseHTTPRequestHandler):
         proxy = (body.get("proxy") or "").strip() or None
         source = body.get("source") if body.get("source") in bankman.SOURCE_MODES else "modelscope"
         offline = _truthy(body.get("offline"))
-        if not job.try_start(None, "更新题集"):
-            return self._json({"ok": False, "error": "题集正在更新中"}, 409)
+        if not job.try_start(None, t("更新题集")):
+            return self._json({"ok": False, "error": t("题集正在更新中")}, 409)
 
         def work(j):
             try:
                 bank, _ = bankman.build(proxy=proxy, mode=source, log=j.line, cancel=j.cancel, offline=offline)
             except bankman.Cancelled:
-                j.line("已停止：已经下载好的题集数据留在本地，下次不用重新下载")
+                j.line(t("已停止：已经下载好的题集数据留在本地，下次不用重新下载"))
                 return
             except Exception:
-                j.line("提示：可以换一个「题集下载源」或填「下载用的代理」再试；没有网的机器，"
-                       "把能联网机器上的 data/datasets/ 拷贝过来即可离线生成")
+                j.line(t("提示：可以换一个「题集下载源」或填「下载用的代理」再试；没有网的机器，"
+                         "把能联网机器上的 data/datasets/ 拷贝过来即可离线生成"))
                 raise
             j.set(run_id=bank["bank_id"])
         job.run(work)
@@ -1525,13 +1541,13 @@ class Handler(BaseHTTPRequestHandler):
         model = (body.get("model") or "").strip()
         bank_id = (body.get("bank_id") or "").strip()
         if not base or not model or not bank_id:
-            return self._json({"ok": False, "error": "缺少 base/model/bank_id"}, 400)
+            return self._json({"ok": False, "error": t("缺少 base/model/bank_id")}, 400)
         try:
             conc = max(1, min(32, int(body.get("conc") or 8)))
             limit = max(1, min(200, int(body["limit"]))) if body.get("limit") else None
             sampling = _parse_sampling(body.get("sampling"))
         except (TypeError, ValueError) as e:
-            return self._json({"ok": False, "error": "参数错误：%s" % e}, 400)
+            return self._json({"ok": False, "error": t("参数错误：{error}", error=e)}, 400)
         try:
             bank = bankman.load_bank(bank_id)
         except FileNotFoundError as e:
@@ -1540,11 +1556,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         job = JOBS["iq"]
         if not job.try_start(base, model):
-            return self._json({"ok": False, "error": "已有能力评测在运行"}, 409)
+            return self._json({"ok": False, "error": t("已有{name}在运行", name=job_name("iq"))}, 409)
         subject_ids = body.get("subjects") or None
         if subject_ids is not None and not (isinstance(subject_ids, list) and all(isinstance(x, str) for x in subject_ids)):
             job.set(running=False)
-            return self._json({"ok": False, "error": "subjects 应为科目 id 列表"}, 400)
+            return self._json({"ok": False, "error": t("subjects 应为科目 id 列表")}, 400)
         thinking = _truthy(body.get("thinking"))
 
         def target(j):
@@ -1561,16 +1577,16 @@ class Handler(BaseHTTPRequestHandler):
     def api_iq_resume(self, body):
         run_id = body.get("run_id") or ""
         if not isinstance(run_id, str) or not run_id.startswith("iq_") or not _RUN_ID_RE.match(run_id):
-            return self._json({"ok": False, "error": "非法 run_id"}, 400)
+            return self._json({"ok": False, "error": t("非法 run_id")}, 400)
         doc = store.get_run(run_id)
         if not doc:
-            return self._json({"ok": False, "error": "run 不存在"}, 404)
+            return self._json({"ok": False, "error": t("run 不存在")}, 404)
         retry_errors = doc.get("status") == "done" and (doc.get("overall") or {}).get("errors")
         if doc.get("status") not in ("cancelled", "interrupted", "failed") and not retry_errors:
-            return self._json({"ok": False, "error": "只有已停止、中断、失败或含请求失败题目的运行可以续跑"}, 409)
+            return self._json({"ok": False, "error": t("只有已停止、中断、失败或含请求失败题目的运行可以续跑")}, 409)
         if doc.get("iq_version") != iq.IQ_VERSION:
-            return self._json({"ok": False, "error": "该运行由评测程序 %s 生成，当前为 %s，判分口径不同，不能续跑，请重新运行"
-                               % (doc.get("iq_version"), iq.IQ_VERSION)}, 409)
+            return self._json({"ok": False, "error": t("该运行由评测程序 {old} 生成，当前为 {new}，判分口径不同，不能续跑，请重新运行",
+                                                       old=doc.get("iq_version"), new=iq.IQ_VERSION)}, 409)
         try:
             bank = bankman.load_bank(doc.get("bank_id") or "")
         except FileNotFoundError as e:
@@ -1580,7 +1596,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         job = JOBS["iq"]
         if not job.try_start(base, doc.get("model"), run_id=run_id):
-            return self._json({"ok": False, "error": "已有能力评测在运行"}, 409)
+            return self._json({"ok": False, "error": t("已有{name}在运行", name=job_name("iq"))}, 409)
 
         def target(j):
             iq.run_iq(doc["url"], doc["model"], body.get("api_key", ""), bank, sink=sinks.SqliteSink(),
@@ -1594,11 +1610,11 @@ class Handler(BaseHTTPRequestHandler):
         url = base + "/v1/chat/completions"
         model = (body.get("model") or "").strip()
         if not base or not model:
-            return self._json({"ok": False, "error": "缺少 base/model"}, 400)
+            return self._json({"ok": False, "error": t("缺少 base/model")}, 400)
         try:
             conc = max(1, min(8, int(body.get("conc") or 4)))
         except (TypeError, ValueError):
-            return self._json({"ok": False, "error": "并发应为整数"}, 400)
+            return self._json({"ok": False, "error": t("并发应为整数")}, 400)
         raw_tasks = body.get("tasks")
         sampling = body.get("sampling") or None
         try:
@@ -1610,7 +1626,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         job = JOBS["gen"]
         if not job.try_start(base, model):
-            return self._json({"ok": False, "error": "已有代码生成任务或重新评测在运行"}, 409)
+            return self._json({"ok": False, "error": t("已有代码生成任务或重新评测在运行")}, 409)
         judge = _judge_cfg(body)
 
         def target(j):
@@ -1627,9 +1643,9 @@ class Handler(BaseHTTPRequestHandler):
         """对已有生成运行重新评测 (运行检测 + 可选视觉评审)。与代码生成共用任务状态/日志。"""
         run_id = body.get("run_id") or ""
         if not isinstance(run_id, str) or not run_id.startswith("gen_") or not _RUN_ID_RE.match(run_id):
-            return self._json({"ok": False, "error": "非法 run_id"}, 400)
+            return self._json({"ok": False, "error": t("非法 run_id")}, 400)
         if store.get_run(run_id, items=False) is None:
-            return self._json({"ok": False, "error": "run 不存在"}, 404)
+            return self._json({"ok": False, "error": t("run 不存在")}, 404)
         raw_tasks = body.get("tasks")
         try:
             only = None if not raw_tasks else set(gen.normalize_task_ids(raw_tasks))
@@ -1637,8 +1653,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": str(e)}, 400)
         judge = _judge_cfg(body)
         job = JOBS["gen"]
-        if not job.try_start(None, "重新评测", run_id=run_id):
-            return self._json({"ok": False, "error": "已有代码生成任务或重新评测在运行"}, 409)
+        if not job.try_start(None, t("重新评测"), run_id=run_id):
+            return self._json({"ok": False, "error": t("已有代码生成任务或重新评测在运行")}, 409)
         job.run(lambda j: gen.reevaluate(run_id, judge, only=only, log=j.line, cancel=j.cancel), "_GEN_PROGRESS", gen)
         return self._json({"ok": True, "run_id": run_id, "eval": geneval.Evaluator(judge).meta()})
 
@@ -1646,13 +1662,13 @@ class Handler(BaseHTTPRequestHandler):
         run_id, item_id = body.get("run_id") or "", body.get("item_id")
         stars = body.get("stars")
         if not isinstance(run_id, str) or not _RUN_ID_RE.match(run_id):
-            return self._json({"ok": False, "error": "非法 run_id"}, 400)
+            return self._json({"ok": False, "error": t("非法 run_id")}, 400)
         if stars is not None and not (isinstance(stars, int) and not isinstance(stars, bool) and 0 <= stars <= 5):
-            return self._json({"ok": False, "error": "stars 应为 0-5 整数或 null"}, 400)
+            return self._json({"ok": False, "error": t("stars 应为 0-5 整数或 null")}, 400)
         try:
             # 单行 UPDATE: 运行中的生成测试也可打星, 后台增量写入从不触碰 stars
             if not store.rate_gen_item(run_id, item_id, stars):
-                return self._json({"ok": False, "error": "run 或作品不存在"}, 404)
+                return self._json({"ok": False, "error": t("run 或作品不存在")}, 404)
             return self._json({"ok": True})
         except Exception as e:
             return self._json({"ok": False, "error": str(e)[:200]}, 500)
