@@ -343,7 +343,8 @@ class TestServer(ServerCase):
             return json.loads(m.group(1).decode("utf-8"))
         try:
             st, h, html = export(page="dash", id=p1["run_id"], cmp=[p2["run_id"]], title="速度测试 · m",
-                                 state={"theme": "light", "ls": {"llm-bench-pro-dt": "{}", "llm-bench-pro-iq-form": "{\"iqBase\":\"http://10.0.0.1\"}"}},
+                                 state={"theme": "light", "ls": {"llm-bench-pro-dt": "{}", "llm-bench-pro-terms": "pro",
+                                                                 "llm-bench-pro-iq-form": "{\"iqBase\":\"http://10.0.0.1\"}"}},
                                  ui={"panels": [["dash-conc", "table"], ["x", "bad"]], "qb": {"filter": "bad"}})
             self.assertEqual((st, h["Content-Type"].split(";")[0]), (200, "text/html"))
             self.assertIn(("const UI_VERSION=\"%s\"" % server.APP_VERSION).encode(), html)   # 同一套页面代码, 内联
@@ -363,6 +364,7 @@ class TestServer(ServerCase):
             self.assertEqual(state["theme"], "light")
             self.assertNotIn("llm-bench-pro-iq-form", state["ls"])                         # 表单里填过的地址不带
             self.assertIn("llm-bench-pro-dt", state["ls"])
+            self.assertEqual(state["ls"]["llm-bench-pro-terms"], "pro")                    # 当前的术语模式(大白话 / 专业)带进报告
 
             st, _, html = export(page="iq", id=a["run_id"], cmp=[b["run_id"]])
             d = data_of(html)
@@ -450,6 +452,20 @@ class TestServer(ServerCase):
             self.assertNotIn("llm-bench-pro-gen-judge", state["ls"])
         finally:
             server.WORKS = orig
+
+    def test_export_state_terms_mode(self):
+        """离线报告带着导出时的术语模式(plain 大白话 / pro 专业); 只收这两个值, 其他值丢掉, 没选过的就不带(报告按默认大白话显示)。"""
+        st = server._export_state
+        self.assertIn("llm-bench-pro-terms", server.EXPORT_LS_KEYS)
+        for mode in ("plain", "pro"):
+            self.assertEqual(st({"theme": "dark", "ls": {"llm-bench-pro-terms": mode}})["ls"]["llm-bench-pro-terms"], mode)
+        for bad in ("PRO", "专业", "<script>", "", "plain ", None, 1, ["pro"]):
+            with self.subTest(bad=bad):
+                self.assertNotIn("llm-bench-pro-terms", st({"theme": "dark", "ls": {"llm-bench-pro-terms": bad}})["ls"])
+        self.assertNotIn("llm-bench-pro-terms", st({"theme": "dark", "ls": {}})["ls"])
+        self.assertNotIn("llm-bench-pro-terms", st(None)["ls"])
+        self.assertEqual(st({"theme": "light", "ls": {"llm-bench-pro-terms": "pro", "llm-bench-pro-x": "1"}}),
+                         {"theme": "light", "ls": {"llm-bench-pro-terms": "pro", "llm-bench-pro-theme": "light"}})   # 只带白名单里的偏好
 
     def test_iq_items_and_answer(self):
         import bankman

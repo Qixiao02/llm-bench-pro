@@ -493,9 +493,11 @@ def offline_bundle(page, a_id, cmp_ids):
     return {"api": api, "files": files, "sel": {"a": a_id, "cmp": ids[1:]}, "worksCsp": WORKS_CSP_META}
 
 
-# 离线报告只带显示偏好(主题、视图、表格排序与列、标签页、每页条数、密度、侧栏), 不带表单里填过的地址和 Key
-EXPORT_LS_KEYS = ("llm-bench-pro-theme", "llm-bench-pro-viewmode", "llm-bench-pro-dt", "llm-bench-pro-ctab",
-                  "llm-bench-pro-qb", "llm-bench-pro-gen-works", "llm-bench-pro-density", "llm-bench-pro-rail")
+# 离线报告只带显示偏好(主题、术语模式、视图、表格排序与列、标签页、每页条数、作品列表的每页件数、密度、侧栏), 不带表单里填过的地址和 Key
+EXPORT_LS_KEYS = ("llm-bench-pro-theme", "llm-bench-pro-terms", "llm-bench-pro-viewmode", "llm-bench-pro-dt",
+                  "llm-bench-pro-ctab", "llm-bench-pro-qb", "llm-bench-pro-gen-works", "llm-bench-pro-density", "llm-bench-pro-rail")
+# 术语模式只收这两个值: plain = 大白话(默认), pro = 专业词
+TERMS_MODES = ("plain", "pro")
 
 
 def _export_state(raw):
@@ -504,6 +506,8 @@ def _export_state(raw):
     ls = raw.get("ls") if isinstance(raw.get("ls"), dict) else {}
     ls = {k: v for k, v in ls.items() if k in EXPORT_LS_KEYS and isinstance(v, str) and len(v) <= 65536}
     ls["llm-bench-pro-theme"] = theme
+    if ls.get("llm-bench-pro-terms") not in TERMS_MODES:
+        ls.pop("llm-bench-pro-terms", None)
     return {"theme": theme, "ls": ls}
 
 

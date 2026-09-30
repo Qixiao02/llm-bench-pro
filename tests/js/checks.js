@@ -100,13 +100,334 @@ T("tt: 标题/行/脚注全转义, 数值在名称前", () => {
   assert.ok(h.includes("&lt;b&gt;名&lt;/b&gt;") && h.includes("1&lt;2") && h.includes("&lt;i&gt;注&lt;/i&gt;"));
   assert.ok(h.indexOf("1&lt;2") < h.indexOf("&lt;b&gt;名"));   /* 值在前, 名在后 */
 });
-T("term: 名词带悬停解释且转义; 未知名词原样转义", () => {
-  const h = term("ttft");
-  assert.ok(h.includes('class="term"') && h.includes("首字等待") && h.includes("TTFT"));
-  assert.equal(term("no-such", "<a>"), "&lt;a&gt;");
-  for (const k of Object.keys(TERMS)) {
-    assert.ok(TERMS[k].name && TERMS[k].tech && TERMS[k].desc, "名词缺字段: " + k);
+/* ---------- 术语: 大白话 / 专业 两种写法 ---------- */
+/* 临时切到某个模式跑一段, 跑完还原 */
+const withMode = (mode, fn) => { const saved = TERM_MODE; TERM_MODE = mode; try { return fn(); } finally { TERM_MODE = saved; } };
+const shown = h => (/>([^<]*)<\/span>/.exec(h) || [])[1];
+const isLatinWord = s => /[A-Za-z]/.test(s);
+T("术语词表: 每个词有大白话 / 完整说法 / 解释, 除 token 外都有专业写法, 专业词能在完整说法里找到(悬停和名词解释两处一致)", () => {
+  for (const [k, t] of Object.entries(TERMS)) {
+    assert.ok(t.name && t.tech && t.desc, "名词缺字段: " + k);
+    if (k === "token") { assert.equal(t.pro, undefined); continue; }   /* 本来就是专业词 */
+    assert.ok(t.pro && t.pro === t.pro.trim(), "缺专业写法: " + k);
+    assert.notEqual(t.pro, t.name, k);
+    const lead = isLatinWord(t.pro) ? t.pro.split(/\s+/)[0] : t.pro;    /* 英文的对第一个词, 纯中文的整个对 */
+    assert.ok(t.tech.toLowerCase().includes(lead.toLowerCase()), `${k}: 完整说法「${t.tech}」里没有专业词「${t.pro}」`);
+    assert.equal(termField(t, "pro"), t.pro);                           /* 取字段的唯一入口 */
   }
+  for (const [k, w] of Object.entries(WORDS)) assert.ok(w.name && w.pro && (!w.of || TERMS[w.of]), "标签词缺字段: " + k);   /* 只做标签的词: 分位词等, of 指向名词解释里的词条 */
+  assert.deepEqual([WORDS.p50.pro, WORDS.p95.pro, WORDS.p99.pro], ["P50", "P95", "P99"]);
+  assert.deepEqual([WORDS.p50.name, WORDS.p95.name, WORDS.p99.name], ["一般", "较慢", "最慢"]);
+  assert.equal(Object.keys(WORDS).filter(k => TERMS[k]).length, 0);                                /* 两张表的 key 不重复 */
+});
+T("term(): 大白话模式显示大白话、悬停给专业说法; 专业模式显示专业词、悬停给对应的大白话; 自定义文字在专业模式下也换成专业词; 未知名词原样转义", () => {
+  withMode("plain", () => {
+    const h = term("ttft");
+    assert.ok(h.includes('class="term"') && h.includes('data-term="ttft"') && shown(h) === "首字等待");
+    assert.ok(h.includes("TTFT（Time To First Token）：从发出请求") && h.includes("（点击查看名词解释）"));
+    assert.equal(shown(term("agg", "总速度")), "总速度");
+  });
+  withMode("pro", () => {
+    const h = term("ttft");
+    assert.ok(h.includes('data-term="ttft"') && shown(h) === "TTFT");
+    assert.ok(h.includes("大白话：首字等待。从发出请求到收到第一个字") && !h.includes("Time To First Token") && h.includes("（点击查看名词解释）"));
+    assert.equal(shown(term("agg", "总速度")), "Throughput");           /* 自定义文字: 专业模式也换 */
+    assert.equal(shown(term("prefill")), "Prefill");
+    assert.equal(shown(term("token")), "token");                         /* 没有专业写法的词两种模式一样 */
+  });
+  for (const mode of ["plain", "pro"]) withMode(mode, () => {
+    assert.equal(term("no-such", "<a>"), "&lt;a&gt;");
+    assert.equal(term("no-such"), "no-such");
+    for (const k of Object.keys(TERMS)) {
+      const h = term(k);
+      assert.equal(shown(h), termWord(k), `${mode}/${k}`);
+      assert.ok(/^<span class="term" data-term="[a-z0-9]+" title="[^"<]+">[^<]+<\/span>$/.test(h), `${mode}/${k}: ${h}`);   /* 属性没被破坏 */
+    }
+  });
+  assert.equal(TERM_MODE, "plain");                                       /* 默认大白话 */
+});
+T("termText / termHtml: {key} 按当前模式换词; {!key} 不带下划线; {key|文字} 自定义; {key|文字|专业文字} 专业模式另写; 不认识的 {…} 原样保留", () => {
+  withMode("plain", () => {              /* 大白话模式: 模板怎么写就怎么显示, 不改空格 */
+    assert.equal(termText("{ttft} {p95}"), "首字等待 较慢");
+    assert.equal(termText("最高{agg}"), "最高总生成速度");
+    assert.equal(termText("{agg|总速度}最高"), "总速度最高");
+    assert.equal(termText("{ttft}{p95}时"), "首字等待较慢时");
+    assert.equal(termText("单个请求{decode|生成} {p50}"), "单个请求生成 一般");
+    assert.equal(termText("{v90}/{v95}"), "较慢/最慢");
+    assert.equal(termText("{rerun}"), "重新运行");
+    assert.equal(termText("{preagg} {sigtest}"), "总读入速度 McNemar 检验");
+    assert.equal(termText("{nope} {x|y} {} {ttft"), "{nope} {x|y} {} {ttft");
+    const h = termHtml("横轴是{conc}，{!agg|总速度}<b>{p95}</b>");
+    assert.ok(h.startsWith('横轴是<span class="term" data-term="conc"') && h.includes(">同时请求数</span>，总速度<b>较慢</b>"));
+    assert.ok(!h.includes('data-term="agg"'));                           /* {!key} 不带下划线和悬停 */
+    const r = termHtml("里{rerun}也");                                    /* 换个说法的词(rerun)点开还是「对照运行」那一条 */
+    assert.ok(r.includes('data-term="control"') && r.includes(">重新运行</span>") && !r.includes('data-term="rerun"'));
+    assert.ok(!termHtml("{p95} {!rerun}").includes("<span"));            /* 分位词、{!key} 都不带下划线 */
+  });
+  withMode("pro", () => {                /* 专业模式: 英文专业词和汉字之间补空格, 全角标点旁不补 */
+    assert.equal(termText("{ttft} {p95}"), "TTFT P95");
+    assert.equal(termText("最高{agg}"), "最高 Throughput");
+    assert.equal(termText("{agg|总速度}最高"), "Throughput 最高");
+    assert.equal(termText("{ttft}{p95}时"), "TTFT P95 时");
+    assert.equal(termText("{conc}{ttft}"), "并发 TTFT");
+    assert.equal(termText("（{ttft}）"), "（TTFT）");
+    assert.equal(termText("，{prefill} 10 token/秒"), "，Prefill 10 token/秒");
+    assert.equal(termText("单个请求{decode|生成} {p50}"), "单个请求 Decode P50");
+    assert.equal(termText("{v90}/{v95}"), "P90/P95");                    /* 速度的分位如实写 P90 / P95 */
+    assert.equal(termText("有 3 题{trunc}（写到长度上限）"), "有 3 题截断（写到长度上限）");   /* 中文专业词不加空格 */
+    assert.equal(termText("{preagg}"), "Prefill 总吞吐");
+    assert.equal(termText("{rerun}"), "复现");
+    assert.equal(termText("（{!sigtest}）"), "（配对检验）");
+    assert.equal(termText("{nope} {x|y}"), "{nope} {x|y}");
+    assert.equal(termText("{token}"), "token");
+    assert.ok(termHtml("里{rerun}也").includes(">复现</span>") && termHtml("里{rerun}也").includes('data-term="control"'));
+    const h = termHtml("时{agg}最高，{!kv|显存缓存}满");
+    assert.ok(/时 <span class="term" data-term="agg"[^>]*>Throughput<\/span> 最高，KV Cache 使用率满$/.test(h), h);   /* 空格在下划线外面 */
+  });
+});
+T("术语: 词只按 key 换一次(结果里没有模板了, 再处理一遍不变); 纯文本版本没有 HTML; HTML 版本去掉标签后和纯文本一致", () => {
+  for (const mode of ["plain", "pro"]) withMode(mode, () => {
+    for (const k of [...Object.keys(TERMS), ...Object.keys(WORDS)]) {
+      const t = termText(`前{${k}}后`), h = termHtml(`前{${k}}后`);
+      assert.ok(!/[<>{}]/.test(t), `${mode}/${k}: 纯文本里有标签或模板: ${t}`);
+      assert.ok(!/[{}]/.test(h), `${mode}/${k}: ${h}`);
+      assert.equal(termText(t), t);
+      assert.equal(termHtml(h), h);
+      assert.equal(stripTags(h), t);
+    }
+    assert.equal(termText(""), "");
+    assert.equal(termText(null), "");
+  });
+});
+T("指标卡 / 对比表的标签: 两种模式都没有残留的模板; 大白话模式不出现专业词, 专业模式下带上专业词", () => {
+  const m = {pLast: {label: "16K"}, pcp: {conc: 4}, olLast: {rate: 5}};
+  const full = {...m, zh: {out_tokens: 512, itl_p50_ms_med: 10}, en: {out_tokens: 512, itl_p50_ms_med: 10}, cLast: {conc: 8, ttft_p50_s: 1}, s: {per_stream_decode_p50: 50, per_stream_decode_p95: 60}};
+  const proWords = ["Prefill", "TTFT", "ITL", "Decode", "Throughput", "req/s", "E2E", "Open-loop", "Burst", "P50", "P95", "P99"];
+  for (const k of [...PERF_METRICS, ...CMP_EXTRA]) {
+    const plain = withMode("plain", () => [metricLabel(k, m), safeSub(k, full)]);
+    const pro = withMode("pro", () => [metricLabel(k, m), safeSub(k, full)]);
+    for (const s of [...plain, ...pro]) assert.ok(!/[{}<>]/.test(s), `${k.key}: 有残留模板: ${s}`);
+    for (const w of proWords) assert.ok(!plain[0].includes(w) && !plain[1].includes(w), `${k.key}: 大白话模式出现专业词 ${w}: ${plain.join(" | ")}`);
+    if (k.key !== "succ") assert.ok(proWords.some(w => pro[0].includes(w)), `${k.key}: 专业模式的标签里没有专业词: ${pro[0]}`);
+  }
+  const zh = PERF_METRICS.find(x => x.key === "zh"), peak = PERF_METRICS.find(x => x.key === "peak"), ttft = PERF_METRICS.find(x => x.key === "ttft");
+  assert.deepEqual(withMode("plain", () => [zh, peak, ttft].map(x => metricLabel(x, m))), ["单个请求生成速度 · 中文", "最高总生成速度", "首字等待 · 请求最多时（较慢）"]);
+  assert.deepEqual(withMode("pro", () => [zh, peak, ttft].map(x => metricLabel(x, m))), ["单个请求 Decode · 中文", "最高 Throughput", "TTFT · 请求最多时（P95）"]);
+  /* 指标卡悬停: 大白话模式 = 大白话（专业说法）：解释; 专业模式 = 专业词（大白话：…）：解释 */
+  assert.equal(withMode("plain", () => metricTip(ttft)), "首字等待（TTFT（Time To First Token））：" + TERMS.ttft.desc);
+  assert.equal(withMode("pro", () => metricTip(ttft)), "TTFT（大白话：首字等待）：" + TERMS.ttft.desc);
+  assert.equal(metricTip(PERF_METRICS.find(x => x.key === "succ")), "");
+});
+/* 合成一份各章节都有数据的速度测试: 两种模式下整页的表头 / 图表标题 / 坐标轴 / 图例都走统一函数 */
+const synthPerfRun = () => ({run_id: "r1", model: "m", suite: "full", status: "done", url: "http://h", started_utc: "2026-01-01T00:00:00Z", phases: [
+  {id: "concurrency", points: [{conc: 1, agg_tps: 100, per_stream_tps_med: 100, ttft_p50_s: .1, ttft_p95_s: .2, ok: 2, fail: 0}, {conc: 4, agg_tps: 300, per_stream_tps_med: 75, ttft_p50_s: .2, ttft_p95_s: .5, ok: 8, fail: 0}]},
+  {id: "prefill", points: [{label: "1K", in_tokens: 1000, prefill_tps_med: 5000, ttft_med_s: .2}, {label: "4K", in_tokens: 4000, prefill_tps_med: 6000, ttft_med_s: .7}]},
+  {id: "prefill_conc", conc: 4, summary: {prefill_min: 1, prefill_max: 2, prefill_avg: 1.5, decode_min: 1, decode_max: 2, decode_avg: 1.5, per_stream_decode_p50: 50, per_stream_decode_p90: 60, per_stream_decode_p95: 65},
+    points: [{label: "1K", in_tokens: 1000, ttft_avg_ms: 300, itl_avg_ms: 12, prefill_tps_agg: 8000, decode_tps_agg: 200, ok: 4, fail: 0, stream_prefill_tps: [2000], stream_decode_tps: [50]}]},
+  {id: "decode", cases: [{lang: "zh", out_tokens: 256, decode_tps_med: 100, decode_tps_best: 110, itl_p50_ms_med: 10, spec_burst_med: 1, runs: [{tpot_ms: 10, itl_p95_ms: 12, itl_p99_ms: 15, itl_jitter_ms: 1}]}]},
+  {id: "scn_chat", task: {label: "对话问答"}, points: [{conc: 4, req_s: 1.2, ttft_p95_s: .5, e2e_p95_s: 5, ok: 4, total: 4, out_tokens_avg: 100, max_inflight: 4}]},
+  {id: "replay", pool: {size: 10, wrapped: false}, points: [{conc: 4, req_s: 2, ttft_p95_s: 1, e2e_p95_s: 5, prompt_tokens_avg: 100, out_tokens_avg: 50, max_inflight: 4, ok: 8, total: 8}]},
+  {id: "openloop", points: [{rate: 2, sent: 10, completed_rps: 1.9, ttft_p95_s: 1, e2e_p95_s: 5, max_inflight: 3, ok: 10, total: 10, inflight_ts: [[0, 1], [3, 2]]}]},
+  {id: "longctx", points: [{in_tokens: 1000, ttft_s: .5, prefill_tps: 2000, decode_tps: 50, itl_p50_ms: 10, itl_p95_ms: 12}, {in_tokens: 2000, ttft_s: .9, prefill_tps: 2100, decode_tps: 49, itl_p50_ms: 10, itl_p95_ms: 12}, {in_tokens: 4000, ttft_s: 1.9, prefill_tps: 2100, decode_tps: 48, itl_p50_ms: 10, itl_p95_ms: 12}]}],
+  metrics_samples: [{t: 0, gpu_cache_usage: .1, prefix_cache_hit: 20, requests_running: 1, requests_waiting: 0}, {t: 5, gpu_cache_usage: .2, prefix_cache_hit: 30, requests_running: 2, requests_waiting: 0}]});
+/* 收集页面里「当标签用」的文字: 表头 / 图表标题 / 章节标题 / 表格标题, 和图表的坐标轴名、图例、系列名 */
+function labelTexts(html) {
+  const out = [];
+  for (const re of [/<th[^>]*>([\s\S]*?)<\/th>/g, /<h[23] class="(?:ccard|sec)-title">([\s\S]*?)<\/h[23]>/g, /<div class="dt-title">([\s\S]*?)(?:<span|<\/div>)/g]) {
+    let m; while ((m = re.exec(html))) out.push(stripTags(m[1]).trim());
+  }
+  return out.filter(Boolean);
+}
+function recordCharts() {   /* 每张图 setOption 的所有调用都记下来(先画整图、后面可能再补标记) */
+  const opts = new Map();
+  globalThis.echarts.init = el => ({setOption(o) { (opts.get(el) || opts.set(el, []).get(el)).push(o); }, resize() {}, dispose() {}, on() {}, off() {}, getDom() { return el; }, getZr() { return {on() {}, off() {}}; }});
+  return opts;
+}
+function chartTexts(opts) {
+  const out = [], arr = x => (Array.isArray(x) ? x : x ? [x] : []);
+  for (const o of [...opts.values()].flat()) {
+    arr(o.xAxis).concat(arr(o.yAxis)).forEach(a => a.name && out.push(a.name));
+    arr(o.legend).forEach(l => (l.data || []).forEach(d => out.push(typeof d === "string" ? d : d.name)));
+    arr(o.series).forEach(s => s.name && out.push(s.name));
+  }
+  return out;
+}
+T("速度测试整页: 两种模式下表头、图表标题、坐标轴、图例都走统一函数(大白话模式没有专业词, 专业模式没有这些词的大白话)", () => {
+  const plainNames = ["读入速度", "首字等待", "出字间隔", "生成速度", "总生成速度", "每秒完成请求数", "完整响应", "同时请求数", "显存缓存占用", "重复内容复用率", "固定同时请求数", "按固定速率发送", "一般", "较慢", "最慢"];
+  const proWords = ["Prefill", "TTFT", "ITL", "Decode", "Throughput", "req/s", "E2E", "Open-loop", "Closed-loop", "KV Cache", "Prefix Cache", "P50", "P95", "P99"];
+  const savedInit = globalThis.echarts.init;
+  try {
+    for (const mode of ["plain", "pro"]) withMode(mode, () => {
+      CHARTS.clear();                    /* 图表实例按 id 缓存, 换模式要重新建 */
+      const opts = recordCharts();
+      const a = synthPerfRun(), b = synthPerfRun();
+      const html = perfSectionsHTML(a, b, "t") + allMetricsSection(a, b, "t") + perfSectionsHTML(a, null, "s") + allMetricsSection(a, null, "s");   /* A/B 对比和单个测试的表头写法不同, 都要查 */
+      drawPerfCharts(a, b, "t");
+      drawPerfCharts(a, null, "s");
+      const labels = [...labelTexts(html), ...chartTexts(opts)];
+      assert.ok(labels.length > 60 && opts.size >= 15, `${mode}: 只收集到 ${labels.length} 个标签、${opts.size} 张图`);
+      for (const s of labels) assert.ok(!/[{}]/.test(s), `${mode}: 标签里有残留模板: ${s}`);
+      const bad = mode === "plain" ? proWords : plainNames;
+      for (const s of labels) for (const w of bad) assert.ok(!s.includes(w), `${mode}: 标签「${s}」里出现了不该出现的「${w}」`);
+      const all = labels.join("\n");
+      const want = mode === "plain" ? ["首字等待 较慢", "总生成速度", "同时请求数", "读入速度", "出字间隔 一般", "显存缓存占用", "每秒完成请求数", "完整响应 较慢"]
+        : ["TTFT P95", "Throughput", "并发", "Prefill", "ITL P50", "KV Cache 使用率", "req/s", "E2E P95", "Per-stream TPS", "Prefill 总吞吐"];
+      for (const w of want) assert.ok(all.includes(w), `${mode}: 没有找到「${w}」`);
+      /* 复制 / 导出 CSV 用的表头也是同一套写法(A/B 对比表是「指标（单位） A / B / A 比 B」, 单个测试是「指标（单位）」) */
+      const csvAB = tablesCSV(["t-conc-t"]), csvOne = tablesCSV(["s-conc-t"]);
+      const head = mode === "plain" ? "首字等待 较慢（秒）" : "TTFT P95（秒）";
+      const line1 = t => t.split("\n")[1];   /* 第 0 行是表名, 第 1 行是表头 */
+      assert.ok(csvAB.includes(`${head} A,${head} B,${head} A 比 B`), `${mode}: ${line1(csvAB)}`);
+      assert.ok(line1(csvOne).includes(head), `${mode}: ${line1(csvOne)}`);
+    });
+  } finally {
+    globalThis.echarts.init = savedInit;
+    CHARTS.clear();
+  }
+});
+T("速度测试的结论句和章节说明: 词的位置按 key 换, 大白话模式一字不差, 专业模式补空格; 指标卡的补充说明也一样", () => {
+  const run = synthPerfRun();
+  run.phases[0].points.push({conc: 8, agg_tps: 280, per_stream_tps_med: 30, ttft_p50_s: 2, ttft_p95_s: 4.5, ok: 16, fail: 0});
+  const sentences = () => perfConclusions(run, null).map(i => stripTags(i.html));
+  const descs = () => [...perfSectionsHTML(run, null, "s").matchAll(/<p class="(?:sec|ccard)-desc">([\s\S]*?)<\/p>/g)].map(m => stripTags(m[1]));
+  withMode("plain", () => {
+    assert.ok(sentences().includes("同时 4 个请求时总速度最高，每秒 300 token，是 1 个请求时的 3.0 倍；再加到 8 个反而降到 280，4 个左右就是上限。"));
+    assert.ok(sentences().includes("从同时 8 个请求开始明显变慢：首字等待较慢时 4.50 秒。"));
+    assert.ok(sentences().includes("输入 4K（约 4,000 token）时要等 0.70 秒才开始回答，读入速度 6,000 token/秒。"));
+    assert.ok(descs().includes("横轴是同时请求数。总速度通常先涨后平；每个请求分到的速度和首字等待会随之变差。虚线是 3 秒：超过它用户会觉得慢"));
+    assert.ok(descs().includes("● 一般　┃ 较慢　○ 最慢 · 越靠左越快、越短越稳"));
+    assert.ok(descs().includes("显存缓存接近 100% 时新请求要排队；复用率越高越省时"));
+    assert.ok(descs().includes("测试期间服务端的显存缓存占用和重复内容复用率（来自 vLLM /metrics）"));
+    assert.equal(stripTags(perfMetaLine(Object.assign({}, run, {overrides: {fixed_output: true}}))).split(" · ").pop(), "每次生成满指定长度");
+    assert.ok(perfAnomalies({phases: [{id: "concurrency", points: [{conc: 1, agg_tps: 100}, {conc: 2, agg_tps: 50}]}]}).some(t => t.includes("时，总生成速度不升反降（")));
+  });
+  withMode("pro", () => {
+    assert.ok(sentences().includes("同时 4 个请求时 Throughput 最高，每秒 300 token，是 1 个请求时的 3.0 倍；再加到 8 个反而降到 280，4 个左右就是上限。"));
+    assert.ok(sentences().includes("从同时 8 个请求开始明显变慢：TTFT P95 时 4.50 秒。"));
+    assert.ok(sentences().includes("输入 4K（约 4,000 token）时要等 0.70 秒才开始回答，Prefill 6,000 token/秒。"));
+    assert.ok(descs().includes("横轴是并发。Throughput 通常先涨后平；每个请求分到的速度和 TTFT 会随之变差。虚线是 3 秒：超过它用户会觉得慢"));
+    assert.ok(descs().includes("● P50　┃ P95　○ P99 · 越靠左越快、越短越稳"));
+    assert.ok(descs().includes("KV Cache 使用率接近 100% 时新请求要排队；Prefix Cache 命中率越高越省时"));
+    assert.ok(descs().includes("测试期间服务端的 KV Cache 使用率和 Prefix Cache 命中率（来自 vLLM /metrics）"));
+    assert.equal(stripTags(perfMetaLine(Object.assign({}, run, {overrides: {fixed_output: true}}))).split(" · ").pop(), "ignore_eos");
+    assert.ok(perfAnomalies({phases: [{id: "concurrency", points: [{conc: 1, agg_tps: 100}, {conc: 2, agg_tps: 50}]}]}).some(t => t.includes("时，Throughput 不升反降（")));
+    const stats = stripTags(perfStats(run, null));
+    assert.ok(stats.includes("单个请求 Decode · 中文") && stats.includes("每次写 256 token · ITL 10.0 毫秒") && stats.includes("最高 Throughput") && stats.includes("TTFT · 输入 4K") && stats.includes("Prefill 6,000 token/秒"), stats);
+  });
+});
+T("能力测试的表头和柱状图: 误差范围 / 差异是否可信 / 没答完 在两种模式下的写法", () => {
+  const sub = (id, n, c) => ({id, name: "科" + id, n, correct: c, acc: 100 * c / n, ci_lo: 50, ci_hi: 90, truncated: 1, errors: 0, out_tokens: 100});
+  const one = [{r: {run_id: "a", subjects: [sub("s", 10, 8)]}, color: "#000", tag: "A"}];
+  const two = one.concat([{r: {run_id: "b", subjects: [sub("s", 10, 7)]}, color: "#111", tag: "B"}]);
+  const cols = specs => [specs.compact, specs.full].flatMap(s => s.columns.flatMap(c => [c.label, c.group || ""]));
+  withMode("plain", () => {
+    assert.ok(cols(iqSubjSpecs(one)).includes("误差范围") && cols(iqSubjSpecs(one)).includes("没答完"));
+    assert.ok(cols(iqSubjSpecs(two)).includes("差异是否可信"));
+    assert.equal(iqIssues({overall: {truncated: 2, errors: 1}}).join("|"), "2 题没答完|1 题请求失败");
+  });
+  withMode("pro", () => {
+    assert.ok(cols(iqSubjSpecs(one)).includes("95% CI") && cols(iqSubjSpecs(one)).includes("截断"));
+    assert.ok(cols(iqSubjSpecs(two)).includes("McNemar"));
+    assert.ok(!cols(iqSubjSpecs(two)).concat(cols(iqSubjSpecs(one))).some(s => /误差范围|没答完|差异是否可信/.test(s)));
+    assert.equal(iqIssues({overall: {truncated: 2, errors: 1}}).join("|"), "2 题截断|1 题请求失败");
+    assert.equal(QB_STATE.trunc[0], "截断");
+  });
+  assert.equal(QB_STATE.trunc[0], "没答完");
+  assert.deepEqual(QB_STATE.ok, ["答对", "good", "check"]);
+});
+T("代码生成页的名词(对照运行 / 陷入重复输出 / AI 看图打分 / 实际运行检查): 两种模式下的写法, 大白话模式和原来一字不差", () => {
+  const it = {file: "works/r/t.html", pass: 0, total: 0, eval: {method: "browser", checks: [], shots: [], shots_dir: "s", control: {errors: ["x"], reproduced: true}}};
+  const plain = h => stripTags(h);
+  withMode("plain", () => {
+    assert.ok(plain(checksPanel(it)).includes("对照运行："));
+    assert.equal(plain(termHtml("{run|实际运行检查}通过率")), "实际运行检查通过率");
+    assert.equal(plain(termHtml("报错的作品里有 3 件在不加任何检测代码的干净环境里{rerun}也同样报错")), "报错的作品里有 3 件在不加任何检测代码的干净环境里重新运行也同样报错");
+    assert.equal(plain(termHtml("模型{repeat}")), "模型陷入重复输出");
+    assert.equal(termText("{judge}：都没打出分"), "AI 看图打分：都没打出分");
+    assert.equal(termText("没有配置{judge}"), "没有配置AI 看图打分");
+  });
+  withMode("pro", () => {
+    assert.ok(plain(checksPanel(it)).includes("干净环境复现："));
+    assert.equal(plain(termHtml("{run|实际运行检查}通过率")), "Headless 运行检测通过率");
+    assert.equal(plain(termHtml("报错的作品里有 3 件在不加任何检测代码的干净环境里{rerun}也同样报错")), "报错的作品里有 3 件在不加任何检测代码的干净环境里复现也同样报错");
+    assert.equal(plain(termHtml("模型{repeat}")), "模型退化重复");
+    assert.equal(termText("{judge}：都没打出分"), "VLM Judge：都没打出分");
+    assert.equal(termText("没有配置{judge}"), "没有配置 VLM Judge");
+    assert.equal(termText("{static}"), "源码检查");
+  });
+  /* 作品卡、排序、检查方式这些「标签」里的词也跟着走 */
+  const card = h => stripTags(h);
+  const work = {id: "snake", name: "贪吃蛇", tags: ["普通"], continuations: 4, lines: 10, out_tokens: 100, pass: 3, total: 4, eval: {method: "browser", checks: [], judge: {score: 88, model: "j"}}};
+  const verdict = {key: "pass", text: "全部检查通过"}, gctx = {v2: true, mode: "browser", shared: ""};
+  withMode("plain", () => {
+    assert.ok(card(genCard({run_id: "r"}, work, verdict, gctx)).includes("10 行 · 接着写 4 轮 · 100 token"));
+    assert.ok(genCard({run_id: "r"}, work, verdict, gctx).includes('title="AI 看图打分"'));
+    assert.equal(genSorts().find(x => x[0] === "rounds")[1], "接着写的轮数（多的在前）");
+    assert.equal(evalMethodText({method: "browser", judge_model: "m"}), "检查方式：在后台浏览器里实际运行检查 + AI 看图打分（m）");
+    assert.equal(evalMethodText({method: "browser"}), "检查方式：在后台浏览器里实际运行检查，没有配置 AI 看图打分");
+    assert.equal(samplingTextGen({}), "随机性：旧版 T0.3");
+    assert.ok(judgePanel({eval: {}}).includes("没有配置 AI 看图打分。在「新建生成任务」里"));
+  });
+  withMode("pro", () => {
+    assert.ok(card(genCard({run_id: "r"}, work, verdict, gctx)).includes("10 行 · 续写 4 轮 · 100 token"));
+    assert.ok(genCard({run_id: "r"}, work, verdict, gctx).includes('title="VLM Judge"'));
+    assert.equal(genSorts().find(x => x[0] === "rounds")[1], "续写的轮数（多的在前）");
+    assert.equal(evalMethodText({method: "browser", judge_model: "m"}), "检查方式：在后台浏览器里实际运行检查 + VLM Judge（m）");
+    assert.equal(evalMethodText({method: "browser"}), "检查方式：在后台浏览器里实际运行检查，没有配置 VLM Judge");
+    assert.equal(samplingTextGen({}), "采样参数：旧版 T0.3");
+    assert.ok(judgePanel({eval: {}}).includes("没有配置 VLM Judge。在「新建生成任务」里"));
+  });
+});
+T("名词解释: 每个词一行, 左边大白话 + 完整说法, 右边解释; 搜索能搜到专业词(两种模式内容一样)", () => {
+  const list = glossaryItems();
+  for (const k of Object.keys(TERMS)) assert.ok(list.includes(`id="gl-${k}"`), k);
+  assert.ok(list.includes('class="glossary-name">首字等待<') && list.includes('class="glossary-tech">TTFT（Time To First Token）<'));
+  const gl = k => new RegExp(`id="gl-${k}" data-gl="([^"]*)"`).exec(list)[1];
+  assert.ok(gl("prefill").includes("prefill") && gl("pct").includes("p95") && gl("agg").includes("throughput") && gl("prefix").includes("prefix cache"));
+  assert.equal(withMode("pro", () => glossaryItems()), list);
+});
+T("术语模式: 切换后写入本地偏好、能读回来; 只认 plain / pro; 导出离线报告会带上", () => {
+  const store = new Map(), saved = globalThis.localStorage, mode0 = TERM_MODE;
+  globalThis.localStorage = {getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k)};
+  try {
+    assert.equal(TERM_LS, "llm-bench-pro-terms");
+    setTermMode("pro", true);
+    assert.equal(TERM_MODE, "pro");
+    assert.equal(store.get(TERM_LS), "pro");
+    assert.equal(termModeOf(LS.get(TERM_LS)), "pro");                    /* 刷新后读回来 */
+    assert.equal(termWord("prefill"), "Prefill");
+    setTermMode("plain", true);
+    assert.equal(store.get(TERM_LS), "plain");
+    assert.equal(termModeOf(LS.get(TERM_LS)), "plain");
+    assert.equal(termWord("prefill"), "读入速度");
+    store.clear();
+    setTermMode("pro", false);                                           /* 启动时按已有偏好应用, 不重复写 */
+    assert.equal(TERM_MODE, "pro");
+    assert.equal(store.has(TERM_LS), false);
+    setTermMode("bogus", true);                                          /* 不认识的值按大白话处理 */
+    assert.deepEqual([TERM_MODE, store.get(TERM_LS)], ["plain", "plain"]);
+    assert.deepEqual(["pro", "plain", null, undefined, "", "PRO", "x"].map(termModeOf), ["pro", "plain", "plain", "plain", "plain", "plain", "plain"]);
+    assert.ok(EXPORT_LS.includes(TERM_LS));                              /* 「导出报告」带上当前模式 */
+  } finally {
+    globalThis.localStorage = saved;
+    TERM_MODE = mode0;
+  }
+  assert.equal(TERM_MODE, "plain");
+});
+T("模型管理「用过的测试」摘要里的指标名也跟着术语模式走; 单个请求这样的普通说明文字不变", () => {
+  const r = {kind: "perf", summary: {peak_tps: 1280.84, peak_conc: 4, decode_tps: 410}};
+  assert.equal(withMode("plain", () => mdRunSummary(r)), "最高总生成速度 1280.8 token/秒（同时 4 个请求） · 单个请求 410.0 token/秒");
+  assert.equal(withMode("pro", () => mdRunSummary(r)), "最高 Throughput 1280.8 token/秒（同时 4 个请求） · 单个请求 410.0 token/秒");
+});
+T("页面结构: 侧栏底部有术语切换按钮(aria-pressed), 每个「更多」菜单里都有切换项, 图标存在", () => {
+  const fs = require("node:fs"), path = require("node:path");
+  const html = fs.readFileSync(path.join(process.env.LLMB_ROOT || process.cwd(), "web", "index.html"), "utf8");
+  assert.ok(/<button[^>]*id="termsBtn"[^>]*aria-pressed="false"/.test(html) && html.includes('title="术语：大白话 / 专业"'));
+  assert.ok(html.indexOf('id="themeBtn"') < html.indexOf('id="termsBtn"') && html.indexOf('id="termsBtn"') < html.indexOf('id="railPin"'));   /* 在主题切换旁边 */
+  const themes = html.match(/data-theme-toggle/g).length, terms = html.match(/data-terms-toggle/g).length;
+  assert.ok(themes >= 4 && terms === themes, `切换亮色的菜单项 ${themes} 个, 切换术语的 ${terms} 个`);
+  assert.equal(html.match(/data-terms-toggle[^>]*><svg[^>]*><use href="#i-terms"\/><\/svg>切换术语：大白话 \/ 专业</g).length, terms);
+  assert.ok(html.includes('<symbol id="i-terms"'));
 });
 T("deltaPill: 越低越好的指标变小算更好; 小于 1% 算持平", () => {
   assert.ok(deltaPill(10, 8, -1).includes("delta up"));
@@ -721,7 +1042,7 @@ T("A / B 谁更好: 没生成 > 人工星级 > AI 分(差 5 分以内算差不�
   assert.equal(genWinner(ok(0, 0), ok(0, 0)).side, "none");                             /* 没有检查结果 */
   assert.deepEqual(["a", "b", "tie", "none"].map(s => genWinLabel({side: s})), ["A 更好", "B 更好", "差不多", "没法比"]);
   assert.equal(genWinLabel(null), "");
-  assert.ok(["人工星级", "AI", "检查", "5 分", "没生成"].every(k => GEN_WIN_RULE.includes(k)));   /* 悬停提示写全了判断规则 */
+  assert.ok(["人工星级", "AI", "检查", "5 分", "没生成"].every(k => genWinRule().includes(k)));   /* 悬停提示写全了判断规则 */
 });
 
 T("卡片上的说明: 整次测试共同的情况不重复, 只写这件作品自己的问题", () => {
