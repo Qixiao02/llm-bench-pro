@@ -32,6 +32,8 @@ try:
 except ImportError:
     import i18n  # server.py 以包目录为 sys.path 顶层导入
 
+t, tn = i18n.t, i18n.tn
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
 BANKS = os.path.join(ROOT, "banks")
 DATASETS = os.path.join(ROOT, "data", "datasets")  # 下载到本地的原始数据(不入库)
@@ -48,7 +50,7 @@ GH_RAW = "https://raw.githubusercontent.com/{repo}/{branch}/{path}"
 # GitHub 国内镜像(按常见可用度排列, 实际按测速结果用最快的); 直连 GitHub 放最后
 GH_MIRRORS = ["https://gh-proxy.com/{raw}", "https://ghproxy.net/{raw}", "https://ghfast.top/{raw}",
               "https://cdn.jsdelivr.net/gh/{repo}@{branch}/{path}", "https://fastly.jsdelivr.net/gh/{repo}@{branch}/{path}"]
-SOURCE_MODES = {"modelscope": "魔搭（国内）", "global": "GitHub / HuggingFace（海外）"}
+SOURCE_MODES = ("modelscope", "global")  # 下载源偏好的取值; 显示名见 mode_name()
 SMALL_FILE = 8 << 20  # 比这小的压缩包整个下载; 更大的按目录 / 文件头分段只取需要的部分
 
 # 每个题集抽样时用前多少行: 与最初(HuggingFace 按页取)的取法一致, 题库内容才能和以前完全相同
@@ -77,6 +79,35 @@ DATASET_NAMES = {"gsm8k": "GSM8K", "mmlu": "MMLU", "math500": "MATH-500", "arc":
                  "hellaswag": "HellaSwag", "ceval": "C-Eval"}
 
 
+def mode_name(mode):
+    """下载源偏好的显示名(按当前语言), 给日志用。"""
+    return t("魔搭（国内）") if mode == "modelscope" else t("GitHub / HuggingFace（海外）")
+
+
+def route_labels():
+    """各下载途径的显示名(按当前语言), 给日志和错误说明用; GitHub / HuggingFace / hf-mirror 是专有名称, 不翻。"""
+    return {"ms_oss": t("魔搭 OSS"), "ms": t("魔搭"), "ms_oss_hz": t("魔搭 OSS（杭州）")}
+
+
+def route_key(label):
+    """下载途径的显示名 → 存进本地数据 source 字段的名字: 一律是中文名(和以前存的一样)。
+    data/datasets/ 里的文件会在机器之间拷贝(没有网的机器离线用), 里面记的来源不能随下载时的语言变; 显示时再用 source_text() 换成当前语言。"""
+    now = route_labels()
+    with i18n.use_lang("zh"):
+        zh = route_labels()
+    return {now[k]: zh[k] for k in now}.get(label, label)
+
+
+def source_text(label):
+    """本地数据里记的下载途径名(中文名) → 当前语言的显示名; 认不出的(GitHub 等专有名称、自己改过的、手改坏的)原样返回。"""
+    if not isinstance(label, str) or not label:
+        return label
+    with i18n.use_lang("zh"):
+        zh = route_labels()
+    now = route_labels()
+    return {zh[k]: now[k] for k in zh}.get(label, label)
+
+
 class Cancelled(Exception):
     """用户停止了题集更新。"""
 
@@ -98,7 +129,7 @@ class Ctx:
 
     def check(self):
         if self.cancel is not None and self.cancel.is_set():
-            raise Cancelled("已停止")
+            raise Cancelled(t("已停止", ctx="更新题集"))
 
     def open(self, url, rng=None, timeout=30):
         headers = {"User-Agent": UA}
@@ -112,7 +143,7 @@ class Ctx:
         with self.open(url, rng, timeout) as r:
             if rng and r.status != 206:
                 if rng[0] > (8 << 20):
-                    raise RuntimeError("服务器不支持分段下载")
+                    raise RuntimeError(t("服务器不支持分段下载"))
                 data = r.read(rng[1] + 1)[rng[0]:]
             else:
                 out = []
@@ -132,7 +163,7 @@ class Ctx:
             m = re.search(r"/(\d+)$", r.headers.get("Content-Range") or "")
             if r.status == 206 and m:
                 return int(m.group(1))
-            raise RuntimeError("服务器不支持分段下载")
+            raise RuntimeError(t("服务器不支持分段下载"))
 
 
 class RangeFile(io.RawIOBase):
@@ -249,29 +280,29 @@ def gh_text(ctx, repo, branch, path):
         cands = [raw] + cands[:-1]
 
     def probe(u):
-        t = time.time()
+        t0 = time.time()
         try:
             data = ctx.get(u, (0, 1023), timeout=8)
-            return (time.time() - t, u) if data.strip() else None
+            return (time.time() - t0, u) if data.strip() else None
         except Exception:
             return None
     ctx.check()
     with i18n.executor(len(cands)) as ex:
         ranked = sorted(r for r in ex.map(probe, cands) if r)
     if not ranked:
-        raise RuntimeError("GitHub 和它的镜像都连不上")
+        raise RuntimeError(t("GitHub 和它的镜像都连不上"))
     last = None
     for _, u in ranked:
         try:
             text = ctx.get(u, timeout=90).decode("utf-8")
             host = urllib.parse.urlsplit(u).netloc
-            ctx.log("      用的是 %s" % host)
+            ctx.log(t("      用的是 {host}", host=host))
             return text
         except Cancelled:
             raise
         except Exception as e:
             last = e
-    raise RuntimeError("GitHub 镜像下载失败：%s" % last)
+    raise RuntimeError(t("GitHub 镜像下载失败：{error}", error=last))
 
 
 _LAST_HF = [0.0]
@@ -309,14 +340,15 @@ def _pick(rows, keys):
 def routes_for(ctx, name):
     """(途径名, 取数函数) 列表, 按下载源偏好排序。取数函数返回本地保存用的行(与 HuggingFace 的行同形)。"""
     ms, gl = [], []  # 魔搭(国内) / 海外
+    L = route_labels()
     if name == "gsm8k":
-        ms.append(("魔搭 OSS", lambda: _pick(jsonl(ctx.get(MS_OSS_HZ + "gsm8k/test.jsonl").decode("utf-8")), ("question", "answer"))))
+        ms.append((L["ms_oss"], lambda: _pick(jsonl(ctx.get(MS_OSS_HZ + "gsm8k/test.jsonl").decode("utf-8")), ("question", "answer"))))
         gl.append(("GitHub", lambda: _pick(jsonl(gh_text(ctx, "openai/grade-school-math", "master",
                                                           "grade_school_math/data/test.jsonl")), ("question", "answer"))))
         gl.append(("HuggingFace", lambda: _pick(hf_rows(ctx, "openai/gsm8k", "main", "test", range(0, 1400, 100)), ("question", "answer"))))
     elif name == "math500":
         keys = ("problem", "answer", "subject", "level", "unique_id")
-        ms.append(("魔搭", lambda: _pick(jsonl(ctx.get(MS_FILE.format(repo="AI-ModelScope/MATH-500", path="test.jsonl")).decode("utf-8")), keys)))
+        ms.append((L["ms"], lambda: _pick(jsonl(ctx.get(MS_FILE.format(repo="AI-ModelScope/MATH-500", path="test.jsonl")).decode("utf-8")), keys)))
         gl.append(("hf-mirror", lambda: _pick(jsonl(ctx.get(HF_MIRROR_FILE.format(repo="HuggingFaceH4/MATH-500", path="test.jsonl")).decode("utf-8")), keys)))
         gl.append(("HuggingFace", lambda: _pick(hf_rows(ctx, "HuggingFaceH4/MATH-500", "default", "test", range(0, 500, 100)), keys)))
     elif name == "mmlu":
@@ -326,7 +358,7 @@ def routes_for(ctx, name):
                 got = tar_members(ctx, url, lambda n: n in want, done=lambda d: len(d) == len(want))
                 missing = [s for n, s in want.items() if n not in got]
                 if missing:
-                    raise RuntimeError("压缩包里缺少科目: %s" % ", ".join(missing[:5]))
+                    raise RuntimeError(t("压缩包里缺少科目: {names}", names=", ".join(missing[:5])))
                 out = {}
                 for n, s in want.items():
                     rows = csv_rows(got[n].decode("utf-8"), header=False)
@@ -334,8 +366,8 @@ def routes_for(ctx, name):
                               for r in rows if len(r) >= 6 and r[5].strip() in ("A", "B", "C", "D")]
                 return out
             return run
-        ms.append(("魔搭 OSS", from_tar(MS_OSS + "mmlu/data.tar")))
-        ms.append(("魔搭 OSS（杭州）", from_tar(MS_OSS_HZ + "mmlu/data.tar")))
+        ms.append((L["ms_oss"], from_tar(MS_OSS + "mmlu/data.tar")))
+        ms.append((L["ms_oss_hz"], from_tar(MS_OSS_HZ + "mmlu/data.tar")))
         gl.append(("hf-mirror", from_tar(HF_MIRROR_FILE.format(repo="cais/mmlu", path="data.tar"))))
         gl.append(("HuggingFace", lambda: {s: [{"question": r.get("question"), "choices": r.get("choices"), "answer": r.get("answer")}
                                                for r in hf_rows(ctx, "cais/mmlu", s, "test", [0], TAKE["mmlu"])] for s in MMLU_ALL}))
@@ -343,16 +375,16 @@ def routes_for(ctx, name):
         def from_zip():
             got = zip_members(ctx, MS_OSS + "arc/ARC-V1-Feb2018.zip", lambda n: n.endswith("ARC-Challenge/ARC-Challenge-Test.jsonl"))
             if not got:
-                raise RuntimeError("压缩包里没有 ARC-Challenge-Test.jsonl")
+                raise RuntimeError(t("压缩包里没有 ARC-Challenge-Test.jsonl"))
             return [{"question": d["question"]["stem"],
                      "choices": {"text": [c["text"] for c in d["question"]["choices"]], "label": [c["label"] for c in d["question"]["choices"]]},
                      "answerKey": d.get("answerKey")} for d in jsonl(next(iter(got.values())).decode("utf-8"))]
-        ms.append(("魔搭 OSS", from_zip))
+        ms.append((L["ms_oss"], from_zip))
         gl.append(("HuggingFace", lambda: _pick(hf_rows(ctx, "allenai/ai2_arc", "ARC-Challenge", "test", range(0, TAKE["arc"], 100)),
                                                 ("question", "choices", "answerKey"))))
     elif name == "hellaswag":
         keys = ("ctx", "endings", "label", "activity_label")
-        ms.append(("魔搭 OSS", lambda: _pick(jsonl(ctx.get(MS_OSS + "hellaswag/hellaswag_val.jsonl").decode("utf-8")), keys)))
+        ms.append((L["ms_oss"], lambda: _pick(jsonl(ctx.get(MS_OSS + "hellaswag/hellaswag_val.jsonl").decode("utf-8")), keys)))
         gl.append(("HuggingFace", lambda: _pick(hf_rows(ctx, "Rowan/hellaswag", "default", "validation", range(0, TAKE["hellaswag"], 100)), keys)))
     elif name == "ceval":
         keys = ("question", "A", "B", "C", "D", "answer")
@@ -365,9 +397,9 @@ def routes_for(ctx, name):
                 out[sub] = _pick(csv_rows(data.decode("utf-8")), keys)
             missing = [s for s in CEVAL_SUBS if s not in out]
             if missing:
-                raise RuntimeError("压缩包里缺少科目: %s" % ", ".join(missing))
+                raise RuntimeError(t("压缩包里缺少科目: {names}", names=", ".join(missing)))
             return out
-        ms.append(("魔搭 OSS", from_zip))
+        ms.append((L["ms_oss"], from_zip))
         gl.append(("HuggingFace", lambda: {s: _pick(hf_rows(ctx, "ceval/ceval-exam", s, "val", [0], TAKE["ceval"]), keys) for s in CEVAL_SUBS}))
     return ms + gl if ctx.mode == "modelscope" else gl + ms
 
@@ -377,18 +409,19 @@ def first_ok(ctx, name, routes):
     errs = []
     for label, fn in routes:
         ctx.check()
-        t, b0 = time.time(), ctx.bytes
+        t0, b0 = time.time(), ctx.bytes
         try:
             data = fn()
-            ctx.log("      %s：从%s下载完成，%.1f MB，%.1f 秒" % (DATASET_NAMES[name], label, (ctx.bytes - b0) / 1048576, time.time() - t))
+            ctx.log(t("      {name}：从{label}下载完成，{mb:.1f} MB，{secs:.1f} 秒",
+                      name=DATASET_NAMES[name], label=label, mb=(ctx.bytes - b0) / 1048576, secs=time.time() - t0))
             return label, data
         except Cancelled:
             raise
         except Exception as e:
             msg = str(e).strip()[:120] or type(e).__name__
-            errs.append("%s（%s）" % (label, msg))
-            ctx.log("      %s：%s不可用（%s），换下一个" % (DATASET_NAMES[name], label, msg))
-    raise RuntimeError("%s 所有下载途径都失败：%s" % (DATASET_NAMES[name], "；".join(errs)))
+            errs.append(t("{label}（{msg}）", label=label, msg=msg))
+            ctx.log(t("      {name}：{label}不可用（{msg}），换下一个", name=DATASET_NAMES[name], label=label, msg=msg))
+    raise RuntimeError(t("{name} 所有下载途径都失败：{errors}", name=DATASET_NAMES[name], errors=t("；").join(errs)))
 
 
 # ---- 本地数据 ----
@@ -425,7 +458,7 @@ def local_status():
         rows = (doc or {}).get("rows")
         n = sum(len(v) for v in rows.values()) if isinstance(rows, dict) else len(rows or [])
         out.append({"id": name, "name": DATASET_NAMES[name], "ready": _enough(name, doc), "rows": n,
-                    "source": (doc or {}).get("source"), "downloaded_utc": (doc or {}).get("downloaded_utc")})
+                    "source": source_text((doc or {}).get("source")), "downloaded_utc": (doc or {}).get("downloaded_utc")})
     return {"dir": DATASETS, "datasets": out, "ready": all(x["ready"] for x in out)}
 
 
@@ -437,19 +470,20 @@ def download(ctx=None, force=False, only=None):
     done = []
     for i, name in enumerate(names, 1):
         ctx.check()
-        ctx.log("进度 %d / %d · %s" % (i - 1, len(names), DATASET_NAMES[name]))
+        ctx.log(t("进度 {done} / {total} · {name}", done=i - 1, total=len(names), name=DATASET_NAMES[name]))
         if not force and _enough(name, load_local(name)):
-            ctx.log("  [%d/%d] %s：本地已有，跳过下载" % (i, len(names), DATASET_NAMES[name]))
+            ctx.log(t("  [{i}/{total}] {name}：本地已有，跳过下载", i=i, total=len(names), name=DATASET_NAMES[name]))
             continue
-        ctx.log("  [%d/%d] %s：开始下载（%s优先）" % (i, len(names), DATASET_NAMES[name], SOURCE_MODES[ctx.mode]))
+        ctx.log(t("  [{i}/{total}] {name}：开始下载（{mode}优先）", i=i, total=len(names), name=DATASET_NAMES[name],
+                  mode=mode_name(ctx.mode)))
         label, rows = first_ok(ctx, name, routes_for(ctx, name))
-        doc = {"id": name, "source": label, "downloaded_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "rows": rows}
+        doc = {"id": name, "source": route_key(label), "downloaded_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "rows": rows}
         tmp = _local_path(name) + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(doc, f, ensure_ascii=False, separators=(",", ":"))
         os.replace(tmp, _local_path(name))
         done.append(name)
-    ctx.log("进度 %d / %d · 数据已在本地" % (len(names), len(names)))
+    ctx.log(t("进度 {done} / {total} · 数据已在本地", done=len(names), total=len(names)))
     return done
 
 
@@ -475,7 +509,7 @@ def sample_mmlu(rows_by_sub, per_subject, rng):
         rows = [x for x in (rows_by_sub.get(sub) or [])[:TAKE["mmlu"]]
                 if x.get("choices") and len(x["choices"]) == 4 and str(x.get("answer")) in ("0", "1", "2", "3")]
         if len(rows) < per_subject:
-            raise RuntimeError("MMLU 科目 %s 有效题目不足 %d 道" % (sub, per_subject))
+            raise RuntimeError(tn("MMLU 科目 {subject} 有效题目不足 {n} 道", per_subject, subject=sub))
         rng.shuffle(rows)
         key = ("mmlu_school" if sub.startswith(("elementary", "high_school", "middle")) else
                "mmlu_college" if sub.startswith("college") else "mmlu_pro" if sub.startswith("professional") else "mmlu_misc")
@@ -524,7 +558,7 @@ def sample_ceval(rows_by_sub, n_per, rng, subjects):
         rows = [x for x in (rows_by_sub.get(sub) or [])[:TAKE["ceval"]]
                 if all(x.get(k) for k in "ABCD") and x.get("answer") in ("A", "B", "C", "D")]
         if len(rows) < n_per:
-            raise RuntimeError("C-Eval 科目 %s 有效题目不足 %d 道" % (sub, n_per))
+            raise RuntimeError(tn("C-Eval 科目 {subject} 有效题目不足 {n} 道", n_per, subject=sub))
         rng.shuffle(rows)
         items_all += [{"q": x["question"].strip(), "choices": [x["A"], x["B"], x["C"], x["D"]],
                        "answer": x["answer"], "sub": sub} for x in rows[:n_per]]
@@ -577,15 +611,15 @@ def build(gsm8k_n=150, mmlu_per=8, arc_n=80, hellaswag_n=80, math500_n=80,
     t0 = time.time()
     missing = [n for n in DATASET_NAMES if not _enough(n, load_local(n))]
     if missing and offline:
-        raise RuntimeError("离线模式下本地缺少这些题集的数据：%s。请在能联网的机器上先更新一次题集，"
-                           "再把 %s 拷贝过来" % ("、".join(DATASET_NAMES[n] for n in missing), DATASETS))
+        raise RuntimeError(t("离线模式下本地缺少这些题集的数据：{names}。请在能联网的机器上先更新一次题集，再把 {path} 拷贝过来",
+                             names=t("、", ctx="题集名列表").join(DATASET_NAMES[n] for n in missing), path=DATASETS))
     if missing:
-        ctx.log("下载源：%s；本地缺少 %d 个题集的数据，先下载到 %s" % (SOURCE_MODES[ctx.mode], len(missing), DATASETS))
+        ctx.log(tn("下载源：{mode}；本地缺少 {n} 个题集的数据，先下载到 {path}", len(missing), mode=mode_name(ctx.mode), path=DATASETS))
         download(ctx, only=missing)
     else:
-        ctx.log("全部题集的数据都已在本地（%s），不需要联网" % DATASETS)
+        ctx.log(t("全部题集的数据都已在本地（{path}），不需要联网", path=DATASETS))
     ctx.check()
-    ctx.log("从本地数据生成题库…")
+    ctx.log(t("从本地数据生成题库…"))
     rng = lambda name: random.Random("%s:%s" % (seed, name))  # noqa: E731
     rows = {n: load_local(n)["rows"] for n in DATASET_NAMES}
     subjects = [{"id": "gsm8k", "name": "GSM8K 数学", "type": "math", "items": parse_gsm8k(rows["gsm8k"], gsm8k_n, rng("gsm8k"))}]
@@ -600,7 +634,7 @@ def build(gsm8k_n=150, mmlu_per=8, arc_n=80, hellaswag_n=80, math500_n=80,
     subjects.append({"id": "ifeval_zh", "name": "指令遵循（中文）", "type": "instruct", "items": ifeval_zh_items()[:ifeval_n]})
     for sub in subjects:
         if not sub["items"]:
-            raise RuntimeError("题集 %s 为空，题库未生成" % sub["id"])
+            raise RuntimeError(t("题集 {id} 为空，题库未生成", id=sub["id"]))
 
     manifest = "gsm8k:%d|mmlu:%dx%d|math500:%d|arc:%d|hellaswag:%d|ceval:%dx%d|ifeval:%d|seed:%d" % (
         gsm8k_n, len(MMLU_ALL), mmlu_per, math500_n, arc_n, hellaswag_n, len(CEVAL_SUBS), ceval_per, ifeval_n, seed)
@@ -613,12 +647,13 @@ def build(gsm8k_n=150, mmlu_per=8, arc_n=80, hellaswag_n=80, math500_n=80,
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, bank["bank_id"] + ".json")
     if os.path.isfile(path):
-        ctx.log("题库和已有的 %s 完全相同（内容一样，id 一样），不用新增" % bank["bank_id"])
+        ctx.log(t("题库和已有的 {bank_id} 完全相同（内容一样，id 一样），不用新增", bank_id=bank["bank_id"]))
     else:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(bank, f, ensure_ascii=False, separators=(",", ":"))
-        ctx.log("已生成新题库 %s" % bank["bank_id"])
-    ctx.log("完成：%s，共 %d 题；本次下载 %.1f MB，用时 %.0f 秒" % (bank["bank_id"], bank["total"], ctx.bytes / 1048576, time.time() - t0))
+        ctx.log(t("已生成新题库 {bank_id}", bank_id=bank["bank_id"]))
+    ctx.log(tn("完成：{bank_id}，共 {n} 题；本次下载 {mb:.1f} MB，用时 {secs:.0f} 秒", bank["total"],
+               bank_id=bank["bank_id"], mb=ctx.bytes / 1048576, secs=time.time() - t0))
     return bank, path
 
 
@@ -643,7 +678,7 @@ def list_banks():
 def load_bank(bank_id):
     path = os.path.join(BANKS, bank_id + ".json")
     if not os.path.isfile(path):
-        raise FileNotFoundError("题库不存在: " + bank_id)
+        raise FileNotFoundError(t("题库不存在: {bank_id}", bank_id=bank_id))
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
@@ -651,21 +686,28 @@ def load_bank(bank_id):
 def main(argv=None):
     import argparse
     i18n.preparse_lang(argv)  # 要在创建 argparse 之前: --help 的文字也是 --lang 指定的语言
-    ap = argparse.ArgumentParser(description="能力评测题库: 下载数据到本地 / 从本地数据生成题库")
+    ap = argparse.ArgumentParser(description=t("能力评测题库: 下载数据到本地 / 从本地数据生成题库"))
     ap.add_argument("cmd", nargs="?", default="build", choices=["build", "download", "status"],
-                    help="build=缺什么下载什么再生成(默认); download=只下载数据; status=看本地数据")
-    ap.add_argument("--source", default="modelscope", choices=list(SOURCE_MODES), help="下载源偏好(默认魔搭, 国内)")
-    ap.add_argument("--proxy", default=None, help="下载用的 HTTP 代理, 如 http://127.0.0.1:7890")
-    ap.add_argument("--offline", action="store_true", help="不联网, 只用本地数据生成")
-    ap.add_argument("--force", action="store_true", help="download 时重新下载全部数据")
+                    help=t("build=缺什么下载什么再生成(默认); download=只下载数据; status=看本地数据"))
+    ap.add_argument("--source", default="modelscope", choices=list(SOURCE_MODES), help=t("下载源偏好(默认魔搭, 国内)"))
+    ap.add_argument("--proxy", default=None, help=t("下载用的 HTTP 代理, 如 http://127.0.0.1:7890"))
+    ap.add_argument("--offline", action="store_true", help=t("不联网, 只用本地数据生成"))
+    ap.add_argument("--force", action="store_true", help=t("download 时重新下载全部数据"))
     i18n.add_lang_arg(ap)
     a = ap.parse_args(argv)
     log = lambda m: print(m, flush=True)  # noqa: E731
     if a.cmd == "status":
         s = local_status()
         for d in s["datasets"]:
-            print("%-14s %s  %6d 行  %s" % (d["name"], "已下载" if d["ready"] else "缺少  ", d["rows"], d["source"] or ""))
-        print("本地数据目录:", s["dir"], "| 可以离线生成:", "是" if s["ready"] else "否")
+            src = d["source"] or ""
+            if d["ready"]:
+                print(t("{name:<14} 已下载  {rows:>6} 行  {source}", name=d["name"], rows=d["rows"], source=src))
+            else:
+                print(t("{name:<14} 缺少    {rows:>6} 行  {source}", name=d["name"], rows=d["rows"], source=src))
+        if s["ready"]:
+            print(t("本地数据目录: {path} | 可以离线生成: 是", path=s["dir"]))
+        else:
+            print(t("本地数据目录: {path} | 可以离线生成: 否", path=s["dir"]))
         return
     try:
         if a.cmd == "download":
@@ -674,10 +716,10 @@ def main(argv=None):
         b, p = build(proxy=a.proxy, mode=a.source, log=log, offline=a.offline)
         print("built:", b["bank_id"], "| total:", b["total"], "=>", p)
     except (RuntimeError, OSError) as e:
-        print("失败：%s" % e, flush=True)
+        print(t("失败：{error}", error=e), flush=True)
         raise SystemExit(1)
     except KeyboardInterrupt:
-        print("已停止：已经下载好的数据留在本地", flush=True)
+        print(t("已停止：已经下载好的数据留在本地"), flush=True)
         raise SystemExit(130)
 
 

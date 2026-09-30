@@ -23,6 +23,8 @@ try:
 except ImportError:
     import i18n  # server.py 以包目录为 sys.path 顶层导入
 
+t, tn = i18n.t, i18n.tn
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根(包上一级)
 SCHEMA_VERSION = 2  # 2: deleted_runs 墓碑表
 STALE_S = 300  # 心跳超过该秒数未更新的 running 运行视为中断
@@ -253,7 +255,7 @@ def upsert_header(conn, doc, status=None, heartbeat=True, source=None):
     """INSERT OR IGNORE + UPDATE (老 SQLite 无 UPSERT)。stale 标记的 status 由调用方决定是否覆盖。"""
     kind = doc_kind(doc)
     if kind is None:
-        raise ValueError("无法识别运行类型: %s" % doc.get("run_id"))
+        raise ValueError(t("无法识别运行类型: {run_id}", run_id=doc.get("run_id")))
     h = _header(doc, kind, status or doc.get("status") or "running")
     if heartbeat:
         h["heartbeat_ts"] = time.time()
@@ -433,7 +435,7 @@ def delete_run(run_id, db_path=None):
         if not row:
             return None
         if _row_status(row) == "running":
-            raise ValueError("运行尚未结束，请先停止后再删除")
+            raise ValueError(t("运行尚未结束，请先停止后再删除"))
         conn.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
         conn.execute("INSERT OR REPLACE INTO deleted_runs (run_id,kind,deleted_utc) VALUES (?,?,?)",
                      (run_id, row["kind"], time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
@@ -468,9 +470,9 @@ def save_endpoint(ep, db_path=None):
     last_used_utc 只记「一键填入」的时间(touch_endpoint): 新建时为空, 编辑不改。"""
     ep = dict(ep)
     if not ep.get("url") or not str(ep["url"]).startswith(("http://", "https://")):
-        raise ValueError("API 地址必须以 http:// 或 https:// 开头")
+        raise ValueError(t("API 地址必须以 http:// 或 https:// 开头"))
     if not ep.get("model"):
-        raise ValueError("模型名称不能为空")
+        raise ValueError(t("模型名称不能为空", ctx="保存模型"))
     if not ep.get("name"):
         host = str(ep["url"]).split("//", 1)[-1].split("/")[0]
         ep["name"] = "%s · %s" % (ep["model"], host)
@@ -479,7 +481,7 @@ def save_endpoint(ep, db_path=None):
         if ep.get("id"):
             row = conn.execute("SELECT id FROM endpoints WHERE id=?", (ep["id"],)).fetchone()
             if not row:
-                raise KeyError("配置不存在或已被删除")
+                raise KeyError(t("配置不存在或已被删除"))
             conn.execute("UPDATE endpoints SET name=?,url=?,api_key=?,model=? WHERE id=?",
                          (ep["name"][:64], ep["url"], ep.get("api_key") or "", ep["model"][:128], ep["id"]))
         else:
@@ -659,27 +661,27 @@ def import_json_file(path, force=False, db_path=None, conn=None):
     except Exception as e:
         return "error:%s: %s" % (type(e).__name__, str(e)[:100])
     if not isinstance(doc, dict):
-        return "error:非对象 JSON"
+        return "error:" + t("非对象 JSON", ctx="导入")
     doc.setdefault("run_id", os.path.basename(path).rsplit(".", 1)[0])
     kind = doc_kind(doc)
     if kind is None:
-        return "skipped:无法识别类型"
+        return "skipped:" + t("无法识别类型", ctx="导入")
     sha = hashlib.sha256(raw).hexdigest()
     own = conn is None
     conn = conn or connect(db_path)
     try:
         with write_tx(conn):
             if is_deleted(conn, doc["run_id"]) and not force:
-                return "skipped:已删除"
+                return "skipped:" + t("已删除", ctx="导入")
             old = conn.execute("SELECT source_file,source_sha256 FROM runs WHERE run_id=?", (doc["run_id"],)).fetchone()
             verdict = "inserted"
             if old:
                 if old["source_file"] is None:
-                    return "skipped:库内原生运行"
+                    return "skipped:" + t("库内原生运行", ctx="导入")
                 if old["source_sha256"] == sha:
-                    return "skipped:未变化"
+                    return "skipped:" + t("未变化", ctx="导入")
                 if not force:
-                    return "skipped:内容不同(加 --force 覆盖)"
+                    return "skipped:" + t("内容不同(加 --force 覆盖)", ctx="导入")
                 conn.execute("DELETE FROM runs WHERE run_id=?", (doc["run_id"],))
                 verdict = "replaced"
             source = {"source_file": os.path.abspath(path), "source_sha256": sha,
@@ -718,7 +720,7 @@ def import_dir(results_dir, force=False, only_new=False, db_path=None, log=None)
 def export_run(run_id, out_dir, db_path=None):
     doc = get_run(run_id, db_path=db_path)
     if doc is None:
-        raise KeyError("run 不存在: " + run_id)
+        raise KeyError(t("run 不存在: {run_id}", run_id=run_id))
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, run_id + ".json")
     with open(path, "w", encoding="utf-8") as f:
@@ -748,7 +750,7 @@ def check_roundtrip(results_dir, db_path=None):
             continue
         got = get_run(src.get("run_id") or fn[:-5], db_path=db_path)
         if got is None:
-            bad.append(fn + " (缺失)")
+            bad.append(t("{fn} (缺失)", fn=fn))
             continue
         src.pop("status", None)
         got.pop("status", None)
@@ -763,22 +765,22 @@ def check_roundtrip(results_dir, db_path=None):
 
 def main(argv=None):
     i18n.preparse_lang(argv)  # 要在创建 argparse 之前: --help 的文字也是 --lang 指定的语言
-    ap = argparse.ArgumentParser(description="llm-bench-pro SQLite 结果库")
-    ap.add_argument("--db", default=None, help="库路径 (默认 data/llm_bench.db 或 $LLM_BENCH_DB)")
+    ap = argparse.ArgumentParser(description=t("llm-bench-pro SQLite 结果库"))
+    ap.add_argument("--db", default=None, help=t("库路径 (默认 data/llm_bench.db 或 $LLM_BENCH_DB)"))
     i18n.add_lang_arg(ap)
     sp = ap.add_subparsers(dest="cmd")
-    i18n.add_lang_arg(sp.add_parser("init", help="建库建表"), sub=True)
-    p = sp.add_parser("import", help="导入 data/results/*.json (幂等)")
+    i18n.add_lang_arg(sp.add_parser("init", help=t("建库建表")), sub=True)
+    p = sp.add_parser("import", help=t("导入 data/results/*.json (幂等)"))
     p.add_argument("--results", default=os.path.join(ROOT, "data", "results"))
-    p.add_argument("--force", action="store_true", help="内容变化的已导入运行删除后重导")
+    p.add_argument("--force", action="store_true", help=t("内容变化的已导入运行删除后重导"))
     i18n.add_lang_arg(p, sub=True)
-    p = sp.add_parser("export", help="导出为 JSON")
+    p = sp.add_parser("export", help=t("导出为 JSON"))
     p.add_argument("--out", default=os.path.join(ROOT, "data", "export"))
     p.add_argument("--kind", choices=KINDS, default=None)
     p.add_argument("--run", default=None)
     i18n.add_lang_arg(p, sub=True)
-    i18n.add_lang_arg(sp.add_parser("stale", help="把心跳超时的 running 运行标记为 interrupted"), sub=True)
-    p = sp.add_parser("check", help="校验库与 data/results/*.json 往返等价")
+    i18n.add_lang_arg(sp.add_parser("stale", help=t("把心跳超时的 running 运行标记为 interrupted")), sub=True)
+    p = sp.add_parser("check", help=t("校验库与 data/results/*.json 往返等价"))
     p.add_argument("--results", default=os.path.join(ROOT, "data", "results"))
     i18n.add_lang_arg(p, sub=True)
     args = ap.parse_args(argv)
@@ -788,16 +790,16 @@ def main(argv=None):
         print("ok:", db)
     elif args.cmd == "import":
         s = import_dir(args.results, force=args.force, db_path=db, log=print)
-        print("导入完成:", json.dumps(s, ensure_ascii=False))
+        print(t("导入完成: {summary}", summary=json.dumps(s, ensure_ascii=False)))
         return 1 if s["errors"] else 0
     elif args.cmd == "export":
         paths = [export_run(args.run, args.out, db)] if args.run else export_all(args.out, args.kind, db)
-        print("导出 %d 个 => %s" % (len(paths), args.out))
+        print(tn("导出 {n} 个 => {out}", len(paths), out=args.out))
     elif args.cmd == "stale":
-        print("标记中断:", mark_stale_runs(db_path=db))
+        print(t("标记中断: {n}", n=mark_stale_runs(db_path=db)))
     elif args.cmd == "check":
         bad = check_roundtrip(args.results, db)
-        print("往返一致" if not bad else "不一致: %s" % bad)
+        print(t("往返一致") if not bad else t("不一致: {bad}", bad=bad))
         return 1 if bad else 0
     else:
         ap.print_help()
