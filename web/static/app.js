@@ -104,20 +104,12 @@ function workUrl(path){
     {type:/\.html?$/i.test(path)?"text/html;charset=utf-8":"application/json"})));
   return OFF_BLOBS.get(path);
 }
-/* 预览 iframe 的内容来源: 离线报告用 srcdoc(配合 sandbox 属性是不同源的), 并在 doctype 后加上和服务端一样的资源限制 */
-function workFrameSrc(path){
-  if(!OFF)return `src="/${esc(path)}"`;
-  const f=(OFF.files||{})[path];
-  if(typeof f!=="string")return `srcdoc="${esc("<p style='font:14px sans-serif;padding:24px'>"+esc(t("离线报告里没有这个作品"))+"</p>")}"`;
-  const meta=`<meta http-equiv="Content-Security-Policy" content="${esc(OFF.worksCsp||"")}">`;
-  return `srcdoc="${esc(f.replace(/^(\s*<!doctype[^>]*>)?/i,m=>m+meta))}"`;
-}
 /* 新标签页打开: 像普通网页一样运行(可以加载外部字体和脚本), 仍然隔离, 碰不到本系统的数据和接口 */
 function workOpenUrl(path){return OFF?workUrl(path):"/"+path+"?open=1"}
 function workOpenLink(it,{text=false,label=false}={}){
   if(!it||!it.file||it.error)return "";
   const tip=t("新标签页打开：像普通网页一样运行（可以加载外部字体和脚本），仍然隔离，碰不到本系统的数据");
-  return `<a class="btn ${text?"btn-secondary btn-sm":"btn-ghost btn-icon btn-sm"} work-open" href="${esc(workOpenUrl(it.file))}" target="_blank" rel="noopener noreferrer" title="${esc(tip)}"${text?"":` aria-label="${esc(label?t("新标签页打开：{name}",{name:td(it.name)}):t("新标签页打开"))}"`}>${icon("external")}${text?esc(t("新标签页打开")):""}</a>`;
+  return `<a class="btn ${text?"btn-secondary btn-sm":"btn-ghost btn-icon btn-sm"} work-open" href="${esc(workOpenUrl(it.file))}" target="_blank" rel="noopener noreferrer" title="${esc(tip)}"${text?"":` aria-label="${esc(label?t("新标签页打开：{name}",{name:td(it.name)}):t("新标签页打开"))}"`}>${icon("external")}${text?`<span class="open-text">${esc(t("新标签页打开"))}</span>`:""}</a>`;
 }
 /* 图表卡里的标签页(条形 / 能力形状、折线 / 散点)记住上次选的 */
 const CTAB=Object.assign({subj:"bars",tok:"line"},lsGet("llm-bench-pro-ctab"));
@@ -3536,8 +3528,8 @@ let GEN_SORT="default";
 const genSorts=()=>[["default","按题目顺序"],["pass","检查通过项（少的在前）"],["lines","代码行数（多的在前）"],["tokens","输出 token（多的在前）"],["rounds",termText("{cont}的轮数（多的在前）")],["stars","人工星级（高的在前）"]];
 const GEN_LS="llm-bench-pro-gen-works";        /* 每页几件、上次看到第几页(同一个测试和筛选下刷新页面停在原处) */
 const GEN_PREF=lsGet(GEN_LS);
-const GW_SIZES=[12,24,48];
-let GEN_TIER="all",GEN_Q="",GEN_PAGE=0,GEN_SIZE=GW_SIZES.includes(GEN_PREF.size)?GEN_PREF.size:12;
+const GW_SIZES=[20,50,100];
+let GEN_TIER="all",GEN_Q="",GEN_PAGE=0,GEN_SIZE=GW_SIZES.includes(GEN_PREF.size)?GEN_PREF.size:20;
 const GW={a:null,b:null,rows:[],ctx:null,ctxB:null,mainId:"",pairId:"",sigTable:""};   /* 当前这一节要用的数据, 筛选 / 翻页时只重画这一节 */
 
 /* ---------- 纯逻辑 ---------- */
@@ -3696,57 +3688,43 @@ function genPhHTML(it,msg,ic,sub){
   return `<span class="work-ph" data-t="${genTierIdx(it)}">${icon(ic||GEN_CATS[cat]||GEN_CATS.page,"icon-lg")}<span>${esc(msg)}</span>${sub?`<span class="work-ph-sub">${esc(sub)}</span>`:""}</span>`;
 }
 function genThumbHTML(run,it,tag){
-  const ref=`data-run="${esc(run.run_id)}" data-item="${esc(it.id)}"`;
   if(!it.file||it.error){
-    const msg=it.error?"没有生成出来":"没有作品文件";
+    const msg=it.error?t("没有生成出来"):t("没有作品文件");
     return `<div class="work-thumb is-static" title="${esc(it.error?msg+"："+it.error:msg)}">${genPhHTML(it,msg,it.error?"x-circle":"ban")}</div>`;
   }
   const shot=genPickShot(it),src=shot?workUrl(shot.path):"";
   const inner=src?`<img class="work-shot" src="${esc(src)}" alt="" width="768" height="480" loading="lazy" decoding="async" data-shot="${esc(shot.path)}">`
-    :genPhHTML(it,shot?"报告里没有这张截图 · 点击预览":"没有截图 · 点击预览");
-  return `<button type="button" class="work-thumb${src?" skeleton":""}" data-gen="preview" ${ref} tabindex="-1" aria-label="预览：${esc(it.name)}${tag?"（"+tag+"）":""}" title="预览「${esc(it.name)}」">${inner}<span class="work-thumb-hint" aria-hidden="true"><span>${icon("play")}预览</span></span></button>`;
-}
-function genFlagHTML(info){
-  if(!info.badge)return "";
-  const ic={good:"check",bad:"x",warn:"alert",neutral:"ban"}[info.badge.tone]||"minus",tone=info.badge.tone==="neutral"?"plain":info.badge.tone;
-  return `<span class="work-flag"><span class="badge is-${tone}">${icon(ic)}${esc(info.badge.text)}</span></span>`;
+    :genPhHTML(it,shot?t("报告里没有这张截图"):t("没有截图"));
+  return `<a class="work-thumb${src?" skeleton":""}" href="${esc(workOpenUrl(it.file))}" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-label="${esc(t("新标签页打开：{name}",{name:it.name}))}${tag?"（"+tag+"）":""}" title="${esc(t("新标签页打开：{name}",{name:it.name}))}">${inner}</a>`;
 }
 function genActionsHTML(run,it){
-  const can=!!it.file&&!it.error,e=it.eval,hasTrace=!!it.trace||!!it.rounds;
-  const ref=`data-run="${esc(run.run_id)}" data-item="${esc(it.id)}"`,nm=esc(it.name);
-  const prev=can?`<button type="button" class="btn btn-secondary btn-sm act-preview" data-gen="preview" ${ref} aria-label="预览：${nm}" title="预览：在隔离的沙箱里运行这件作品">${icon("play")}<span>预览</span></button>`:"";
-  const open=workOpenLink(it,{label:true});
-  const detail=e?`<button type="button" class="btn btn-ghost btn-sm" data-gen="detail" ${ref} aria-label="详情：${nm}" title="看截图和每一项检查">${icon("image")}<span>详情</span></button>`:"";
-  const trace=hasTrace?`<button type="button" class="btn btn-ghost btn-sm" data-gen="trace" ${ref} aria-label="生成过程：${nm}" title="看模型每一轮的原始输出">${icon("layers")}<span>过程</span></button>`:"";
-  const menu=(open?`<a class="menu-item" role="menuitem" href="${esc(workOpenUrl(it.file))}" target="_blank" rel="noopener noreferrer">${icon("external")}新标签页打开</a>`:"")+
-    (detail?`<button type="button" class="menu-item" role="menuitem" data-gen="detail" ${ref}>${icon("image")}详情（截图和每项检查）</button>`:"")+
-    (trace?`<button type="button" class="menu-item" role="menuitem" data-gen="trace" ${ref}>${icon("layers")}生成过程</button>`:"");
-  const more=menu?`<details class="dropdown act-more"><summary class="btn btn-ghost btn-icon btn-sm" aria-label="更多操作：${nm}" title="更多操作">${icon("more")}</summary><div class="dropdown-panel menu" role="menu">${menu}</div></details>`:"";
-  if(!prev&&!menu&&it.error)return `<div class="work-acts"></div>`;   /* 什么操作都没有(没生成出来又没有过程记录): 留空位, 不画分隔线 */
-  return `<div class="work-acts"><div class="work-acts-in">${prev}<span class="act-inline">${open}${detail}${trace}</span>${more}${it.error?"":starsHTML(run,it)}</div></div>`;
+  const can=!!it.file&&!it.error;
+  const open=can?workOpenLink(it,{text:true}):"";
+  if(!open&&it.error)return `<div class="work-acts"></div>`;   /* 没生成出来: 没有按钮也没有星星, 留空位 */
+  return `<div class="work-acts">${it.error?"":starsHTML(run,it)}${open}</div>`;
 }
-/* 作品卡: 六行固定位置 —— 缩略图 / 标题行 / 这件作品自己的问题(没有就是空的) / 检查结果 / 数据 / 操作(含打星); 一排卡片用 subgrid 逐行对齐 */
+/* 作品行: 一件作品一行 —— 缩略图 / 名称 + 状态 + 这件作品自己的问题 / 检查结果 / 数据 / 星级 + 新标签页打开; 检查结果可以点开看截图和每一项检查(生成过程也在里面) */
 function genCard(run,it,v,ctx,{tag="",inPair=false}={}){
-  const info=genCardInfo(it,v,ctx),e=it.eval,j=e&&e.judge,sc=genScore(it),segs=genCheckSegs(it);
+  const info=genCardInfo(it,v,ctx),e=it.eval,j=e&&e.judge,sc=genScore(it),segs=genCheckSegs(it),hasTrace=!!it.trace||!!it.rounds;
   const ref=`data-run="${esc(run.run_id)}" data-item="${esc(it.id)}"`;
   const judge=j&&j.score!=null?`<span class="badge" title="${termText("{judge}")}${j.stale?"（基于旧截图）":""}">${icon("sparkle")}<b class="score ${scoreCls(j.score)}">${fmt(j.score,0)}</b></span>`:(j&&j.error?`<span class="badge is-bad">打分失败</span>`:"");
+  const flag=info.badge?`<span class="badge is-${info.badge.tone==="neutral"?"plain":info.badge.tone}">${icon({good:"check",bad:"x",warn:"alert",neutral:"ban"}[info.badge.tone]||"minus")}${esc(info.badge.text)}</span>`:"";
   const head=inPair
-    ?`<header class="work-head"><span class="run-tag" style="background:${tag==="A"?C.a:C.b}">${tag}</span><span class="work-name" title="${esc(genLabel(run))}">${esc([run.model||"?",runFw(run)].filter(Boolean).join(" · "))}</span>${judge}</header>`
-    :`<header class="work-head"><h3 class="work-name" title="${esc(it.name)}">${esc(it.name)}</h3><span class="badge">${esc(tierOf(it)||"—")}</span>${judge}</header>`;
+    ?`<header class="work-head"><span class="run-tag" style="background:${tag==="A"?C.a:C.b}">${tag}</span><span class="work-name" title="${esc(genLabel(run))}">${esc([run.model||"?",runFw(run)].filter(Boolean).join(" · "))}</span>${flag}${judge}</header>`
+    :`<header class="work-head"><h3 class="work-name" title="${esc(it.name)}">${esc(it.name)}</h3><span class="badge">${esc(tierOf(it)||"—")}</span>${flag}${judge}</header>`;
   const note=info.note?`<p class="work-note is-${info.tone==="bad"?"bad":"warn"}" title="${esc(info.note)}">${icon(info.tone==="bad"?"x-circle":"alert","icon-sm")}<span>${esc(info.note)}</span></p>`:`<p class="work-note"></p>`;
   const bar=segs.length?`<span class="checkbar">${segs.map(s=>`<i class="${s.pass?"":"fail"}" title="${esc(s.tip)}"></i>`).join("")}</span>`:"",score=sc?`<span class="work-score score ${sc.cls}">${esc(sc.text)}</span>`:"";
-  const checks=!bar&&!score?`<div class="work-checks"></div>`
-    :e?`<button type="button" class="work-checks" data-gen="detail" ${ref} tabindex="-1" title="点一下看每一项检查和截图" aria-label="${esc(sc?sc.text:"检查结果")}，点开看每一项检查">${bar}${score}</button>`
+  const checks=!bar&&!score?(hasTrace&&!it.error?`<div class="work-checks"><button type="button" class="btn btn-ghost btn-sm" data-gen="trace" ${ref} title="看模型每一轮的原始输出">${icon("layers")}<span>生成过程</span></button></div>`:`<div class="work-checks"></div>`)
+    :e?`<button type="button" class="work-checks" data-gen="detail" ${ref} tabindex="-1" title="点一下看每一项检查、截图和生成过程" aria-label="${esc(sc?sc.text:"检查结果")}，点开看每一项检查">${bar}${score}${icon("chevron-right","icon-sm")}</button>`
     :`<div class="work-checks">${bar}${score}</div>`;
-  return `<article class="work" data-item="${esc(it.id)}"><div class="work-media">${genThumbHTML(run,it,tag)}${genFlagHTML(info)}</div>${head}${note}${checks}<p class="work-data">${esc(genDataLine(it))}</p>${genActionsHTML(run,it)}</article>`;
+  return `<article class="work" data-item="${esc(it.id)}"><div class="work-media">${genThumbHTML(run,it,tag)}</div><div class="work-main">${head}${note}</div>${checks}<p class="work-data">${esc(genDataLine(it))}</p>${genActionsHTML(run,it)}</article>`;
 }
-/* 一道题的 A / B 并排: 行首标出谁更好, 两半按行对齐(缩略图并排); 判断规则在悬停提示里 */
+/* 一道题的 A / B 并排: 行首标出谁更好, 下面 A、B 各一行; 判断规则在悬停提示里 */
 function genPairHead(a,b,it,ib,win){
   const cls=!ib?"flat":{a:"up",b:"down"}[win.side]||"flat",ic={up:"arrow-up",down:"arrow-down"}[cls]||"minus";
   const label=!ib?"B 没有这道题":genWinLabel(win);
   const tip=genWinRule()+(win?"\n\n这道题："+genWinLabel(win)+"（"+win.text+"）":"");
-  const side=ib&&!ib.error&&!it.error&&it.file&&ib.file?`<button type="button" class="btn btn-ghost btn-sm pair-side" data-gen="compare" data-run="${esc(a.run_id)}" data-item="${esc(it.id)}" aria-label="并排预览：${esc(it.name)}" title="A 和 B 两件作品并排运行">${icon("columns")}<span>并排预览</span></button>`:"";
-  return `<div class="pair-head"><span class="delta ${cls} pair-win" title="${esc(tip)}">${icon(ic)}${esc(label)}</span><h3 class="pair-name" title="${esc(it.name)}">${esc(it.name)}</h3><span class="badge">${esc(tierOf(it)||"—")}</span><span class="pair-why">${esc(win?win.text:"")}</span>${side}</div>`;
+  return `<div class="pair-head"><span class="delta ${cls} pair-win" title="${esc(tip)}">${icon(ic)}${esc(label)}</span><h3 class="pair-name" title="${esc(it.name)}">${esc(it.name)}</h3><span class="badge">${esc(tierOf(it)||"—")}</span><span class="pair-why">${esc(win?win.text:"")}</span></div>`;
 }
 function genPairHTML(a,b,row,ctx,ctxB){
   const{it,v,ib,vb,win}=row;
@@ -3755,10 +3733,10 @@ function genPairHTML(a,b,row,ctx,ctxB){
 /* 加载中: 与最终布局同形的骨架(概览 + 一屏卡片) */
 function genSkeleton(){
   const line=(w,h=12,mt=0)=>`<div class="skeleton" style="height:${h}px;width:${w}%;margin-top:${mt}px"></div>`;
-  const card=`<div class="work is-sk" aria-hidden="true"><div class="work-media"><div class="work-thumb skeleton"></div></div><div class="work-head">${line(55,14)}</div><p class="work-note"></p><div class="work-checks">${line(70,10)}</div><div class="work-data">${line(45,10)}</div><div class="work-acts">${line(100,28)}</div></div>`;
+  const card=`<div class="work is-sk" aria-hidden="true"><div class="work-media"><div class="work-thumb skeleton"></div></div><div class="work-main"><div class="work-head">${line(45,14)}</div><p class="work-note"></p></div><div class="work-checks">${line(70,10)}</div><div class="work-data">${line(60,10)}</div><div class="work-acts">${line(100,28)}</div></div>`;
   return `<div class="ov"><div>${line(18)}${line(88,12,14)}${line(76,12,14)}${line(82,12,14)}</div>
     <div class="ov-stats">${'<div class="stat"><div class="skeleton" style="height:10px;width:50%"></div><div class="skeleton" style="height:26px;width:66%;margin-top:12px"></div></div>'.repeat(4)}</div></div>
-    <div class="sec" aria-busy="true"><div class="skeleton" style="height:14px;width:12%"></div><div class="skeleton" style="height:36px;width:100%;margin-top:16px"></div><div class="work-grid" style="margin-top:16px">${card.repeat(6)}</div></div>`;
+    <div class="sec" aria-busy="true"><div class="skeleton" style="height:14px;width:12%"></div><div class="skeleton" style="height:36px;width:100%;margin-top:16px"></div><div class="work-grid" style="margin-top:16px">${card.repeat(8)}</div></div>`;
 }
 
 /* ---------- 这一节的渲染: 筛选标签 · 卡片(分页) · 翻页器 · 表格 ---------- */
@@ -3917,8 +3895,8 @@ function renderGen(){
     panel({id:"gen-tier",title:"各难度的表现",jump:"难度",desc:`${s.mode==="static"?"只看代码的命中率（没有实际运行，仅供参考）":"实际运行检查的通过率"}，每张卡里按分数从高到低排列${b?"；右侧数字是 A / B":""}`,
       chart:dataTable(tierT)+tierCards(a,b,s.mode),tables:[tierT,genTaskTable(a,b)],tcols:1})+
     `<section class="sec" id="gen-works" data-jump="作品" data-pv="${worksMode}">
-      <div class="sec-head"><div class="sec-head-text"><h2 class="sec-title">作品</h2><p class="sec-desc">点缩略图或「预览」直接玩，点检查结果或「详情」看截图和每一项检查，「过程」看模型的原始输出${b?"；每道题 A 在左、B 在右，题名前写着谁更好（先比人工星级，再比 AI 打分，最后比检查通过的比例）":""}${onlyB?`。B 里还有 ${onlyB} 道 A 没做的题，这里不显示`:""}</p></div>
-        <div class="sec-tools">${segHTML("data-pv-set",worksMode,[["chart","卡片","layers"],["table","表格","table"]])}
+      <div class="sec-head"><div class="sec-head-text"><h2 class="sec-title">作品</h2><p class="sec-desc">点缩略图或「新标签页打开」直接玩；点检查结果看截图和每一项检查（模型的原始输出在里面的「生成过程」）${b?"；每道题 A 在左、B 在右，题名前写着谁更好（先比人工星级，再比 AI 打分，最后比检查通过的比例）":""}${onlyB?`。B 里还有 ${onlyB} 道 A 没做的题，这里不显示`:""}</p></div>
+        <div class="sec-tools">${segHTML("data-pv-set",worksMode,[["chart","列表","rows"],["table","表格","table"]])}
           <button type="button" class="btn btn-ghost btn-icon btn-sm" data-pv-export title="导出作品表与检查矩阵（CSV）" aria-label="导出作品表">${icon("download")}</button></div></div>
       <div class="work-tools">
         <div class="qb-bar"><label class="qb-search">${icon("search")}<input class="input" id="genSearch" type="search" placeholder="按名称搜索作品" value="${esc(GEN_Q)}" aria-label="按名称搜索作品" autocomplete="off"></label>
@@ -3952,11 +3930,11 @@ function starsHTML(run,it){
 function genMiniHTML(run,it){
   const shot=genPickShot(it),src=shot&&it.file&&!it.error?workUrl(shot.path):"";
   if(!src)return `<span class="work-mini is-ph" aria-hidden="true">${icon("image","icon-sm")}</span>`;
-  return `<button type="button" class="work-mini" data-gen="preview" data-run="${esc(run.run_id)}" data-item="${esc(it.id)}" aria-label="预览：${esc(it.name)}"><img src="${esc(src)}" alt="" width="64" height="40" loading="lazy" decoding="async" data-shot="${esc(shot.path)}"></button>`;
+  return `<a class="work-mini" href="${esc(workOpenUrl(it.file))}" target="_blank" rel="noopener noreferrer" aria-label="${esc(t("新标签页打开：{name}",{name:it.name}))}" title="${esc(t("新标签页打开：{name}",{name:it.name}))}"><img src="${esc(src)}" alt="" width="64" height="40" loading="lazy" decoding="async" data-shot="${esc(shot.path)}"></a>`;
 }
 function genTableActions(run,it){
   const can=!!it.file&&!it.error,hasTrace=!!it.trace||!!it.rounds,ref=`data-run="${esc(run.run_id)}" data-item="${esc(it.id)}"`,nm=esc(it.name);
-  return `<span class="dt-actions">${can?`<button type="button" class="btn btn-secondary btn-sm" data-gen="preview" ${ref} aria-label="预览：${nm}">${icon("play")}预览</button>`:""}${workOpenLink(it,{label:true})}`+
+  return `<span class="dt-actions">${workOpenLink(it,{label:true})}`+
     `${it.eval?`<button type="button" class="btn btn-ghost btn-sm" data-gen="detail" ${ref} aria-label="详情：${nm}">${icon("image")}详情</button>`:""}`+
     `${hasTrace?`<button type="button" class="btn btn-ghost btn-sm" data-gen="trace" ${ref} aria-label="生成过程：${nm}">${icon("layers")}过程</button>`:""}</span>`;
 }
@@ -4106,10 +4084,8 @@ $("genResult").addEventListener("click",e=>{
   if(rate){rateStars(rate.dataset.run,rate.dataset.item,+rate.dataset.rate);return}
   const act=e.target.closest("[data-gen]");if(!act)return;
   const r=GEN_RUNS[act.dataset.run],it=r&&(r.items||[]).find(x=>x.id===act.dataset.item);if(!it)return;
-  if(act.dataset.gen==="preview")previewWork(it);
-  else if(act.dataset.gen==="detail")genDetail(r,it,"checks");
+  if(act.dataset.gen==="detail")genDetail(r,it,"checks");
   else if(act.dataset.gen==="trace")genDetail(r,it,"trace");
-  else if(act.dataset.gen==="compare")previewCompare(it);
 });
 let rateSeq=0;
 function rateStars(runId,itemId,n){
@@ -4125,25 +4101,6 @@ function rateStars(runId,itemId,n){
     if(!d.ok){it.stars=prev;renderGen();toast("评分保存失败："+d.error,"error")}
   });
   if(GW.b&&$("gwList"))genRenderWorks({focus:`[data-rate="${n}"][data-run="${CSS.escape(runId)}"][data-item="${CSS.escape(itemId)}"]`});
-}
-const GEN_SANDBOX="allow-scripts allow-pointer-lock allow-forms allow-modals"; /* 无 same-origin/top-navigation/popups: 作品代码碰不到本页和接口; localStorage 由服务端 /works 垫片提供(否则游戏脚本一启动就崩) */
-const SANDBOX_BADGE=`<span class="badge" title="作品在隔离的沙箱里运行，碰不到本页面和后端接口；本地存储用内存代替（刷新就清空）">${icon("ban")}隔离运行</span>`;
-function focusPreviewFrame(){
-  const f=document.querySelector("#modalBody iframe.frame");
-  if(f){try{f.focus();f.contentWindow&&f.contentWindow.focus()}catch(e){}}
-}
-function previewWork(it){
-  Modal.open(it.name,`<iframe class="frame" sandbox="${GEN_SANDBOX}" ${workFrameSrc(it.file)} title="${esc(it.name)}"></iframe>`,{badges:SANDBOX_BADGE+workOpenLink(it,{text:true}),flush:true});
-  focusPreviewFrame();  /* 键盘类游戏不用先点一下 */
-}
-function previewCompare(it){
-  const a=GEN_RUNS[$("genMainSel").value],b=GEN_RUNS[$("genCmpSel").value];
-  const ib=b&&(b.items||[]).find(x=>x.id===it.id);
-  const side=(r,x,tag)=>`<div><div class="split-head"><span class="run-tag ${tag.toLowerCase()}">${tag}</span>${esc(genLabel(r))}${workOpenLink(x)}</div>
-    ${x&&!x.error?`<iframe class="frame" style="flex:1" sandbox="${GEN_SANDBOX}" ${workFrameSrc(x.file)} title="${tag}"></iframe>`
-      :emptyState(x?"这题没生成出来":"这个任务没有这道题",x?x.error:"",{inline:true})}</div>`;
-  Modal.open(it.name+" · 并排对比",`<div class="split">${side(a,it,"A")}${side(b,ib,"B")}</div>`,{badges:SANDBOX_BADGE,flush:true});
-  focusPreviewFrame();
 }
 /* 检查详情 / AI 打分 / 生成过程 三个标签 */
 function genDetail(r,it,tab){

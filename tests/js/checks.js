@@ -468,16 +468,7 @@ T("app.js 在桩环境下完整加载(执行到了文件尾)", () => {
   assert.ok(typeof render === "function" && typeof renderCmp === "function" && typeof renderGen === "function" && typeof chartInst === "function");
 });
 
-/* ---------- 生成物预览沙箱策略 (游戏"点开始无反应"事故锚点) ---------- */
-T("GEN_SANDBOX: 放行脚本/弹窗, 始终不放行 same-origin", () => {
-  /* localStorage 由服务端 /works 垫片兜底, 这里守住"不给作品同源权限"的安全底线 */
-  const flags = GEN_SANDBOX.split(/\s+/);
-  assert.ok(flags.includes("allow-scripts"));
-  assert.ok(flags.includes("allow-modals"));        /* alert/confirm 不再被静默吞掉 */
-  assert.ok(!flags.includes("allow-same-origin"));  /* 作品不得触达父页面与后端接口 */
-  assert.ok(!flags.includes("allow-top-navigation"));
-  assert.ok(!flags.includes("allow-popups"));
-});
+/* 作品不再内嵌在页面里 (只有「新标签页打开」), 沙箱策略只剩服务端返回作品时带的 CSP sandbox 头, 由 tests/test_server.py 守着 (不放行 allow-same-origin) */
 
 T("renderIq 有异常兜底包装(渲染错误不会静默白屏)", () => {
   assert.ok(typeof renderIq === "function" && typeof _renderIq === "function" && renderIq !== _renderIq);
@@ -614,7 +605,7 @@ T("离线报告: 接口从报告数据里取(逐题只留请求的测试、回�
   assert.deepEqual([Object.keys(ans.answers), ans.prompt, ans.idx], [["a"], "p", 0]);
   assert.equal(offlineApi(B, "/api/iq-answer?ids=a&sid=s&idx=9").ok, false);
   assert.deepEqual(offlineApi(B, "/works/x/t.gen.json"), {rounds: []});
-  assert.throws(() => offlineApi(B, "/works/x/t.html"));      /* 作品网页不走接口, 用 workUrl / workFrameSrc */
+  assert.throws(() => offlineApi(B, "/works/x/t.html"));      /* 作品网页不走接口, 用 workUrl / workOpenUrl */
   assert.deepEqual(offlineApi(B, "/api/banks"), []);
   assert.equal(offlineApi(B, "/api/gen-status").running, false);
   const r = offlineApi(B, "/api/results"); r.push(2);
@@ -622,7 +613,6 @@ T("离线报告: 接口从报告数据里取(逐题只留请求的测试、回�
   assert.equal(OFF, null);                                      /* 正常页面不是离线模式 */
   assert.equal(workUrl("works/x/t.html"), "/works/x/t.html");
   assert.equal(workOpenUrl("works/x/t.html"), "/works/x/t.html?open=1");
-  assert.equal(workFrameSrc("works/x/t.html"), 'src="/works/x/t.html"');
 });
 T("场景失败: 统计失败数与错误; 图片理解全部 HTTP 400 时先查图片尺寸再查模型是否支持看图", () => {
   const f = scnFails({id: "scn_vision", points: [{total: 12, ok: 0, errors: ["HTTP Error 400: Bad Request"]},
@@ -1111,8 +1101,8 @@ T("作品筛选: 状态 × 难度 × 名称搜索; 标签数字和点下去看�
   assert.deepEqual(genSortRows(s, "default").map(r => r.it.id), ["a", "b", "c", "d"]);
 });
 
-T("作品分页: 每页 12 / 24 / 48, 页码夹在首页和末页之间", () => {
-  assert.deepEqual(GW_SIZES, [12, 24, 48]);
+T("作品分页: 每页 20 / 50 / 100, 页码夹在首页和末页之间", () => {
+  assert.deepEqual(GW_SIZES, [20, 50, 100]);
   assert.deepEqual(pageWindow(33, 12, 0), {pages: 3, page: 0, start: 0, end: 12});
   assert.deepEqual(pageWindow(33, 12, 2), {pages: 3, page: 2, start: 24, end: 33});
   assert.deepEqual(pageWindow(33, 12, 9), {pages: 3, page: 2, start: 24, end: 33});      /* 筛选后页数变少: 回到末页 */
@@ -1143,7 +1133,7 @@ T("作品列表: 换测试回到第 1 页并清掉筛选, 只换对照只回第 
   } finally { [GEN_FILTER, GEN_TIER, GEN_Q, GEN_PAGE, GW.mainId, GW.pairId] = keep; }
 });
 
-T("作品卡: 六行固定位置(空的也留着位置), 图标按钮有名字, 缩略图懒加载, 没有截图是占位", () => {
+T("作品行: 缩略图 / 名称与问题 / 检查 / 数据 / 操作按固定顺序, 只有「新标签页打开」(没有内嵌预览), 缩略图懒加载, 没有截图是占位", () => {
   const run = {run_id: "gen_1", model: "m", items: []};
   const it = {id: "snake", name: "贪吃蛇", file: "works/gen_1/snake.html", tags: ["困难", "游戏"], lines: 293, continuations: 4, out_tokens: 80000, pass: 3, total: 5,
     eval: {method: "static", checks: [{id: "doctype", pass: true}, {id: "f1", label: "源码特征 /click/", pass: false}], notes: ["没找到浏览器"], shots: []}};
@@ -1151,26 +1141,35 @@ T("作品卡: 六行固定位置(空的也留着位置), 图标按钮有名字, 
   let h = genCard(run, it, genVerdict(it), ctx);
   assert.ok(!h.includes("没有在浏览器里实际运行"), "整次测试共同的话只在页面顶部说一次");
   const pos = ["work-media", "work-head", "work-note", "work-checks", "work-data", "work-acts"].map(c => h.indexOf(`class="${c}`));
-  assert.ok(pos.every((p, i) => p > 0 && (!i || p > pos[i - 1])), "六行按固定顺序: " + pos);
-  assert.ok(h.includes("work-ph") && h.includes("没有截图 · 点击预览"));
+  assert.ok(pos.every((p, i) => p > 0 && (!i || p > pos[i - 1])), "各部分按固定顺序: " + pos);
+  assert.ok(h.includes("work-ph") && h.includes("<span>没有截图</span>"));
   assert.equal((h.match(/<img /g) || []).length, 0);
   assert.match(h, /293 行 · 接着写 4 轮 · 80\D?000 token/);                              /* 行数 · 接着写几轮 · token 在同一行 */
   assert.ok(h.includes("接着写 4 轮") && h.includes("代码关键词 3/5") && h.includes("click"));
-  ["预览：贪吃蛇", "新标签页打开：贪吃蛇", "更多操作：贪吃蛇", "详情：贪吃蛇", "1 分", "5 分"].forEach(l => assert.ok(h.includes(`aria-label="${l}"`), l));
-  assert.ok(h.includes('data-gen="preview"') && h.includes('data-gen="detail"') && !h.includes('data-gen="trace"'));
+  ["新标签页打开：贪吃蛇", "1 分", "5 分"].forEach(l => assert.ok(h.includes(`aria-label="${l}"`), l));
+  /* 不在页面里内嵌预览: 没有「预览」按钮 / 并排预览 / iframe; 缩略图和按钮都是新标签页链接 */
+  assert.ok(!h.includes('data-gen="preview"') && !h.includes("<iframe") && !h.includes("预览"));
+  assert.equal((h.match(/href="\/works\/gen_1\/snake\.html\?open=1" target="_blank" rel="noopener noreferrer"/g) || []).length, 2, "缩略图 + 按钮");
+  assert.ok(h.includes('class="btn btn-secondary btn-sm work-open"') && h.includes('<span class="open-text">新标签页打开</span>'));
+  assert.ok(h.includes('data-gen="detail"') && !h.includes('data-gen="trace"'));
   /* 有截图: 用空闲后那张, 懒加载, 16:10 的宽高; 有生成过程才有「过程」 */
   const it2 = shotIt(["01_initial", "02_idle", "09_mobile"]);
   it2.file = "works/gen_1/snake.html"; it2.trace = "works/gen_1/snake.gen.json"; it2.stars = 4;
   h = genCard(run, it2, genVerdict(it2), {v2: true, mode: "browser", shared: ""});
   assert.ok(h.includes('src="/works/gen_1/snake.shots/02_idle.jpg"') && h.includes('loading="lazy"') && h.includes('width="768" height="480"'));
-  assert.ok(h.includes('data-gen="trace"') && h.includes("work-thumb skeleton"));
+  assert.ok(!h.includes('data-gen="trace"') && h.includes("work-thumb skeleton"), "有检查详情时, 生成过程在详情弹窗的标签页里, 行上不再有单独的按钮");
   assert.equal((h.match(/class="star on"/g) || []).length, 4);
-  /* 没有「自己的问题」时那一行是空的(不是没有): 一排卡片才能对齐 */
+  /* 没有检查详情、只有生成过程的旧作品: 检查那一格放「生成过程」按钮, 免得看不到 */
+  const legacy = {id: "snake", name: "贪吃蛇", file: "works/gen_1/snake.html", tags: ["困难"], lines: 10, rounds: [{n: 1}]};
+  h = genCard(run, legacy, genVerdict(legacy), ctx);
+  assert.ok(h.includes('class="work-checks"><button type="button" class="btn btn-ghost btn-sm" data-gen="trace"') && !h.includes('data-gen="detail"'));
+  /* 没有「自己的问题」时那一行是空的(不是没有) */
+  h = genCard(run, it2, genVerdict(it2), {v2: true, mode: "browser", shared: ""});
   assert.ok(h.includes('<p class="work-note"></p>'));
-  /* 没生成出来: 缩略图不能点、没有星星和预览 */
+  /* 没生成出来: 缩略图不能点、没有星星和「新标签页打开」 */
   const bad = {id: "snake", name: "贪吃蛇", error: "timed out", tags: ["困难"]};
   h = genCard(run, bad, genVerdict(bad), ctx);
-  assert.ok(h.includes("work-thumb is-static") && h.includes("没有生成出来") && !h.includes('data-rate="1"') && !h.includes('data-gen="preview"'));
+  assert.ok(h.includes("work-thumb is-static") && h.includes("没有生成出来") && !h.includes('data-rate="1"') && !h.includes("work-open"));
   assert.ok(h.includes('<div class="work-checks"></div>') && h.includes('<p class="work-data"></p>'));
   assert.ok(h.includes("timed out"));
   /* 名称里的特殊字符要转义 */
@@ -1188,7 +1187,7 @@ T("A / B 并排: 行首写谁更好, 两半各有缩略图; B 没有这道题时
   const ctx = {v2: true, mode: "browser", shared: ""};
   let h = genPairHTML(a, b, row, ctx, ctx);
   assert.ok(h.indexOf("A 更好") < h.indexOf("贪吃蛇") && h.indexOf("A 更好") < h.indexOf("work-media"), "谁更好写在行首");
-  assert.ok(h.includes("delta up") && h.includes("怎么判断谁更好") && h.includes("并排预览：贪吃蛇"));
+  assert.ok(h.includes("delta up") && h.includes("怎么判断谁更好") && !h.includes("并排预览") && !h.includes("<iframe"));
   assert.equal((h.match(/<article class="work"/g) || []).length, 2);
   assert.ok(h.includes("02_idle.jpg") && h.includes("01_initial.jpg"));
   assert.ok(h.includes(">A<") && h.includes(">B<"));
@@ -1219,13 +1218,13 @@ T("作品表: 缩略图列默认隐藏, 可选; 有「自己的问题」和(对�
   assert.equal(dtExport(win, {ib: null, win: null}), "B 没有这道题");
 });
 
-T("作品列表的加载骨架: 和最终布局同形(六张卡, 每张六行)", () => {
+T("作品列表的加载骨架: 和最终布局同形(八行, 每行六个部分)", () => {
   const h = genSkeleton();
-  assert.equal((h.match(/class="work is-sk"/g) || []).length, 6);
-  ["work-media", "work-head", "work-note", "work-checks", "work-data", "work-acts"].forEach(c => assert.equal((h.match(new RegExp(`class="${c}"`, "g")) || []).length, 6, c));
+  assert.equal((h.match(/class="work is-sk"/g) || []).length, 8);
+  ["work-media", "work-head", "work-note", "work-checks", "work-data", "work-acts"].forEach(c => assert.equal((h.match(new RegExp(`class="${c}"`, "g")) || []).length, 8, c));
   assert.ok(h.includes('aria-hidden="true"') && h.includes("skeleton"));
   assert.ok(!/<p[^>]*>(?:(?!<\/p>)[\s\S])*<div/.test(h), "p 里不能放 div: 解析器会把 p 提前关掉, 卡片的行就错位了");
-  /* 每张卡恰好六个直接孩子(顺序: 缩略图 / 标题 / 问题 / 检查 / 数据 / 操作), subgrid 才能逐行对齐 */
+  /* 每一行的六个部分(顺序: 缩略图 / 标题 / 问题 / 检查 / 数据 / 操作) */
   const i0 = h.indexOf('class="work is-sk"'), card = h.slice(i0, h.indexOf('class="work is-sk"', i0 + 1));
   assert.equal((card.match(/class="work-(media|head|note|checks|data|acts)"/g) || []).length, 6);
 });
