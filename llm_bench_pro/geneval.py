@@ -34,7 +34,9 @@ except ImportError:
 # 1.2: 卡死/中断未跑的步骤记失败; 评审缺项记 0; 截图目录成功后才替换; 有开始按钮的动画在开始后测量
 # 1.3: 浏览器启动失败(常见于以管理员身份运行服务)时明确记录原因并停止反复重试; 回收遗留的后台浏览器;
 #      作品报错时在不注入任何检测脚本的干净页面里按同样步骤再跑一遍, 区分作品自身错误与检测环境引起的错误
-EVAL_VERSION = "1.3.0"
+# 1.4: 评分以「能不能用」为准: 只有 能打开 / 不白屏 / 不报错 / 题目要求的核心操作有反应 算分(检查项带 scored 标记),
+#      动画、手机适配、外网依赖、代码写完整、代码关键词只作提示; 没有实际运行不打分(exec_score 为空)
+EVAL_VERSION = "1.4.0"
 VIEW_W, VIEW_H = 1280, 800
 ANALYZE_SCALE = 0.25   # 像素分析用小图 320x200
 SHOT_SCALE = 0.6       # 评审/展示用截图 768x480
@@ -1008,7 +1010,7 @@ class Evaluator:
                     self._release(b, broken=True)
                 report = static_checks(html, task, "后台浏览器出错，作品没有实际运行，只检查了源代码：%s" % str(e)[:200])
         report["shots_dir"] = os.path.basename(shots_dir)
-        report["exec_score"] = round(100.0 * sum(c["pass"] for c in report["checks"]) / max(1, len(report["checks"])), 1)
+        mark_scored(report)
         if self.closed or (cancel is not None and cancel.is_set()):
             return report
         if self.judge_cfg and report["shots"]:
@@ -1025,6 +1027,15 @@ class Evaluator:
             self._cond.notify_all()
         for b in pool:
             b.close()
+
+
+def mark_scored(report):
+    """给检查记录标上哪些算分(scored), 并写入 exec_pass / exec_total / exec_score(没有实际运行是 None)。规则见 gen_specs.score_checks。"""
+    sc = gen_specs.score_checks(report.get("checks"), report.get("method"), report.get("control"))
+    for c in report.get("checks") or []:
+        c["scored"] = str(c["id"]) in sc["core"]
+    report["exec_pass"], report["exec_total"], report["exec_score"] = sc["pass"], sc["total"], sc["score"]
+    return report
 
 
 def eval_method(items):
@@ -1046,12 +1057,13 @@ def eval_method(items):
 
 
 def apply_eval(item, report):
-    """把评测结果写入作品条目; 保留兼容字段 checks/pass/total/features。"""
+    """把评测结果写入作品条目。checks / features 是兼容字段(全部检查项); pass / total / exec_score 只按算分的检查项算(能不能用),
+    没有实际运行时是 0 / 0 / None。"""
     item["eval"] = report
     item["checks"] = [c["pass"] for c in report["checks"]]
     item["features"] = [c["label"] for c in report["checks"]]
-    item["pass"], item["total"] = sum(item["checks"]), len(item["checks"])
-    item["exec_score"] = report["exec_score"]
+    sc = gen_specs.score_checks(report["checks"], report.get("method"), report.get("control"))
+    item["pass"], item["total"], item["exec_score"] = sc["pass"], sc["total"], sc["score"]
     j = report.get("judge") or {}
     item["judge_score"] = j.get("score")
     return item

@@ -27,6 +27,7 @@ gen_specs.py — 生成测试逐题评测规格 (与 gen.GEN_TASKS 的 id 一一
       找不到时: 有 "else": [动作...] 则改做这些动作, optional 则跳过, 否则该步失败
   {"wait": 0.5}
 """
+import re
 
 C = [0.5, 0.5]
 # 页面文本中独立出现某个数的次数(排除 10:15 这类时间与更长数字的一部分)
@@ -227,3 +228,52 @@ def get(task_id):
     spec.setdefault("responsive", False)
     spec.setdefault("setup", [])
     return spec
+
+
+# ---------------------------------------------------------------- 评分标准: 以「能不能用」为准
+#
+# 算分的只有四类(每道题 1~3 条核心断言): 能打开(load)、不白屏(nonblank)、不报错(no_error)、
+# 题目要求的核心操作有反应(step1…)。动画、手机适配、外部网络依赖、代码写完整、HTML 文档结构、代码关键词
+# 都只作提示, 不算分; AI 看图打分和人工星级另外列出, 不混进这个分数。
+# 纯动画题(没有操作步骤)的核心断言就是「画面在动」, 这时 animated 也算分, 保证每道题至少有一条核心断言。
+# 没有在浏览器里实际运行(只看了代码)看不出能不能用, 不打分。
+# 前端 web/static/app.js 的 genChecks 用同一套规则; tests/js/gen_score_cases.json 是两边共用的用例。
+
+CORE_FIXED = ("load", "nonblank", "no_error")
+_STEP = re.compile(r"^step\d+$")
+
+
+def is_core(cid, ids):
+    """这一项检查算不算分。ids: 这件作品做过的全部检查 id(有没有操作步骤决定动画算不算分)。"""
+    cid = str(cid)
+    if cid in CORE_FIXED or _STEP.match(cid):
+        return True
+    return cid == "animated" and not any(_STEP.match(str(i)) for i in ids)
+
+
+def score_checks(checks, method="browser", control=None):
+    """按「能不能用」给一件作品的检查记录算分。
+    返回 {"core": 算分的检查 id, "env": 不算分的「可能是检测引起的报错」的检查 id, "pass": 通过几项, "total": 算分几项,
+    "score": 0-100 或 None}。没有在浏览器里实际运行(method 不是 browser)或者没有算分项: score 是 None。
+    no_error 没通过、但在不注入检测脚本的干净页面里没有复现(control.reproduced 是 False): 可能是检测引起的,
+    不算在作品头上, 不算分, 归入 env。"""
+    checks = [c for c in checks or [] if isinstance(c, dict) and c.get("id") is not None]
+    out = {"core": [], "env": [], "pass": 0, "total": 0, "score": None}
+    if method != "browser":
+        return out
+    ids = [str(c["id"]) for c in checks]
+    not_reproduced = isinstance(control, dict) and control.get("reproduced") is False
+    for c in checks:
+        cid = str(c["id"])
+        if not is_core(cid, ids):
+            continue
+        if cid == "no_error" and not c.get("pass") and not_reproduced:
+            out["env"].append(cid)
+            continue
+        out["core"].append(cid)
+        if c.get("pass"):
+            out["pass"] += 1
+    out["total"] = len(out["core"])
+    if out["total"]:
+        out["score"] = round(100.0 * out["pass"] / out["total"], 1)
+    return out
