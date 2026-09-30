@@ -23,6 +23,7 @@ except ImportError:
     import bankman  # server.py 以包目录为 sys.path 顶层导入
     import i18n
     import sinks
+t, tn = i18n.t, i18n.tn
 
 # 1.1: 修正 MATH-500 boxed 判分(1.0 的 math500 分数无效)
 # 1.2: 思考模式输出预算 32K、截断单独标记、选择题答案提取加固、记录模型答案与错题尾部
@@ -52,9 +53,9 @@ def normalize_budgets(budgets):
 
 def budget_policy(buds, thinking):
     if thinking:
-        return "思考模式: 统一上限 %d(思考与正文共享, 超上下文自动收缩)" % THINK_MAX_TOKENS
-    return "输出预算: 选择题 %d · GSM8K %d · MATH-500 %d · 指令 %d" % (
-        buds["mcq"], buds["math"], buds["math500"], buds["instruct"])
+        return t("思考模式: 统一上限 {n}(思考与正文共享, 超上下文自动收缩)", n=THINK_MAX_TOKENS)
+    return t("输出预算: 选择题 {mcq} · GSM8K {math} · MATH-500 {math500} · 指令 {instruct}",
+             mcq=buds["mcq"], math=buds["math"], math500=buds["math500"], instruct=buds["instruct"])
 THINK_TIMEOUT = 1800
 PLAIN_TIMEOUT = 300
 MAX_CONSECUTIVE_ERRORS = 10
@@ -167,7 +168,7 @@ def clip_text(text, keep=RESP_KEEP, head=RESP_HEAD):
     text = text or ""
     if len(text) <= keep:
         return text
-    return text[:head] + "\n…（中间省略 %d 字）…\n" % (len(text) - keep) + text[-(keep - head):]
+    return text[:head] + tn("\n…（中间省略 {n} 字）…\n", len(text) - keep) + text[-(keep - head):]
 
 
 def resolve_sampling(thinking, sampling=None):
@@ -548,19 +549,21 @@ def judge_instruct(resp, item):
 
 def rule_text(ck):
     """检查规则的大白话说明。"""
-    t, v = ck.get("t"), ck.get("v")
-    plain = {"max_chars": "不超过 %s 个字", "min_chars": "至少 %s 个字", "max_words": "不超过 %s 个英文单词",
-             "contains": "必须包含“%s”", "not_contains": "不能出现“%s”", "starts_with": "以“%s”开头",
-             "ends_with": "以“%s”结尾", "line_count": "正好 %s 行"}
-    if t in plain:
-        return plain[t] % (v,)
-    if t == "regex":
-        return "格式符合题目要求"  # 具体正则见 rule_info()["tech"]
-    if t == "json_keys":
-        return "是合法的 JSON，且包含 %s" % "、".join(map(str, v))
-    if t == "json_equals":
-        return "JSON 内容等于 %s" % json.dumps(v, ensure_ascii=False)
-    return "%s %s" % (t, v)
+    kind, v = ck.get("t"), ck.get("v")
+    plain = {"max_chars": lambda: tn("不超过 {n} 个字", v), "min_chars": lambda: tn("至少 {n} 个字", v),
+             "max_words": lambda: tn("不超过 {n} 个英文单词", v),
+             "contains": lambda: t("必须包含“{v}”", v=v), "not_contains": lambda: t("不能出现“{v}”", v=v),
+             "starts_with": lambda: t("以“{v}”开头", v=v), "ends_with": lambda: t("以“{v}”结尾", v=v),
+             "line_count": lambda: tn("正好 {n} 行", v)}
+    if kind in plain:
+        return plain[kind]()
+    if kind == "regex":
+        return t("格式符合题目要求")  # 具体正则见 rule_info()["tech"]
+    if kind == "json_keys":
+        return t("是合法的 JSON，且包含 {keys}", keys=t("、").join(map(str, v)))
+    if kind == "json_equals":
+        return t("JSON 内容等于 {value}", value=json.dumps(v, ensure_ascii=False))
+    return "%s %s" % (kind, v)
 
 
 def rule_info(ck):
@@ -577,13 +580,13 @@ def instruct_detail(resp, item):
     out = []
     for ck in instruct_rules(item):
         row = dict(rule_info(ck), **{"pass": _rule_ok(text, ck)})
-        t = ck.get("t")
-        if t in ("max_chars", "min_chars"):
-            row["actual"] = "实际 %d 字" % len(text)
-        elif t == "max_words":
-            row["actual"] = "实际 %d 个单词" % len(text.split())
-        elif t == "line_count":
-            row["actual"] = "实际 %d 行" % (text.count("\n") + 1)
+        kind = ck.get("t")
+        if kind in ("max_chars", "min_chars"):
+            row["actual"] = tn("实际 {n} 字", len(text))
+        elif kind == "max_words":
+            row["actual"] = tn("实际 {n} 个单词", len(text.split()))
+        elif kind == "line_count":
+            row["actual"] = tn("实际 {n} 行", text.count("\n") + 1)
         out.append(row)
     return out
 
@@ -684,14 +687,16 @@ def run_warnings(result):
     if len(with_rc) >= 10:
         share = sum(1 for r in with_rc if r["rc"] > 0) / len(with_rc)
         if result.get("thinking") and share < 0.2:
-            out.append("思考模式可能未生效：仅 %.0f%% 的回答包含思考内容。端点可能不支持 enable_thinking，或模型模板的开关名称不同" % (share * 100))
+            out.append(t("思考模式可能未生效：仅 {pct:.0f}% 的回答包含思考内容。端点可能不支持 enable_thinking，或模型模板的开关名称不同",
+                         pct=share * 100))
         if not result.get("thinking") and share > 0.5:
-            out.append("非思考模式下仍有 %.0f%% 的回答包含思考内容，思考开关可能未生效，选择题等短输出题可能因输出上限被截断" % (share * 100))
+            out.append(t("非思考模式下仍有 {pct:.0f}% 的回答包含思考内容，思考开关可能未生效，选择题等短输出题可能因输出上限被截断",
+                         pct=share * 100))
     if result.get("ignored_params"):
-        out.append("端点不支持以下参数，已自动去掉：%s" % "、".join(result["ignored_params"]))
+        out.append(t("端点不支持以下参数，已自动去掉：{params}", params=t("、").join(result["ignored_params"])))
     errs = len(result["items"]) - len(valid)
     if errs:
-        out.append("%d 题请求失败（计为答错），可续跑重试这些题" % errs)
+        out.append(tn("{n} 题请求失败（计为答错），可续跑重试这些题", errs))
     return out
 
 
@@ -723,8 +728,8 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
     sink = sink or sinks.JsonFileSink(outdir)
     if resume:
         if resume.get("iq_version") != IQ_VERSION:
-            raise ValueError("该运行由评测程序 %s 生成，当前为 %s，判分口径不同，不能续跑，请重新运行"
-                             % (resume.get("iq_version"), IQ_VERSION))
+            raise ValueError(t("该运行由评测程序 {old} 生成，当前为 {new}，判分口径不同，不能续跑，请重新运行",
+                               old=resume.get("iq_version"), new=IQ_VERSION))
         result = resume
         params = result.get("params") or {}
         subject_ids, limit_per_subject = params.get("subject_ids"), params.get("limit_per_subject")
@@ -764,10 +769,11 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
         sink.save(result)
 
     total_all = sum(len(select_indices(s, limit_per_subject)) for s in subjects)
-    plog("== iq v%s | %s | bank=%s | %d 题 | conc=%d | %s | 采样 %s%s ==" % (
-        IQ_VERSION, result["model"], bank["bank_id"], total_all, conc,
-        "思考模式(max_tokens≤%d)" % THINK_MAX_TOKENS if thinking else "非思考",
-        json.dumps(sampling, ensure_ascii=False), " | 续跑, 已有 %d 题" % len(result["items"]) if resume else ""))
+    plog(tn("== iq v{version} | {model} | bank={bank} | {n} 题 | conc={conc} | {mode} | 采样 {sampling}{resume} ==", total_all,
+            version=IQ_VERSION, model=result["model"], bank=bank["bank_id"], conc=conc,
+            mode=t("思考模式(max_tokens≤{n})", n=THINK_MAX_TOKENS) if thinking else t("非思考"),
+            sampling=json.dumps(sampling, ensure_ascii=False),
+            resume=tn(" | 续跑, 已有 {n} 题", len(result["items"])) if resume else ""))
     result["status"] = "running"
     save()
     try:
@@ -776,12 +782,12 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
     except BaseException as e:
         cancelled = isinstance(e, Cancelled)
         result["status"] = "cancelled" if cancelled else ("interrupted" if isinstance(e, KeyboardInterrupt) else "failed")
-        result["error"] = "用户取消" if cancelled else "%s: %s" % (type(e).__name__, str(e)[:300])
+        result["error"] = t("用户取消") if cancelled else "%s: %s" % (type(e).__name__, str(e)[:300])
         result["warnings"] = run_warnings(result)
         result["finished_utc"] = datetime.now(timezone.utc).isoformat()
         save()
         if cancelled:
-            plog("已取消: 已完成 %d 题, 可在页面上续跑" % len(result["items"]))
+            plog(tn("已取消: 已完成 {n} 题, 可在页面上续跑", len(result["items"])))
             return sink.location
         raise
     subs = result["subjects"]
@@ -802,8 +808,9 @@ def run_iq(url, model, api_key="", bank=None, conc=8, outdir=None, tag="",
     save()
     for w in result["warnings"]:
         plog("  ⚠ " + w)
-    plog("总体: %d/%d = %.1f%% (CI %.1f-%.1f, 科目宏平均 %.1f%%) => %s" % (
-        tot_c, tot_n, result["overall"]["acc"], lo * 100, hi * 100, result["overall"]["macro_acc"], sink.location))
+    plog(t("总体: {correct}/{n} = {acc:.1f}% (CI {lo:.1f}-{hi:.1f}, 科目宏平均 {macro:.1f}%) => {location}",
+           correct=tot_c, n=tot_n, acc=result["overall"]["acc"], lo=lo * 100, hi=hi * 100,
+           macro=result["overall"]["macro_acc"], location=sink.location))
     return sink.location
 
 
@@ -866,7 +873,7 @@ def _run_subjects(url, model, headers, subjects, limit_per_subject, conc, thinki
                     since_save += 1
                     counter[0] += 1
                     if counter[0] % 20 == 0 or counter[0] == total_all:
-                        plog("  进度 %d/%d" % (counter[0], total_all))
+                        plog(t("  进度 {done}/{total}", done=counter[0], total=total_all))   # 前端靠「进度 N/M」(英文 progress N/M) 画进度条
                 if since_save >= 20:
                     save()
                     since_save = 0
@@ -874,7 +881,8 @@ def _run_subjects(url, model, headers, subjects, limit_per_subject, conc, thinki
                     raise Cancelled()
                 if consecutive_err[0] >= MAX_CONSECUTIVE_ERRORS:
                     last = next(r["err"] for r in reversed(result["items"]) if r.get("err"))
-                    raise RuntimeError("连续 %d 题请求失败，已中止（最近错误：%s）。修复端点后可续跑" % (consecutive_err[0], last[:160]))
+                    raise RuntimeError(tn("连续 {n} 题请求失败，已中止（最近错误：{error}）。修复端点后可续跑",
+                                          consecutive_err[0], error=last[:160]))
         finally:
             for f in futures:
                 f.cancel()  # 撤销尚未开始的题; 进行中的请求结果不再写入
@@ -893,5 +901,5 @@ def _run_subjects(url, model, headers, subjects, limit_per_subject, conc, thinki
                                    "truncated": n_trunc, "errors": n_err})
         plog("  [%s] %d/%d = %.1f%% (CI %.1f-%.1f)%s%s" %
              (sub["id"], correct, n, result["subjects"][-1]["acc"], lo * 100, hi * 100,
-              ("  截断%d" % n_trunc) if n_trunc else "", ("  请求失败%d" % n_err) if n_err else ""))
+              t("  截断{n}", n=n_trunc) if n_trunc else "", t("  请求失败{n}", n=n_err) if n_err else ""))
         save()

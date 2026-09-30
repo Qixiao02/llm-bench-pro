@@ -25,4 +25,8 @@ ENTRIES = {
     "场景名|RAG 问答": "RAG Q&A",
     "场景名|图片理解": "Image understanding",
     "场景名|自定义任务集": "Custom task set",
+    # ---- iq.py / server.py (能力评测引擎的 run_iq 和接口的 api_iq_resume 都会给出这一句): 续跑的运行不是当前版本生成的
+    "该运行由评测程序 {old} 生成，当前为 {new}，判分口径不同，不能续跑，请重新运行":
+        "This run was made with capability test version {old}; the current version is {new}. Scoring differs between "
+        "versions, so it cannot be resumed. Run the test again instead.",
 }

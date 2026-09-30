@@ -144,9 +144,6 @@ ENTRIES = {
         'internet access, copy data/datasets/ from a machine that is online to build the question sets offline',
     "只有已停止、中断、失败或含请求失败题目的运行可以续跑":
         "Only runs that were stopped, interrupted or failed, or that contain questions with failed requests, can be resumed",
-    "该运行由评测程序 {old} 生成，当前为 {new}，判分口径不同，不能续跑，请重新运行":
-        "This run was made with capability test version {old}; the current version is {new}. Scoring differs between "
-        "versions, so it cannot be resumed. Run the test again instead.",
     # ---- 命令行: --help 和启动输出
     "LLM Bench Pro 服务": "LLM Bench Pro server",
     "监听端口 (默认 18080)": "Port to listen on (default 18080)",
