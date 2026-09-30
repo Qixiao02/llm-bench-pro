@@ -71,4 +71,15 @@ ENTRIES = {
         "Consider adding --token",
     "  导入旧 JSON {inserted} 个, 失败 {failed} 个, 标记中断 {stale} 个":
         "  Old JSON import: {inserted} imported, {failed} failed, {stale} marked as interrupted",
+    # ---- 回放用的请求文件并进任务集
+    "任务集不存在: {id} (可能已被删除, 请重新导入)": "Task set not found: {id} (it may have been deleted; import it again)",
+    "回放文件 {id}": "Replay file {id}",
+    "{n} 个回放文件已并入任务集（在「任务集」页面里看）": (
+        "{n} replay file was merged into the task sets (see the Task sets page)",
+        "{n} replay files were merged into the task sets (see the Task sets page)"),
+    "{n} 个回放文件没能并入任务集，还留在 data/replay/，请检查目录权限后重启服务": (
+        "{n} replay file could not be merged into the task sets and is still in data/replay/; check the directory "
+        "permissions and restart the service",
+        "{n} replay files could not be merged into the task sets and are still in data/replay/; check the directory "
+        "permissions and restart the service"),
 }

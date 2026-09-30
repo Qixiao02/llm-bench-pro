@@ -578,7 +578,7 @@ class TestServer(ServerCase):
         st, _, d = self.request("POST", "/api/replay-upload", {"name": "t.jsonl", "content": content})
         self.assertEqual((st, d["ok"], d["lines"]), (200, True, 3))
         fid = d["file_id"]
-        self.assertRegex(fid, r"^replay-[0-9a-f]{12}$")
+        self.assertRegex(fid, r"^scn-[0-9a-f]{12}$")  # 旧接口: 回放用的请求文件现在就是任务集
         st, _, d2 = self.request("POST", "/api/replay-upload", {"name": "再次", "content": content})
         self.assertEqual(d2["file_id"], fid)  # 内容寻址幂等
         st, _, lst = self.request("GET", "/api/replay-list")

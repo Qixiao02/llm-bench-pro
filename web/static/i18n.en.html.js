@@ -94,6 +94,23 @@ I18N.add("en", {
   "全部设计令牌、字号和基础组件，用来截图核对亮暗两套主题": "All design tokens, type sizes and base components, for checking the light and dark themes in screenshots",
 
   /* ---- 新建: 速度测试 (右侧抽屉) —— 第二阶段: 在这一节里加 ---- */
+  "任务集（可选）": "Task set (optional)",
+  "用你自己的一批请求测速度：先选一个任务集（JSONL，每行一个请求；在左侧「任务集」页面导入、逐行查看、下载模板），再选发送方式。两次测试的发送时间点完全相同，可以直接对比。":
+    "Test speed with your own batch of requests: first choose a task set (JSONL, one request per line; import it, browse it line by line and download a template on the Task sets page in the left sidebar), then choose how to send it. The send times are identical in both tests, so they can be compared directly.",
+  "选择任务集": "Choose a task set",
+  "导入任务集：JSONL 文件，每行一个请求；导入后自动选中": "Import a task set: a JSONL file with one request per line; it is selected after import",
+  "每行写的 max_tokens 优先，不写按 4096（上面的「每次最多生成」只管内置场景）。": "A max_tokens written on a line takes priority; if omitted, 4096 is used (the \"Max tokens per request\" setting above only applies to the built-in scenarios). ",
+  "到任务集页面管理、查看、下载模板": "Manage, browse and download a template on the Task sets page",
+  "固定同时请求数": "Fixed concurrency",
+  "同时开这么多条线，每条线一个接一个地发；留空则不用这种方式": "Open this many lanes at once; each lane sends its requests one after another. Leave empty to skip this mode",
+  "如 8,16": "e.g. 8,16",
+  "每个并发发几次请求": "Requests per worker",
+  "总请求数 = 固定同时请求数 × 这个数": "Total requests = fixed concurrency × this number",
+  "每条线依次发这么多次；总请求数 = 同时请求数 × 这个数": "Each lane sends this many requests one after another; total requests = concurrency × this number",
+  "固定到达速率（每秒请求数）": "Fixed arrival rate (requests per second)",
+  "如 2,5": "e.g. 2,5",
+  "按这个速度随机间隔地发，不管前面的有没有回完，看会不会越排越长；留空则不用这种方式": "Requests arrive at this average rate at random intervals, whether or not earlier ones have finished, to see whether the queue keeps growing. Leave empty to skip this mode",
+  "每档持续秒数": "Seconds per level",
 
   /* ---- 新建: 能力测试 (右侧抽屉) —— 第二阶段: 在这一节里加 ---- */
 

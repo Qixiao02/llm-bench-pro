@@ -374,7 +374,7 @@
       <div class="chip-grid" id="scnChips"></div>
       <div class="form-grid" id="scnCommon" hidden style="margin-top:12px">
         <div class="field"><label for="fScnConc">同时请求数</label><input class="input" id="fScnConc" placeholder="默认 4,8"><span class="help">用逗号分隔</span></div>
-        <div class="field"><label for="fScnRpw">每个并发发几次请求</label><input class="input" id="fScnRpw" type="number" min="1" max="50" value="3"></div>
+        <div class="field"><label for="fScnRpw">每个并发发几次请求</label><input class="input" id="fScnRpw" type="number" min="1" max="50" value="3"><span class="help">每条线依次发这么多次；总请求数 = 同时请求数 × 这个数</span></div>
         <div class="field"><label for="fScnMt">每次最多生成（token）</label><input class="input" id="fScnMt" type="number" min="64" max="8192" placeholder="512"></div>
       </div>
       <div class="form-grid" id="scnRagRow" hidden style="margin-top:12px">
@@ -398,30 +398,22 @@
           <span class="help">运行本服务的机器上的路径；开始测试前会逐张检查，不能用的图会跳过</span></div>
         <div class="field"><label for="fImgN">每次请求带几张图</label><input class="input" id="fImgN" type="number" min="1" max="4" value="1"></div>
       </div>
-      <div class="form-grid" id="scnCustomRow" hidden style="margin-top:12px">
+    </div>
+    <div class="form-section">
+      <div class="form-section-title">任务集（可选）</div>
+      <div class="form-section-desc">用你自己的一批请求测速度：先选一个任务集（JSONL，每行一个请求；在左侧「任务集」页面导入、逐行查看、下载模板），再选发送方式。两次测试的发送时间点完全相同，可以直接对比。</div>
+      <div class="form-grid" id="scnCustomRow">
         <div class="field span-2"><label for="fTaskSel">选择任务集</label>
           <div class="file-row">
             <select class="select" id="fTaskSel"><option value="">未选择</option></select>
             <button class="btn btn-secondary" type="button" id="btnTaskImport" title="导入任务集：JSONL 文件，每行一个请求；导入后自动选中"><svg class="icon"><use href="#i-upload"/></svg>导入</button>
             <input type="file" id="fTaskUpload" accept=".jsonl,.json,.txt" hidden>
           </div>
-          <span class="help">任务集是你自己的一批请求（JSONL，每行一个），轮流发给模型；每行写的 max_tokens 优先，不写按 4096（上面的「每次最多生成」只管内置场景）。<a href="#tasks" class="help-link" data-goto-tasks>到任务集页面管理、查看、下载模板</a></span>
+          <span class="help">每行写的 max_tokens 优先，不写按 4096（上面的「每次最多生成」只管内置场景）。<a href="#tasks" class="help-link" data-goto-tasks>到任务集页面管理、查看、下载模板</a></span>
           <div class="upcheck" id="fTaskCheck" hidden></div></div>
-      </div>
-    </div>
-    <div class="form-section">
-      <div class="form-section-title">回放真实请求（可选）</div>
-      <div class="form-section-desc">把线上导出的真实请求重新发一遍。可以「固定同时请求数」连续发，也可以「按固定速率」随机间隔发；两次测试的发送时间点完全相同。</div>
-      <div class="form-grid">
-        <div class="field span-2"><label for="fReplaySel">回放文件</label>
-          <div class="file-row">
-            <select class="select" id="fReplaySel"><option value="">不回放</option></select>
-            <label class="btn btn-secondary" title="上传回放文件：JSONL，每行 {&quot;messages&quot;: [...], &quot;params&quot;: {...}}，不超过 15MB">
-              <svg class="icon"><use href="#i-inbox"/></svg>上传<input type="file" id="fReplayFile" accept=".jsonl,.json,.txt" hidden>
-            </label>
-          </div></div>
-        <div class="field"><label for="fRpConc">固定同时请求数</label><input class="input" id="fRpConc" placeholder="如 8,16"><span class="help">留空则不测</span></div>
-        <div class="field"><label for="fRpRates">固定到达速率（每秒请求数）</label><input class="input" id="fRpRates" placeholder="如 2,5"><span class="help">留空则不测</span></div>
+        <div class="field"><label for="fRpConc">固定同时请求数</label><input class="input" id="fRpConc" placeholder="如 8,16"><span class="help">同时开这么多条线，每条线一个接一个地发；留空则不用这种方式</span></div>
+        <div class="field"><label for="fRpRpw">每个并发发几次请求</label><input class="input" id="fRpRpw" type="number" min="1" max="100" placeholder="4"><span class="help">总请求数 = 固定同时请求数 × 这个数</span></div>
+        <div class="field"><label for="fRpRates">固定到达速率（每秒请求数）</label><input class="input" id="fRpRates" placeholder="如 2,5"><span class="help">按这个速度随机间隔地发，不管前面的有没有回完，看会不会越排越长；留空则不用这种方式</span></div>
         <div class="field"><label for="fRpDur">每档持续秒数</label><input class="input" id="fRpDur" type="number" min="5" max="3600" placeholder="60"></div>
       </div>
     </div>

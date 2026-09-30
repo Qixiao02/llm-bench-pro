@@ -19,4 +19,14 @@ I18N.add("en", {
   "更好：{list}。": " Better: {list}.",
   "更差：{list}。": " Worse: {list}.",
   "；": "; ",
+  /* ---- 新建速度测试: 任务集 + 发送方式 ---- */
+  "填了发送方式，请先选择任务集": "You filled in a send mode; choose a task set first",
+  "选了任务集，还要选发送方式：填「固定同时请求数」或「固定到达速率」": "You chose a task set; also choose how to send it: fill in \"Fixed concurrency\" or \"Fixed arrival rate\"",
+  "固定同时请求数": "Fixed concurrency",
+  "固定到达速率": "Fixed arrival rate",
+  " · 任务集「{name}」（{modes}）": " · Task set \"{name}\" ({modes})",
+  /* ---- 结果页: 任务集 ---- */
+  "结果页|任务集": "Task set",
+  "用任务集「{name}」里的请求施压": "Requests from the task set \"{name}\"",
+  "用线上导出的真实请求施压": "Real requests exported from production",
 });
