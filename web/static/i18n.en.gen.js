@@ -6,4 +6,9 @@
 
 I18N.add("en", {
   /* "中文原文": "English", */
+  /* ---- 作品列表 (一件作品一行) ---- */
+  "没有生成出来": "Not generated",
+  "没有作品文件": "No work file",
+  "报告里没有这张截图": "This screenshot isn't in the report",
+  "没有截图": "No screenshot",
 });
