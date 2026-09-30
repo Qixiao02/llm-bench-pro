@@ -22,6 +22,11 @@ import urllib.parse
 import urllib.request
 import zlib
 
+try:
+    from . import i18n  # 包内导入
+except ImportError:
+    import i18n  # server.py 以包目录为 sys.path 顶层导入
+
 
 # ---------------------------------------------------------------- 浏览器定位与启动
 
@@ -371,8 +376,7 @@ class Page:
         self._cond = threading.Condition()
         self.events = []  # (monotonic_t, method, params)
         self._alive = True
-        self._reader = threading.Thread(target=self._read_loop, daemon=True)
-        self._reader.start()
+        self._reader = i18n.spawn(self._read_loop)
 
     def _read_loop(self):
         try:
@@ -539,9 +543,11 @@ def reap_all_legacy(log=print):
 
 def main(argv=None):
     import argparse
+    i18n.preparse_lang(argv)  # 要在创建 argparse 之前: --help 的文字也是 --lang 指定的语言
     ap = argparse.ArgumentParser(description="后台浏览器维护")
     ap.add_argument("--reap", action="store_true", help="回收所属进程已退出的后台浏览器")
     ap.add_argument("--reap-all", action="store_true", help="关闭全部 llmbench 后台浏览器(含旧版本遗留), 确认没有评测在运行时使用")
+    i18n.add_lang_arg(ap)
     args = ap.parse_args(argv)
     if args.reap_all:
         print("共处理 %d 个" % reap_all_legacy())

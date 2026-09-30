@@ -130,10 +130,12 @@ python run.py          # 浏览器打开 http://127.0.0.1:18080
 python run.py                                   # 仅本机访问: http://127.0.0.1:18080
 python run.py 18090                             # 换端口
 python run.py --host 0.0.0.0 --token 自定义令牌   # 局域网访问, 用 http://主机:18080/?token=自定义令牌 打开
+python run.py --lang en                         # 日志和提示用英文 (--lang zh|en, 所有命令行入口都有)
 ```
 
 - 默认只监听 `127.0.0.1`。监听其他地址且未设置令牌时，启动会给出警告；令牌也可以用环境变量 `LLM_BENCH_TOKEN` 设置。
 - 端口被占用时启动直接失败（Windows 上不再出现多个进程同时监听同一端口、请求落到旧进程的情况）。
+- **语言**：命令行的日志、提示和 `--help` 有中文 / 英文两种，用 `--lang zh|en`（所有入口都有）或环境变量 `LLM_BENCH_LANG` 选；都没有时按系统语言（`zh` 开头用中文，否则英文）。页面请求带 `X-Lang: zh|en` 请求头（没有就看 `Accept-Language`）时，接口的错误提示按它的语言返回；页面启动的测试在启动时记下语言，日志和存进结果里的说明都用它。
 - **更新代码后需要重启服务。** 页面会检测「后端代码已更新但服务未重启」以及「页面与后端版本不一致」并提示。
 
 > [!TIP]
@@ -322,13 +324,15 @@ llm-bench-pro/
 │   ├── cdp.py              # 纯标准库 Chrome DevTools 协议客户端(无头 Chrome/Edge)
 │   ├── bankman.py          # 题库管理(原始数据下载到本地/多源回退与限速退避/离线生成/版本化)
 │   ├── store.py            # SQLite 结果库(建表/增量写/读/导入导出)
+│   ├── i18n.py             # 服务端消息的中英文翻译: t / tn / 语言来源 / 线程里带上语言(spawn, executor) / 命令行 --lang
+│   ├── i18n_en/            # 英文词典: 每个模块一个 <模块名>.py (ENTRIES = {"中文原文": "English"}), common.py 放共用的
 │   ├── export_html.py      # 离线报告: 同一套页面(内联样式/图表库/脚本) + 测试数据, 合成一个可直接打开的 HTML
 │   ├── report.py           # 旧版速度测试 HTML 报告(自包含·内联 SVG·A/B 对比·失败重跑披露, 命令行用)
 │   └── sinks.py            # 结果落地抽象: JSON 文件 / SQLite / 组合
 ├── web/
 │   ├── index.html          # 页面结构与图标
 │   └── static/             # app.css(设计 token/组件) · app.js(逻辑与 ECharts 图表) · vendor/(echarts.min.js 及其 LICENSE、NOTICE)
-├── tests/                  # 标准库 unittest: 判分/统计/存储/服务/性能引擎/生成评测/题库; js/ 为前端逻辑断言
+├── tests/                  # 标准库 unittest: 判分/统计/存储/服务/性能引擎/生成评测/题库/服务端翻译(i18n_lint_py.py 为检查工具); js/ 为前端逻辑断言
 ├── banks/                  # 题库版本资产(iq-*.json, 多版本共存); 数据来源与许可见 banks/README.md
 ├── docs/screenshots/       # README 截图
 ├── .github/                # CI(workflows/test.yml)、Issue / PR 模板、CODEOWNERS
@@ -456,7 +460,7 @@ python -m llm_bench_pro.store stale             # 手动标记心跳超时的运
 | `POST /api/start` · `iq-start` · `iq-resume` · `gen-start` · `gen-eval` · `gen-rate` · `replay-upload` · `bank-update` · `cancel` · `run-delete` | 启动测试、续跑、重新检查、打星、上传回放、更新题集、停止、删除运行等操作 |
 | `GET /works/<run>/<task>.html[?open=1]` | 生成作品：默认给沙箱 iframe 预览（不联网，与评测环境相同）；`?open=1` 在新标签页打开（可加载外部资源，仍是隔离的沙箱） |
 
-启用令牌时，接口需带请求头 `X-Bench-Token`，或通过 `/?token=` 打开页面获得的 Cookie。
+启用令牌时，接口需带请求头 `X-Bench-Token`，或通过 `/?token=` 打开页面获得的 Cookie。可选请求头 `X-Lang: zh|en` 指定错误提示等文字的语言（没有就看 `Accept-Language`，再没有用服务的默认语言）。
 
 </details>
 
@@ -479,6 +483,7 @@ python -m llm_bench_pro.bench --url http://host:8011 --model NAME \
 - 默认输出 `data/results/<run_id>.json`（拷回本机 `data/results/` 后服务启动即自动入库）；`--sink db` 直接写库，`--sink both` 两者都写，`--db PATH` 指定库。
 - 场景里有 `vision` 但不给 `--vision-dir` 时用内置示例图片。请求失败时记下状态码和服务端返回的原因（前 300 字，例如 `HTTP 400: {"error": ...}`），页面的失败说明里直接能看到。
 - 默认发送 `ignore_eos` 固定输出长度（每次生成满 max_tokens，保证不同后端吞吐可比），`--no-fixed-output` 关闭；端点不支持时自动关闭并在结果中注明。
+- `--lang zh|en` 选日志、提示和 `--help` 的语言（`bench` / `geneval` / `store` / `bankman` / `cdp` 和 `run.py` 都有），默认按环境变量 `LLM_BENCH_LANG`，再按系统语言；结果里的说明文字（`notes`、`error`、跳过原因等）用运行时的语言生成、原样存储。
 
 </details>
 
@@ -490,7 +495,7 @@ python -m unittest discover -s tests     # 全部使用临时数据库与本地�
 python tests/run_coverage.py             # 覆盖率(自研 ~100 行, 纯标准库; 结果写入 coverage.txt)
 ```
 
-- **后端 Python**：`test_bench_gen / test_iq / test_server / test_store / test_report / test_bankman / test_scenario_assets / test_task_sets / test_endpoints_page` —— 覆盖压测引擎、能力评测判分、HTTP 服务层（含安全门禁与版本锁）、SQLite 存储契约、离线报告的自包含性 / 转义 / SVG 完整性等内容级断言，题集下载与离线生成（本地模拟服务器，不联网），以及看图素材检查、任务集的导入 / 逐行查看 / 改名 / 删除 / 使用记录（上传目录都换成临时目录），模型管理的字段检查 / 用过几次（地址写法不同的算同一个）/ 用过的测试 / 测试连接的原因分类与带 Key 认框架 / 离线报告里没有 Key。
+- **后端 Python**：`test_bench_gen / test_iq / test_server / test_store / test_report / test_bankman / test_scenario_assets / test_task_sets / test_endpoints_page / test_i18n_py` —— 覆盖压测引擎、能力评测判分、HTTP 服务层（含安全门禁与版本锁）、SQLite 存储契约、离线报告的自包含性 / 转义 / SVG 完整性等内容级断言，题集下载与离线生成（本地模拟服务器，不联网），以及看图素材检查、任务集的导入 / 逐行查看 / 改名 / 删除 / 使用记录（上传目录都换成临时目录），模型管理的字段检查 / 用过几次（地址写法不同的算同一个）/ 用过的测试 / 测试连接的原因分类与带 Key 认框架 / 离线报告里没有 Key；服务端的中英文消息（`test_i18n_py`）：检查工具的规则、违规数棘轮、词典和调用处对得上、语言来源的优先级、线程和线程池里的语言、`--lang` 的帮助文字，以及英文下接口和后台任务的日志、存进结果里的说明没有汉字。
 - **前端 JS**：`test_frontend` —— 有 Node 则运行（`node --check` 语法门 + DOM 桩加载 app.js 全文跑纯逻辑断言：esc / fmt / 坐标轴 / 淡色守卫 / 名词解释 / 问题归因 / 沙箱策略 / 作品列表的缩略图选图、A / B 谁更好、筛选与分页、卡片说明），无 Node 自动跳过，不破坏零依赖承诺；ECharts 渲染与交互以浏览器验证为准。
 - **覆盖率**不引第三方库：`sys.settrace`（含子线程补丁）采分子、`ast` 数语句行做分母；浏览器池类模块（cdp / geneval / gen_specs）需真实 Chrome，数字低是如实反映。
 - **CI**：每个 Pull Request 和 `main` 的推送都会在 GitHub Actions 上跑全部单元测试（Ubuntu Python 3.8 / 3.13、Windows Python 3.13）。

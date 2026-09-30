@@ -1,0 +1,75 @@
+# 服务端「不翻译」的中文: 测试内容和数据 (发给模型的提示词、题目、语料、检查清单、解析模型输出用的正则等)。
+# tests/i18n_lint_py.py 对这里登记的字符串不算违规。一行一条, # 后面是说明:
+#   文件名:范围                范围里的字符串都放过 (范围是函数名 / 模块级变量名 / 类名 / 类名.方法名; 外层函数包含里面嵌套的函数)
+#   文件名:范围:文字片段        只放过含有这段文字的字符串 (一个函数里既有测试内容又有对外提示时用)
+# 只有确定「不是给人看的输出」的才登记; 拿不准的 (阶段名 / 场景名 / 检查项名 / 状态字符串等) 先留着算违规, 第二阶段按模块决定。
+# 登记的东西改了、删了, 这里对应的行会「过期」(没有匹配到任何字符串), 测试会提醒删掉。
+
+# ---- bench.py: 发给被测模型的提示词和语料
+bench.py:ZH_UNIT                                   # 长度校准 / 长输入用的重复句
+bench.py:PREFILL_HEAD                               # 长输入的开头提示
+bench.py:BIZ_RULES                                  # 结构化抽取: 系统提示里的规则
+bench.py:BIZ_ITEMS                                  # 结构化抽取: 商品名
+bench.py:BIZ_SENTENCES                              # 结构化抽取: 商品描述句子模板
+bench.py:CHAT_POOL                                  # 对话问答语料
+bench.py:CODE_TASKS                                 # 代码生成语料
+bench.py:RAG_PASSAGES                               # RAG 资料段落
+bench.py:RAG_QUESTIONS                              # RAG 问题
+bench.py:VISION_PROMPTS                             # 图片理解通用提问
+bench.py:_scn_json_body                             # 结构化抽取: 请求正文 (商品材质 / 颜色词表和提问)
+bench.py:_scn_code_body                             # 代码生成: 系统提示和提问
+bench.py:_scn_rag_body                              # RAG: 段落标号、资料前后的说明和系统提示
+bench.py:phase_decode:请详细介绍大语言模型推理优化   # 单流解码的中文提问
+bench.py:phase_concurrency:请编写一个实用的           # 并发阶梯每个请求的提问
+bench.py:phase_prefill_conc:以下是技术参考资料        # 提示词阶梯 x 并发的提问开头
+bench.py:phase_longctx:以下是技术文档                 # 长上下文驻留的提问开头
+bench.py:phase_longctx:用三句话概括核心内容           # 长上下文驻留的提问结尾
+bench.py:_warmup:请阅读后用一句话概括                 # 预热请求的提问
+bench.py:run_suite:回复 OK                           # 开测前热身请求的提问
+
+# ---- gen.py / gen_specs.py: 题目、检查清单、发给模型的续写提示
+gen.py:GEN_TASKS                                    # 33 道题的名称、标签、题目要求
+gen.py:_CONTINUE_HINT                               # 续写时发给模型的提示
+gen.py:gen_complete:直接输出完整 HTML 代码            # 思考耗尽后重新生成时追加给模型的提示
+gen.py:run_gen:地狱                                  # 按题目标签 (来自 GEN_TASKS) 定输出预算, 是数据比较不是输出
+gen.py:run_gen:困难                                  # 同上
+gen_specs.py:GENERIC_CHECKLIST                      # 通用评审清单 (发给评审模型)
+gen_specs.py:_START_RE                              # 找「开始」按钮的正则
+gen_specs.py:SPECS                                  # 逐题交互脚本、功能断言、评审清单
+
+# ---- geneval.py: 注入页面的脚本、发给评审模型的提示、容错解析
+geneval.py:INSTRUMENT_JS                            # 注入作品页面的 JS
+geneval.py:JUDGE_SYSTEM                             # 评审模型的系统提示
+geneval.py:JUDGE_RULES                              # 评审模型的评分规则
+geneval.py:judge_work                               # 评审请求的各段提示 (含重试时追加的提示)
+geneval.py:_clip_ends                               # 截断代码时插进提示里的省略标记
+geneval.py:_code_excerpt                            # 同上
+geneval.py:_find_judge_json:：                       # 容忍评审模型输出里的全角标点: 替换成半角
+geneval.py:_find_judge_json:，                       # 同上
+
+# ---- iq.py: 发给模型的提示词、从模型回答里提取答案的正则
+iq.py:prompt_mcq                                    # 选择题提示
+iq.py:prompt_math                                   # GSM8K 提示
+iq.py:prompt_math500                                # MATH-500 提示
+iq.py:prompt_instruct                               # 指令遵循提示
+iq.py:_MCQ_EXPLICIT                                 # 选项提取正则 (匹配「答案是 B」这类说法)
+iq.py:_plain                                        # 去掉标点用的字符类
+iq.py:extract_mcq                                   # 选项提取正则
+iq.py:extract_math                                  # 数字答案提取正则
+iq.py:_norm_ans                                     # 数字答案规整: 去单位的正则
+iq.py:extract_math500                               # 答案提取正则
+
+# ---- bankman.py: 题库内容 (题目、科目名; 科目名进题库文件的内容哈希, 不能随语言变)
+bankman.py:ifeval_zh_items                          # 中文指令遵循题
+bankman.py:sample_hellaswag:选出最合理的后续          # 拼进 HellaSwag 题干的提示
+bankman.py:build:GSM8K 数学                          # 科目名
+bankman.py:build:MMLU                               # 科目名 (中学 / 大学 / 专业 / 通识)
+bankman.py:build:MATH-500 竞赛数学                   # 科目名
+bankman.py:build:ARC-Challenge 科学推理              # 科目名
+bankman.py:build:HellaSwag 常识                      # 科目名
+bankman.py:build:C-Eval 中文知识                     # 科目名
+bankman.py:build:指令遵循（中文）                     # 科目名
+
+# ---- vision_assets.py: 内置示例图片的名称和提问 (发给看图模型)
+vision_assets.py:SAMPLES
+vision_assets.py:SAMPLE_MULTI_PROMPTS

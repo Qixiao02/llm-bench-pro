@@ -11,9 +11,10 @@ import os
 import threading
 
 try:
-    from . import store  # 包内导入
+    from . import i18n, store  # 包内导入
 except ImportError:
-    import store  # server.py 以包目录为 sys.path 顶层导入
+    import i18n  # server.py 以包目录为 sys.path 顶层导入
+    import store
 
 
 class JsonFileSink:
@@ -79,7 +80,7 @@ class SqliteSink:
                 except Exception:
                     pass
 
-        threading.Thread(target=loop, name="hb-" + run_id, daemon=True).start()
+        i18n.spawn(loop, name="hb-" + run_id)  # 后台线程一律用 i18n.spawn: 线程里沿用当前的语言
 
 
 class MultiSink:

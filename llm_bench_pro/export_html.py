@@ -8,6 +8,13 @@ import html as _html
 import json
 import os
 
+try:
+    from . import i18n  # 包内导入
+except ImportError:
+    import i18n  # server.py 以包目录为 sys.path 顶层导入
+
+t = i18n.t
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB = os.path.join(ROOT, "web")
 
@@ -37,10 +44,11 @@ def script_safe(js):
 def compose(page, bundle, head_state, title):
     """bundle: 页面数据(api / files / sel / ui ...); head_state: 首帧前要用的主题和本地偏好。返回完整 HTML 文本。"""
     idx = _read("index.html")
+    default_title = t("LLM Bench Pro 离线报告")
     parts = {
-        M_TITLE: "<title>%s</title>" % _html.escape(title or "LLM Bench Pro 离线报告"),
-        M_CHARSET: '%s\n<meta name="generator" content="LLM Bench Pro 离线报告">\n<script>window.LLMB_OFF_STATE=%s</script>'
-                   % (M_CHARSET, json_for_script(head_state)),
+        M_TITLE: "<title>%s</title>" % _html.escape(title or default_title),
+        M_CHARSET: '%s\n<meta name="generator" content="%s">\n<script>window.LLMB_OFF_STATE=%s</script>'
+                   % (M_CHARSET, _html.escape(default_title), json_for_script(head_state)),
         M_CSS: "<style>\n%s\n</style>" % _read("static", "app.css").replace("</style", "<\\/style"),
         M_ECHARTS: '<script type="application/json" id="llmb-offline">%s</script>\n'
                    '<script>window.LLMB_OFFLINE=JSON.parse(document.getElementById("llmb-offline").textContent)</script>\n'
@@ -53,7 +61,7 @@ def compose(page, bundle, head_state, title):
     for mark in parts:
         n = idx.count(mark)
         if n != 1:
-            raise RuntimeError("web/index.html 结构变了, 找到 %d 处 %s" % (n, mark))
+            raise RuntimeError(t("web/index.html 结构变了, 找到 {n} 处 {mark}", n=n, mark=mark))
         spots.append((idx.index(mark), mark))
     out, pos = [], 0
     for at, mark in sorted(spots):

@@ -7,6 +7,10 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# 现有测试大量断言中文提示: 固定用中文, 不受运行机器的系统语言 / 环境变量影响 (要在导入包之前设)。
+# 英文的测试用 i18n.set_lang("en") 或请求头 X-Lang: en (见 test_i18n_py.py)
+os.environ["LLM_BENCH_LANG"] = "zh"
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PKG = os.path.join(ROOT, "llm_bench_pro")
 if PKG not in sys.path:
