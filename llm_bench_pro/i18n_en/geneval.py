@@ -79,5 +79,5 @@ ENTRIES = {
     # ---- 命令行
     "生成作品评测: 运行检测 + 视觉评审": "Evaluate generated pages: runtime check + visual review",
     "gen 运行 ID": "Code generation run ID",
-    "只评测这些题, 逗号分隔": "Only evaluate these questions, comma-separated",
+    "只评测这些题, 逗号分隔": "Only evaluate these tasks, comma-separated",
 }

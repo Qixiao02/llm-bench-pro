@@ -734,7 +734,7 @@ class TestCommandLine(LangCase):
     def test_help_in_english_has_no_chinese(self):
         text = self.help("en")
         for want in ("Evaluate generated pages: runtime check + visual review", "--run RUN Code generation run ID",
-                     "--tasks TASKS Only evaluate these questions, comma-separated", "--lang {zh,en}"):
+                     "--tasks TASKS Only evaluate these tasks, comma-separated", "--lang {zh,en}"):
             self.assertIn(want, text)
         assert_english(self, text, what="geneval --help")
 

@@ -949,7 +949,7 @@ def _load_vision_images(d, skipped=None):
         skipped.extend(bad)
     if not good:
         raise RuntimeError(t("图片目录里没有能用的图片: {path} ({reasons})", path=d,
-                             reasons=t("；").join("%s %s" % (c["name"], c["msg"]) for c in bad[:3])))
+                             reasons=t("；").join(vision_assets.check_line(c) for c in bad[:3])))
     return [vision_assets.data_url(data, c["format"]) for _, data, c in good]
 
 

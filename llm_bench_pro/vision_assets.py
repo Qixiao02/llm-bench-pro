@@ -206,6 +206,12 @@ def check_image(data, name=None):
     return out
 
 
+def check_line(c):
+    """一张图片的检查结果拼成一句「名称 说明」: 上传汇总、素材列表、启动检查的报错里用。中文用空格连接 (和以前一样);
+    英文的说明是首字母大写的短语, 用冒号接在名称后面。(连接符不走词典: 词典的键必须含汉字, 而这里中文那一边只是一个空格。)"""
+    return "%s%s%s" % (c["name"], ": " if i18n.current_lang() == "en" else " ", c["msg"])
+
+
 def scan_dir(d, keep_data=True):
     """检查文件夹里的图片(只看支持的扩展名, 按文件名排序)。
     返回 (能用的 [(文件名, 字节或 None, 检查结果)], 全部检查结果)。"""

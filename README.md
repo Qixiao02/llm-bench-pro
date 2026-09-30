@@ -438,7 +438,7 @@ python -m llm_bench_pro.store stale             # 手动标记心跳超时的运
 | `GET /api/run?id=<run_id>` | 单个运行的完整文档 |
 | `GET /api/export?id=<run_id>` | 下载 JSON |
 | `POST /api/export-html` | `{page: dash\|cmp\|iq\|gen, id, cmp:[…], title, state, ui}` 离线报告：当前页面同一套界面 + 数据，返回一个自包含 HTML（页面上的「导出报告」） |
-| `GET /api/report?id=<run_id>[&cmp=<run_id>]` | 旧版速度测试 HTML 报告（内联 SVG，命令行 / 脚本用） |
+| `GET /api/report?id=<run_id>[&cmp=<run_id>][&lang=zh\|en]` | 旧版速度测试 HTML 报告（内联 SVG，命令行 / 脚本用）；`lang` 指定报告语言，不写就按请求头 `X-Lang` |
 | `GET /api/replay-list` | 已上传的回放文件 |
 | `POST /api/replay-upload` | `{name, content}` 上传 JSONL（内容寻址、幂等，≤ 15 MB） |
 | `GET /api/scenario-list` | 任务集（含名称、可用行数）与图片包（含尺寸范围、太小的张数）清单 |
@@ -495,7 +495,7 @@ python -m unittest discover -s tests     # 全部使用临时数据库与本地�
 python tests/run_coverage.py             # 覆盖率(自研 ~100 行, 纯标准库; 结果写入 coverage.txt)
 ```
 
-- **后端 Python**：`test_bench_gen / test_iq / test_server / test_store / test_report / test_bankman / test_scenario_assets / test_task_sets / test_endpoints_page / test_i18n_py` —— 覆盖压测引擎、能力评测判分、HTTP 服务层（含安全门禁与版本锁）、SQLite 存储契约、离线报告的自包含性 / 转义 / SVG 完整性等内容级断言，题集下载与离线生成（本地模拟服务器，不联网），以及看图素材检查、任务集的导入 / 逐行查看 / 改名 / 删除 / 使用记录（上传目录都换成临时目录），模型管理的字段检查 / 用过几次（地址写法不同的算同一个）/ 用过的测试 / 测试连接的原因分类与带 Key 认框架 / 离线报告里没有 Key；服务端的中英文消息（`test_i18n_py`）：检查工具的规则、违规数棘轮、词典和调用处对得上、语言来源的优先级、线程和线程池里的语言、`--lang` 的帮助文字，以及英文下接口和后台任务的日志、存进结果里的说明没有汉字。
+- **后端 Python**：`test_bench_gen / test_iq / test_server / test_store / test_report / test_bankman / test_scenario_assets / test_task_sets / test_endpoints_page / test_i18n_py / test_i18n_py_server / test_i18n_py_bench / test_i18n_py_report / test_i18n_py_geneval / test_i18n_py_gen_iq / test_i18n_py_data` —— 覆盖压测引擎、能力评测判分、HTTP 服务层（含安全门禁与版本锁）、SQLite 存储契约、离线报告的自包含性 / 转义 / SVG 完整性等内容级断言，题集下载与离线生成（本地模拟服务器，不联网），以及看图素材检查、任务集的导入 / 逐行查看 / 改名 / 删除 / 使用记录（上传目录都换成临时目录），模型管理的字段检查 / 用过几次（地址写法不同的算同一个）/ 用过的测试 / 测试连接的原因分类与带 Key 认框架 / 离线报告里没有 Key；服务端的中英文消息（`test_i18n_py`）：检查工具的规则、违规数棘轮、词典和调用处对得上、语言来源的优先级、线程和线程池里的语言、`--lang` 的帮助文字，以及英文下接口和后台任务的日志、存进结果里的说明没有汉字；`test_i18n_py_*` 是各模块（server / tasksets、bench / cdp、旧版报告、geneval、gen / iq、bankman / store / vision_assets）转成中英文之后的验收：每个函数英文输出没有汉字、中文和转换前逐字一致、带数量的句子单数 / 复数、存进结果里的说明。
 - **前端 JS**：`test_frontend` —— 有 Node 则运行（`node --check` 语法门 + DOM 桩加载 app.js 全文跑纯逻辑断言：esc / fmt / 坐标轴 / 淡色守卫 / 名词解释 / 问题归因 / 沙箱策略 / 作品列表的缩略图选图、A / B 谁更好、筛选与分页、卡片说明），无 Node 自动跳过，不破坏零依赖承诺；ECharts 渲染与交互以浏览器验证为准。
 - **界面翻译**：`test_i18n / test_i18n_export` —— 自带的 JS 词法扫描器（认字符串、模板字符串、注释、正则字面量）按区域统计还没翻译的界面文字，基线棘轮只降不升；词典里的占位符 / HTML 标签要和中文一致、英文里不能有汉字；离线报告带语言偏好、内联翻译脚本、能在报告里切换语言（`python tests/i18n_lint.py --report` 看明细，详见 [CONTRIBUTING.md](CONTRIBUTING.md)）。
 - **覆盖率**不引第三方库：`sys.settrace`（含子线程补丁）采分子、`ast` 数语句行做分母；浏览器池类模块（cdp / geneval / gen_specs）需真实 Chrome，数字低是如实反映。

@@ -346,11 +346,11 @@ class TestStartValidation(ServerCase):
         with mock.patch.object(vision_assets, "scan_dir", lambda d, keep_data=True: ([], checks)):
             self.both("POST", "/api/start", self.start(scenarios={"tasks": ["vision"], "vision_src": {"image_id": "img-0000000000aa"}}),
                       "场景配置错误：图片包 img-0000000000aa 里没有能用的图片：1.png m1；2.png m2；3.png m3。请重新上传，或改用内置示例图片",
-                      "Invalid scenario settings: Image pack img-0000000000aa has no usable images: 1.png m1; 2.png m2; 3.png m3. "
+                      "Invalid scenario settings: Image pack img-0000000000aa has no usable images: 1.png: m1; 2.png: m2; 3.png: m3. "
                       "Upload it again or use the built-in sample images.", 400)
             self.both("POST", "/api/start", self.start(scenarios={"tasks": ["vision"], "vision_src": {"dir": folder}}),
                       "场景配置错误：图片文件夹 %s 里没有能用的图片：1.png m1；2.png m2；3.png m3。请重新上传，或改用内置示例图片" % folder,
-                      "Invalid scenario settings: Image folder %s has no usable images: 1.png m1; 2.png m2; 3.png m3. "
+                      "Invalid scenario settings: Image folder %s has no usable images: 1.png: m1; 2.png: m2; 3.png: m3. "
                       "Upload them again or use the built-in sample images." % folder, 400)
         with mock.patch.object(vision_assets, "scan_dir", lambda d, keep_data=True: ([], [])):
             self.both("POST", "/api/start", self.start(scenarios={"tasks": ["vision"], "vision_src": {"image_id": "img-0000000000aa"}}),
@@ -460,16 +460,16 @@ class TestUploadMessages(ServerCase):
             ({"kind": "zzz"}, "kind 应为 tasks 或 images", "kind must be tasks or images"),
             ({"kind": "images", "files": [{"name": "a.txt", "data": "x"}]},
              "没有能用的图片：a.txt 不是支持的图片类型（只收 jpg / png / webp / gif）",
-             "No usable images: a.txt Unsupported image type (only jpg / png / webp / gif are accepted)"),
+             "No usable images: a.txt: Unsupported image type (only jpg / png / webp / gif are accepted)"),
             ({"kind": "images", "files": [{"name": "a.png", "data": "abc"}]},
-             "没有能用的图片：a.png 上传的数据不是合法的 base64", "No usable images: a.png The uploaded data is not valid base64"),
+             "没有能用的图片：a.png 上传的数据不是合法的 base64", "No usable images: a.png: The uploaded data is not valid base64"),
             # 没有名字的文件用「第 N 张」; 最多列前 3 张的原因, 用 t("；") 隔开
             ({"kind": "images", "files": [{"data": "x"}, 5, {"name": "c.gif.txt"}, {"name": "d.txt"}]},
              "没有能用的图片：第 1 张 不是支持的图片类型（只收 jpg / png / webp / gif）；第 2 张 不是支持的图片类型（只收 jpg / png / webp / gif）；"
              "c.gif.txt 不是支持的图片类型（只收 jpg / png / webp / gif）",
-             "No usable images: Image 1 Unsupported image type (only jpg / png / webp / gif are accepted); "
-             "Image 2 Unsupported image type (only jpg / png / webp / gif are accepted); "
-             "c.gif.txt Unsupported image type (only jpg / png / webp / gif are accepted)"),
+             "No usable images: Image 1: Unsupported image type (only jpg / png / webp / gif are accepted); "
+             "Image 2: Unsupported image type (only jpg / png / webp / gif are accepted); "
+             "c.gif.txt: Unsupported image type (only jpg / png / webp / gif are accepted)"),
         ]
         for body, zh, en in rows:
             with self.subTest(body=body):
@@ -637,7 +637,7 @@ class TestCachesDoNotMixLanguages(ServerCase):
         with mock.patch.object(vision_assets, "scan_dir", fake_scan):
             for lang in ("zh", "en", "zh", "en", "en"):
                 st, d = self.request("GET", "/api/scenario-list", lang=lang)
-                self.assertEqual(d["images"][0]["problems"], ["x.png MSG-" + lang], lang)
+                self.assertEqual(d["images"][0]["problems"], [("x.png: MSG-" if lang == "en" else "x.png MSG-") + lang], lang)
         self.assertEqual(calls, ["zh", "en"])                 # 每种语言只检查一次
         server._image_pack_check.cache_clear()
 

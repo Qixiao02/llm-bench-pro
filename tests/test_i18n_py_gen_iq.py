@@ -172,13 +172,13 @@ class TestGenTexts(LangCase):
                   "最近几千字内容高度雷同（压缩率 0.00，正常代码约 0.2 以上）")
 
     def test_task_id_errors(self):
-        self.raises(lambda: gen.normalize_task_ids(5), "tasks must be an array of question IDs", "tasks 应为题目 id 数组")
-        self.raises(lambda: gen.normalize_task_ids(["pelican", 3]), "tasks must be an array of question IDs", "tasks 应为题目 id 数组")
-        self.raises(lambda: gen.normalize_task_ids([]), "Select at least 1 question", "请至少选择 1 道题目")
-        self.raises(lambda: gen.normalize_task_ids("nope"), "Unknown question ID: nope", "未知题目：nope")              # 1 个: 单数
-        self.raises(lambda: gen.normalize_task_ids(["nope", "pelican", "zzz"]), "Unknown question IDs: nope, zzz", "未知题目：nope、zzz")   # 多个: 复数
+        self.raises(lambda: gen.normalize_task_ids(5), "tasks must be an array of task IDs", "tasks 应为题目 id 数组")
+        self.raises(lambda: gen.normalize_task_ids(["pelican", 3]), "tasks must be an array of task IDs", "tasks 应为题目 id 数组")
+        self.raises(lambda: gen.normalize_task_ids([]), "Select at least 1 task", "请至少选择 1 道题目")
+        self.raises(lambda: gen.normalize_task_ids("nope"), "Unknown task ID: nope", "未知题目：nope")              # 1 个: 单数
+        self.raises(lambda: gen.normalize_task_ids(["nope", "pelican", "zzz"]), "Unknown task IDs: nope, zzz", "未知题目：nope、zzz")   # 多个: 复数
         self.raises(lambda: gen.normalize_task_ids(["n%d" % i for i in range(12)]),
-                    "Unknown question IDs: n0, n1, n2, n3, n4, n5, n6, n7", "未知题目：n0、n1、n2、n3、n4、n5、n6、n7")   # 最多列 8 个
+                    "Unknown task IDs: n0, n1, n2, n3, n4, n5, n6, n7", "未知题目：n0、n1、n2、n3、n4、n5、n6、n7")   # 最多列 8 个
         with i18n.use_lang("en"):
             self.assertEqual(gen.normalize_task_ids("pelican, snake"), ["pelican", "snake"])
 
@@ -442,7 +442,7 @@ class TestRunGen(LangCase):
     def test_english_run_logs_stored_errors_and_changes_have_no_chinese(self):
         flow, doc, traces = run_gen_doc(mixed_handler, ["t_ok", "t_fail", "t_plain", "t_loop"])
         lines = flow.lines
-        self.assertRegex(lines[0], r'^== gen v2\.3\.0 \| m \| 4 questions \| conc=1 \| sampling \{.*\} \| evaluation: code-only check \(browser not found\) ==$')
+        self.assertRegex(lines[0], r'^== gen v2\.3\.0 \| m \| 4 tasks \| conc=1 \| sampling \{.*\} \| evaluation: code-only check \(browser not found\) ==$')
         self.assertEqual(lines[1], "▶ Started: Page A (Basic/Animation)")
         self.assertEqual(lines[2], "  ✓ [Page A] runtime check 1/2 (failed: Check B) · 1 line · progress 1/4")
         self.assertEqual(lines[3], "▶ Started: Page B (Basic)")
@@ -484,7 +484,7 @@ class TestRunGen(LangCase):
     def test_thinking_mode_stored_notes_and_failures(self):
         flow, doc, traces = run_gen_doc(thinking_handler, ["t_cont", "t_think", "t_rescue"], thinking=True)
         lines = flow.lines
-        self.assertRegex(lines[0], r'^== gen v2\.3\.0 \| m \| 3 questions \| conc=1 \| sampling \{"temperature": 0\.6, .*\} \| evaluation: code-only check')
+        self.assertRegex(lines[0], r'^== gen v2\.3\.0 \| m \| 3 tasks \| conc=1 \| sampling \{"temperature": 0\.6, .*\} \| evaluation: code-only check')
         self.assertIn("    ↻ Truncated; continuation round 1 (thinking off, output code directly)", lines)
         self.assertIn("  ✗ [Page G] Thinking used up the output limit without producing an answer (50 characters of thinking) · progress 2/3", lines)
         items = {it["id"]: it for it in doc["items"]}
@@ -507,7 +507,7 @@ class TestRunGen(LangCase):
 
     def test_judge_model_shows_in_the_header_and_the_summary(self):
         flow, doc, _ = run_gen_doc(lambda m, p, b: stream(FENCED), ["t_ok"], judge={"base": "http://127.0.0.1:1", "model": "judge-m"})
-        self.assertRegex(flow.lines[0], r"^== gen v2\.3\.0 \| m \| 1 question \| conc=1 \| sampling \{.*\} \| evaluation: code-only check \(browser not found\) \+ visual review judge-m ==$")
+        self.assertRegex(flow.lines[0], r"^== gen v2\.3\.0 \| m \| 1 task \| conc=1 \| sampling \{.*\} \| evaluation: code-only check \(browser not found\) \+ visual review judge-m ==$")
         self.assertRegex(flow.lines[2], r"^  ✓ \[Page A\] runtime check 1/2 \(failed: Check B\) · review score 85 · 1 line · progress 1/1$")
         flow.assert_clean(self, doc, keys=STORED_TEXT_KEYS)
         flow, doc, _ = run_gen_doc(lambda m, p, b: stream(FENCED), ["t_ok"], lang="zh", judge={"base": "http://127.0.0.1:1", "model": "judge-m"})
@@ -565,7 +565,7 @@ class TestRunGen(LangCase):
         try:
             with gen_env() as tmp:
                 sink = sinks.JsonFileSink(os.path.join(tmp, "results"))
-                for lang, msgs in (("en", ["Unknown question ID: nope", "Select at least 1 question",
+                for lang, msgs in (("en", ["Unknown task ID: nope", "Select at least 1 task",
                                            "Sampling parameter temperature must be between 0.0 and 2.0 (got 9.0)"]),
                                    ("zh", ["未知题目：nope", "请至少选择 1 道题目", "采样参数 temperature 应在 0.0 到 2.0 之间: 9.0"])):
                     with i18n.use_lang(lang):
@@ -983,10 +983,10 @@ class TestGenIqApi(LangServerCase):
     def test_gen_start_validation_errors_follow_x_lang(self):
         base = {"base": "http://127.0.0.1:1", "model": "m"}
         for body, en, zh in (
-                (dict(base, tasks=["nope"]), "Unknown question ID: nope", "未知题目：nope"),
-                (dict(base, tasks=["nope", "zzz"]), "Unknown question IDs: nope, zzz", "未知题目：nope、zzz"),
-                (dict(base, tasks=[]), "Select at least 1 question", "请至少选择 1 道题目"),
-                (dict(base, tasks=5), "tasks must be an array of question IDs", "tasks 应为题目 id 数组"),
+                (dict(base, tasks=["nope"]), "Unknown task ID: nope", "未知题目：nope"),
+                (dict(base, tasks=["nope", "zzz"]), "Unknown task IDs: nope, zzz", "未知题目：nope、zzz"),
+                (dict(base, tasks=[]), "Select at least 1 task", "请至少选择 1 道题目"),
+                (dict(base, tasks=5), "tasks must be an array of task IDs", "tasks 应为题目 id 数组"),
                 (dict(base, sampling={"temperature": 9}), "Sampling parameter temperature must be between 0.0 and 2.0 (got 9.0)",
                  "采样参数 temperature 应在 0.0 到 2.0 之间: 9.0")):
             with self.subTest(body=body):

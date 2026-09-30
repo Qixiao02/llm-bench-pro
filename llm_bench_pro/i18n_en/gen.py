@@ -10,9 +10,9 @@ ENTRIES = {
     "采样参数 {key} 无效: {value!r}": "Invalid sampling parameter {key}: {value!r}",
     "采样参数 {key} 应在 {lo} 到 {hi} 之间: {value}": "Sampling parameter {key} must be between {lo} and {hi} (got {value})",
     "未知的采样方式: {sampling!r}": "Unknown sampling mode: {sampling!r}",
-    "tasks 应为题目 id 数组": "tasks must be an array of question IDs",
-    "请至少选择 1 道题目": "Select at least 1 question",
-    "未知题目：{ids}": ("Unknown question ID: {ids}", "Unknown question IDs: {ids}"),
+    "tasks 应为题目 id 数组": "tasks must be an array of task IDs",
+    "请至少选择 1 道题目": "Select at least 1 task",
+    "未知题目：{ids}": ("Unknown task ID: {ids}", "Unknown task IDs: {ids}"),
     "生成运行不存在: {run_id}": "Code generation run not found: {run_id}",
 
     # ---- 重复输出的描述 (放进日志句子里)
@@ -74,8 +74,8 @@ ENTRIES = {
 
     # ---- 开始和结束
     "== gen v{version} | {model} | {n} 题 | conc={conc} | 采样 {sampling} | 评测: {method}{judge} ==": (
-        "== gen v{version} | {model} | {n} question | conc={conc} | sampling {sampling} | evaluation: {method}{judge} ==",
-        "== gen v{version} | {model} | {n} questions | conc={conc} | sampling {sampling} | evaluation: {method}{judge} =="),
+        "== gen v{version} | {model} | {n} task | conc={conc} | sampling {sampling} | evaluation: {method}{judge} ==",
+        "== gen v{version} | {model} | {n} tasks | conc={conc} | sampling {sampling} | evaluation: {method}{judge} =="),
     "无头浏览器运行检测": "headless browser runtime check",
     "源码检查(未找到浏览器)": "code-only check (browser not found)",
     " + 视觉评审 {model}": " + visual review {model}",

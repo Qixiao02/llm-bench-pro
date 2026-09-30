@@ -938,6 +938,17 @@ class TestVisionAssets(unittest.TestCase):
         with i18n.use_lang("zh"):
             self.assertEqual(vision_assets.check_image(png(100, 100), name="a.gif")["msg"].count("；"), 1)
 
+    def test_check_line_joins_name_and_message(self):
+        """上传汇总 / 素材列表 / 启动检查的报错里拼的「名称 说明」: 中文用空格 (和以前一样), 英文用冒号。"""
+        c = vision_assets.check_image(b"", name="a.png")
+        with i18n.use_lang("zh"):
+            self.assertEqual(vision_assets.check_line(c), "a.png 文件是空的")
+        with english_flow() as flow:
+            line = vision_assets.check_line(dict(c, msg=vision_assets.check_image(b"", name="a.png")["msg"]))
+        self.assertEqual(line, "a.png: The file is empty")
+        self.assertEqual(flow.missing, [])
+        assert_english(self, line)
+
 
 if __name__ == "__main__":
     unittest.main()

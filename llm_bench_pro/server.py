@@ -685,7 +685,7 @@ def _parse_scenarios(body):
                     raise ValueError(t("图片包 {name} 里没有图片（支持 jpg / png / webp / gif）", name=what))
                 raise ValueError(t("图片文件夹 {name} 里没有图片（支持 jpg / png / webp / gif）", name=what))
             if not good:
-                detail = t("；").join("%s %s" % (c["name"], c["msg"]) for c in checks[:3])
+                detail = t("；").join(vision_assets.check_line(c) for c in checks[:3])
                 if is_pack:
                     raise ValueError(t("图片包 {name} 里没有能用的图片：{detail}。请重新上传，或改用内置示例图片",
                                        name=what, detail=detail))
@@ -1232,7 +1232,7 @@ class Handler(BaseHTTPRequestHandler):
                 images.append({"image_id": dn, "count": len(checks), "usable": len(good), "too_small": small,
                                "broken": len(checks) - len(good) - small, "size": sum(c["bytes"] for c in checks),
                                "dims": _dims_text(checks), "mtime": _mtime_iso(d),
-                               "problems": ["%s %s" % (c["name"], c["msg"]) for c in checks if not c["ok"]][:3]})
+                               "problems": [vision_assets.check_line(c) for c in checks if not c["ok"]][:3]})
         tasks.sort(key=lambda x: x["mtime"], reverse=True)
         images.sort(key=lambda x: x["mtime"], reverse=True)
         return {"ok": True, "tasks": tasks, "images": images, "builtin_images": vision_assets.sample_summary()}
@@ -1297,7 +1297,7 @@ class Handler(BaseHTTPRequestHandler):
                     keep.append((c, raw))
             rejected = sum(1 for c in report if not c["ok"])
             if not keep:
-                detail = t("；").join("%s %s" % (c["name"], c["msg"]) for c in report[:3])
+                detail = t("；").join(vision_assets.check_line(c) for c in report[:3])
                 return self._json({"ok": False, "files": report, "rejected": rejected,
                                    "error": t("没有能用的图片：{detail}", detail=detail)}, 400)
             digest = hashlib.sha256()
