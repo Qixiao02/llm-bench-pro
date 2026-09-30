@@ -569,18 +569,20 @@ def get_run(run_id, items=True, db_path=None, conn=None):
 
 def task_set_uses(db_path=None):
     """速度测试用过的任务集: {任务集 id: [{run_id, model, tag, framework, fw_version, started_utc, status, name}]},
-    每个 id 下新的在前。只看「自定义任务集」阶段(phase_id = scn_custom)里记了 task_set 的行: SQL 先按阶段和
-    LIKE 筛, 只解析筛出来的几行, 不把整张表反序列化。3.6.0 之前的测试没有这条记录, 不计入。"""
+    每个 id 下新的在前。只看「自定义任务集」阶段(phase_id = scn_custom, 记在 task.task_set)和按任务集回放的阶段
+    (phase_id = replay / openloop, 记在阶段自己的 task_set)里记了 task_set 的行: SQL 先按阶段和 LIKE 筛, 只解析筛出来的
+    几行, 不把整张表反序列化; 同一次测试里用了几个阶段只算一次。3.6.0 之前的测试没有这条记录, 不计入。"""
     out = {}
     with session(db_path) as conn:
         rows = conn.execute(
             "SELECT p.run_id, p.data_json, r.model, r.tag, r.framework, r.fw_version, r.started_utc, r.status, r.heartbeat_ts "
             "FROM perf_phases p JOIN runs r ON r.run_id = p.run_id "
-            "WHERE p.phase_id = 'scn_custom' AND p.data_json LIKE '%\"task_set\"%' "
+            "WHERE p.phase_id IN ('scn_custom', 'replay', 'openloop') AND p.data_json LIKE '%\"task_set\"%' "
             "ORDER BY r.started_utc DESC, p.run_id DESC").fetchall()
     for r in rows:
         try:
-            ts = (json.loads(r["data_json"]).get("task") or {}).get("task_set")
+            d = json.loads(r["data_json"])
+            ts = (d.get("task") or {}).get("task_set") or d.get("task_set")
         except (ValueError, AttributeError):
             continue
         if not isinstance(ts, dict) or not isinstance(ts.get("id"), str):

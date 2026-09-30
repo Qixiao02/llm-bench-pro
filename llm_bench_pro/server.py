@@ -719,14 +719,21 @@ def _parse_replay(body):
         raise ValueError("replay 应为对象")
     fid = (rp.get("file_id") or "").strip()
     if fid:
-        if not re.match(r"^replay-[0-9a-f]{12}$", fid):
+        if tasksets.ID_RE.match(fid):  # 请求文件统一放在任务集里: file_id 就是任务集 id
+            full = tasksets.file_path(SCN_TASKS_DIR, fid)
+            if not os.path.isfile(full):
+                raise ValueError(t("任务集不存在: {id} (可能已被删除, 请重新导入)", id=fid))
+            # 记进结果: 任务集页面按它统计「用过几次」, 速度测试结果页显示任务集的名称
+            rp = dict(rp, file=full, task_set={"id": fid, "name": tasksets.read_meta(SCN_TASKS_DIR, fid)["name"]})
+        elif re.match(r"^replay-[0-9a-f]{12}$", fid):  # 旧版回放文件 (启动时会并进任务集; 这里兼容还没并进去的)
+            full = os.path.join(REPLAY_DIR, fid + ".jsonl")
+            if not os.path.isfile(full):
+                raise ValueError("回放文件不存在: %s (可能已被删除, 请重新上传)" % fid)
+            rp = dict(rp, file=full)
+        else:
             raise ValueError("非法 file_id")
-        full = os.path.join(REPLAY_DIR, fid + ".jsonl")
-        if not os.path.isfile(full):
-            raise ValueError("回放文件不存在: %s (可能已被删除, 请重新上传)" % fid)
-        rp = dict(rp, file=full)
     elif not (rp.get("file") or "").strip():
-        raise ValueError("replay 需要 file_id(上传的文件)或 file(服务器路径)")
+        raise ValueError("replay 需要 file_id(任务集的 id)或 file(服务器路径)")
     replay = dict(rp)
     closed = replay.get("closed")
     if closed:
@@ -1347,38 +1354,20 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- 真实请求回放池
     def replay_list(self):
+        """旧接口: 回放用的请求文件现在就是任务集, 列出任务集 (file_id 是任务集 id)。"""
         files = []
-        if os.path.isdir(REPLAY_DIR):
-            for fn in sorted(os.listdir(REPLAY_DIR)):
-                if re.match(r"^replay-[0-9a-f]{12}\.jsonl$", fn):
-                    p = os.path.join(REPLAY_DIR, fn)
-                    files.append({"file_id": fn[:-6], "size": os.path.getsize(p), "mtime": _mtime_iso(p)})
+        for fid in tasksets.list_ids(SCN_TASKS_DIR):
+            p = tasksets.file_path(SCN_TASKS_DIR, fid)
+            try:
+                files.append({"file_id": fid, "name": tasksets.read_meta(SCN_TASKS_DIR, fid)["name"],
+                              "size": os.path.getsize(p), "mtime": _mtime_iso(p)})
+            except OSError:  # 列目录之后刚被删掉
+                continue
         return {"ok": True, "files": files}
 
     def api_replay_upload(self, body):
-        """上传回放文件: {name, content}; 内容寻址存 data/replay/replay-<sha12>.jsonl, 幂等。
-        逐行检查与回放时实际发送的判断相同(bench.check_task_text)。"""
-        name = (body.get("name") or "").strip()
-        content = body.get("content")
-        if not isinstance(content, str) or not content.strip():
-            return self._json({"ok": False, "error": "缺少文件内容 (content 应为 JSONL 文本)"}, 400)
-        if len(content.encode("utf-8", "ignore")) > 15 * 1024 * 1024:
-            return self._json({"ok": False, "error": "文件超过 15MB 上限; 大文件请放到服务器后用路径引用"}, 400)
-        check = bench.check_task_text(content)
-        if not check["valid"]:
-            return self._json({"ok": False, "error": "没有可用行: 每行应为 {\"messages\": [...], \"params\": {...}}",
-                               "check": check}, 400)
-        data = content.encode("utf-8")
-        fid = "replay-" + hashlib.sha256(data).hexdigest()[:12]
-        os.makedirs(REPLAY_DIR, exist_ok=True)
-        path = os.path.join(REPLAY_DIR, fid + ".jsonl")
-        if not os.path.isfile(path):  # 内容寻址: 同内容幂等
-            tmp = path + ".tmp"
-            with open(tmp, "wb") as f:
-                f.write(data)
-            os.replace(tmp, path)
-        return self._json({"ok": True, "file_id": fid, "name": name[:80], "lines": check["valid"],
-                           "bad_lines": check["total"] - check["valid"], "check": check})
+        """旧接口: 回放用的请求文件现在就是任务集, 上传等于导入任务集 (返回的 file_id 是任务集 id, 别的字段和导入任务集一样)。"""
+        return self.api_scenario_upload({"kind": "tasks", "name": body.get("name"), "content": body.get("content")})
 
     def report_html(self, run_id, cmp_id=None):
         """离线自包含 HTML 报告 (?id=run_a&cmp=run_b 做 A/B); 浏览器直接打开, 无需服务。"""
@@ -1724,6 +1713,39 @@ def parse_args(argv=None):
     return ap.parse_args(argv)
 
 
+def migrate_replay_files(replay_dir=None, tasks_dir=None):
+    """旧版回放文件 (data/replay/replay-<sha12>.jsonl) 并进任务集 (data/scenario/tasks/scn-<sha12>.jsonl):
+    两边的 id 都是文件内容的同一个哈希, 所以只是换目录、补一个名称; 之后在任务集页面里能逐行检查、改名、删除。
+    已经有同内容的任务集就只删旧文件。返回 [(说明, 是否需要人工处理)]。"""
+    replay_dir, tasks_dir = replay_dir or REPLAY_DIR, tasks_dir or SCN_TASKS_DIR
+    if not os.path.isdir(replay_dir):
+        return []
+    moved, failed = 0, 0
+    for fn in sorted(os.listdir(replay_dir)):
+        m = re.match(r"^replay-([0-9a-f]{12})\.jsonl$", fn)
+        if not m:
+            continue
+        src, fid = os.path.join(replay_dir, fn), "scn-" + m.group(1)
+        dst = tasksets.file_path(tasks_dir, fid)
+        try:
+            existed = os.path.isfile(dst)
+            if not existed:
+                os.makedirs(tasks_dir, exist_ok=True)
+                shutil.copyfile(src, dst + ".tmp")
+                os.replace(dst + ".tmp", dst)
+            tasksets.on_import(tasks_dir, fid, t("回放文件 {id}", id=m.group(1)), existed)
+            os.remove(src)
+            moved += 1
+        except OSError:
+            failed += 1
+    notes = []
+    if moved:
+        notes.append((tn("{n} 个回放文件已并入任务集（在「任务集」页面里看）", moved), False))
+    if failed:
+        notes.append((tn("{n} 个回放文件没能并入任务集，还留在 data/replay/，请检查目录权限后重启服务", failed), True))
+    return notes
+
+
 def migrate_legacy_dirs(root=ROOT, data=DATA):
     """2.9 之前 results/、works/ 放在项目根, 现统一放 data/ 下。启动时搬过去: 目标不存在则整体改名;
     两边都有则逐项搬, 重名的不覆盖、留在原处。返回 [(说明, 是否需要人工处理)]。"""
@@ -1763,7 +1785,7 @@ def main(argv=None):
                 "\n  请先关闭旧进程，或换一个端口：python run.py {next_port}",
                 host=args.host, port=args.port, error=e, next_port=args.port + 1))
         sys.exit(1)
-    moved = migrate_legacy_dirs()
+    moved = migrate_legacy_dirs() + migrate_replay_files()
     db = store.default_db()
     store.init(db)
     imported = store.import_dir(RESULTS, only_new=True)

@@ -91,4 +91,6 @@ I18N.add("en", {
   "请先选择要导出的测试": "Pick a test to export first",
   "已导出「{title}」（{size} MB）：一个网页文件，双击就能打开，和这里看到的一样": "Exported “{title}” ({size} MB): one web page file; double-click to open it, and it looks the same as here",
   "导出失败：{msg}": "Export failed: {msg}",
+  /* 列表里几项之间的分隔 (中文顿号, 英文逗号加空格): list.join(t("、")) */
+  "、": ", ",
 });

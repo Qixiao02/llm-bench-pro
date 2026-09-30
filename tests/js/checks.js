@@ -1566,4 +1566,22 @@ T("页头的测试下拉: 「不对比」等选项文字按当前语言生成 (�
   } finally { RUNS = keep; }
 });
 
+T("新建速度测试: 任务集 + 发送方式 → replay 配置; 缺哪个就说缺哪个", () => {
+  assert.deepEqual(replayFromForm({}), {replay: null});
+  assert.deepEqual(replayFromForm({taskId: "", conc: " ", rates: ""}), {replay: null});
+  assert.deepEqual(replayFromForm({taskId: "scn-abc", conc: "8, 16", rpw: "", rates: "", dur: ""}),
+    {replay: {file_id: "scn-abc", closed: {conc: "8, 16", requests_per_worker: 4}}});            /* 每个并发发几次: 不填按 4 */
+  assert.deepEqual(replayFromForm({taskId: "scn-abc", conc: "", rates: "2,5", dur: "30"}),
+    {replay: {file_id: "scn-abc", open: {rates: "2,5", duration_s: 30}}});
+  assert.deepEqual(replayFromForm({taskId: "scn-abc", conc: "4", rpw: "7", rates: "1", dur: "abc"}).replay,
+    {file_id: "scn-abc", closed: {conc: "4", requests_per_worker: 7}, open: {rates: "1", duration_s: 60}});   /* 两种方式可以同时用; 持续秒数不是数字按 60 */
+  let e = replayFromForm({taskId: "scn-abc"});                                                       /* 选了任务集没选发送方式 */
+  assert.ok(e.error.includes("发送方式") && e.focus === "fRpConc" && !e.replay);
+  e = replayFromForm({taskId: "", rates: "2"});                                                      /* 填了发送方式没选任务集 */
+  assert.ok(e.error.includes("先选择任务集") && e.focus === "fTaskSel" && !e.replay);
+});
+T("新建速度测试的场景里没有「自定义任务集」: 请求文件统一走任务集", () => {
+  assert.deepEqual(SCN_TPL.map(x => x[0]), ["chat", "code", "json", "rag", "vision"]);
+});
+
 console.log("FRONTEND-OK " + __n);

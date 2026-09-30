@@ -1545,6 +1545,9 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
     if replay and rp_pool is not None:
         result["replay"] = {"file": os.path.basename(rp_pool.path), "pool_size": len(rp_pool),
                             "skipped": rp_pool.skipped, "bad": rp_pool.bad}
+        if replay.get("task_set"):  # 请求文件是页面上的某个任务集: 记下 id 和名称
+            result["replay"]["task_set"] = {"id": str(replay["task_set"]["id"]),
+                                            "name": str(replay["task_set"].get("name") or replay["task_set"]["id"])}
     sink = sink or sinks.JsonFileSink(outdir)
 
     def save():
@@ -1594,14 +1597,21 @@ def run_suite(url, model, api_key="", suite="standard", metrics_url=None, tag=""
             plog("[phase] scenario:%s (%s)" % (tpl_id, SCN_TEMPLATES[tpl_id]["label"]))
             result["phases"].append(phase_scenario(url, headers, model, tpl_id, scenarios)); save()
         if rp_pool is not None:
+            ts = result["replay"].get("task_set")  # 每个回放阶段都带上任务集: 任务集页面按它统计「用过几次」
             rcfg = replay.get("closed") or {}
             if rcfg.get("conc"):
                 plog(t("[phase] replay 闭环"))
-                result["phases"].append(phase_replay_closed(url, headers, model, rcfg, rp_pool)); save()
+                ph = phase_replay_closed(url, headers, model, rcfg, rp_pool)
+                if ts:
+                    ph["task_set"] = ts
+                result["phases"].append(ph); save()
             ocfg = replay.get("open") or {}
             if ocfg.get("rates"):
                 plog(t("[phase] replay 开环 (泊松到达)"))
-                result["phases"].append(phase_replay_open(url, headers, model, ocfg, rp_pool)); save()
+                ph = phase_replay_open(url, headers, model, ocfg, rp_pool)
+                if ts:
+                    ph["task_set"] = ts
+                result["phases"].append(ph); save()
             result["replay"]["wrapped"] = rp_pool.wrapped
         for ctx in cfg.get("longctx", []):
             plog("[phase] longctx %dK" % (ctx // 1024))

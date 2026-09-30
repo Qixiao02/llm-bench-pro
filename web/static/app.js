@@ -1,6 +1,6 @@
 "use strict";
 /* LLM Bench Pro 前端逻辑 (零依赖经典脚本; 图表用本地内置的 ECharts) */
-const UI_VERSION="3.8.0";  /* 与 llm_bench_pro/version.py 保持一致 */
+const UI_VERSION="3.9.0";  /* 与 llm_bench_pro/version.py 保持一致 */
 I18N.boot();  /* 翻译框架 (i18n.js) 先加载: 记下页面上原有的静态节点, 英文模式下先把 index.html 的静态文字翻成英文, 再往下跑 */
 /* ============================================================
    基础工具
@@ -1513,7 +1513,7 @@ function ragPair(qa,qb){return !!(qa&&qb)&&Math.abs(ragActual(qa)/ragActual(qb)-
 const perfLog=LogBox("runLog","perf");
 const SUITE_NAME={quick:"快速",standard:"标准",full:"完整",custom:"自定义"};
 const saveForm=bindFormMemory("llm-bench-pro-form",["fBase","fModel","fTag","fSuite","fConc","fMConc","fLens","fFw","fFwVer",
-  "fScnConc","fScnRpw","fScnMt","fImgDir","fImgN","fReplaySel","fRpConc","fRpRates","fRpDur"]);
+  "fScnConc","fScnRpw","fScnMt","fImgDir","fImgN","fRpConc","fRpRpw","fRpRates","fRpDur"]);
 function suitePlaceholders(){
   const s=$("fSuite").value;
   $("fConc").placeholder={quick:"默认 1,4,8",standard:"默认 1,2,4,8,16",full:"默认 1,2,4,8,16,32,48,64"}[s]||"";
@@ -1536,7 +1536,6 @@ const SCN_TPL=[
   ["json","提取成 JSON","把商品描述整理成标准 JSON，统计格式是否合法"],
   ["rag","看资料回答","给一段长资料再提问，要求注明出处；可选资料长度"],
   ["vision","看图回答","看图说出形状和颜色、读柱状图和饼图；默认用内置示例图片，也可以上传自己的图片"],
-  ["custom","自定义任务集","用你导入的任务集（JSONL，每行一个请求）；在左侧「任务集」页面导入、逐行查看、下载模板"],
 ];
 const RAG_CTX_OPTS=[[1500,"1.5K"],[4000,"4K"],[16000,"16K"]];
 function scnChip(val,label,tip,checked){
@@ -1554,7 +1553,6 @@ function scnSyncVisibility(){
   $("scnCommon").hidden=!sel.size;
   $("scnRagRow").hidden=!sel.has("rag");
   $("scnVisionRow").hidden=!sel.has("vision");
-  $("scnCustomRow").hidden=!sel.has("custom");
   const st=lsGet("llm-bench-pro-scn");
   st.tasks=scnSelected();
   st.rag_ctx=[...document.querySelectorAll("#ragCtxChips input:checked")].map(x=>+x.value);
@@ -1720,6 +1718,19 @@ async function probe(){
     saveForm();
   }finally{setBusy(btn,false)}
 }
+/* 任务集 + 发送方式 → 传给 /api/start 的 replay (文件就是任务集: file_id 是任务集 id)。
+   发送方式有两种, 至少填一种: 固定同时请求数 (conc, 每个并发发 rpw 次) 和 / 或 固定到达速率 (rates, 每档持续 dur 秒)。
+   选了任务集却没填发送方式、或者填了发送方式却没选任务集, 返回 {error, focus}; 什么都没填返回 {replay:null} */
+function replayFromForm({taskId,conc,rpw,rates,dur}){
+  conc=String(conc||"").trim();rates=String(rates||"").trim();
+  if(!taskId&&!conc&&!rates)return{replay:null};
+  if(taskId&&!conc&&!rates)return{error:t("选了任务集，还要选发送方式：填「固定同时请求数」或「固定到达速率」"),focus:"fRpConc"};
+  if(!taskId)return{error:t("填了发送方式，请先选择任务集"),focus:"fTaskSel"};
+  const replay={file_id:taskId};
+  if(conc)replay.closed={conc,requests_per_worker:parseInt(rpw)||4};
+  if(rates)replay.open={rates,duration_s:parseInt(dur)||60};
+  return{replay};
+}
 async function start(){
   const model=$("fModel").value.trim();
   if(!model){msg("probeOut","error","请填写模型名称");$("fModel").focus();return}
@@ -1737,19 +1748,17 @@ async function start(){
       if(v==="dir"&&!dir){msg("probeOut","error","请填写服务器上的图片文件夹，或换成内置示例图片");$("fImgDir").focus();return}
       scen.vision_src=v==="dir"?{dir,images:n}:v&&v!=="builtin"?{image_id:v,images:n}:{builtin:true,images:n};
     }
-    if(tasks.includes("custom")&&$("fTaskSel").value)scen.custom_file_id=$("fTaskSel").value;
   }
-  const replay={};
-  const rid=$("fReplaySel").value;
-  if(rid){
-    replay.file_id=rid;
-    if($("fRpConc").value.trim())replay.closed={conc:$("fRpConc").value.trim()};
-    if($("fRpRates").value.trim())replay.open={rates:$("fRpRates").value.trim(),duration_s:parseInt($("fRpDur").value)||60};
+  const rp=replayFromForm({taskId:$("fTaskSel").value,conc:$("fRpConc").value,rpw:$("fRpRpw").value,rates:$("fRpRates").value,dur:$("fRpDur").value});
+  if(rp.error){
+    msg("probeOut","error",rp.error);
+    const el=$(rp.focus),trig=el&&el._cs&&el._cs.trigger;(trig||el).focus();
+    return;
   }
   const body={base:$("fBase").value,api_key:$("fKey").value,model,suite:$("fSuite").value,tag:$("fTag").value,
     metrics:$("fMetrics").checked,conc_ladder:$("fConc").value,matrix_conc:$("fMConc").value,lens:$("fLens").value,
     framework:$("fFw").value,fw_version:$("fFwVer").value,fixed_output:$("fFixed").checked,
-    scenarios:Object.keys(scen).length?{...scen,replay:Object.keys(replay).length?replay:undefined}:undefined};
+    scenarios:Object.keys(scen).length?scen:undefined,replay:rp.replay||undefined};
   const d=await postWithConflict("/api/start",body);
   if(!d)return;
   if(!d.ok){msg("probeOut","error",d.error);return}
@@ -1763,40 +1772,14 @@ function watchPerf(title){
   perfPoll=pollStatus("/api/status",perfLog,{onDone:()=>{$("btnStart").disabled=false;refresh(true)}});
 }
 
-/* ---------- 回放文件: 列表 / 上传 ---------- */
-async function loadReplayFiles(keep){
-  try{
-    const d=await getJSON("/api/replay-list");
-    const sel=$("fReplaySel");
-    sel.innerHTML=`<option value="">不回放</option>`+d.files.map(f=>
-      `<option value="${esc(f.file_id)}">${esc(f.file_id.slice(7,15))} · ${(f.size/1048576).toFixed(1)} MB · ${shortTime(f.mtime)}</option>`).join("");
-    if(keep&&d.files.find(f=>f.file_id===keep))sel.value=keep;
-  }catch(e){/* 服务不可达时保持空列表 */}
-}
-$("fReplayFile").addEventListener("change",async e=>{
-  const f=e.target.files[0];
-  e.target.value="";
-  if(!f)return;
-  const tooBig=`${f.name} 太大：请放到运行服务的机器上，用命令行 --replay-file 引用`;
-  if(f.size>15*1024*1024){msg("probeOut","error",tooBig+"（文件超过 15 MB）");return}
-  try{
-    const body={name:f.name,content:await f.text()};
-    if(new Blob([JSON.stringify(body)]).size>UPLOAD_BODY_MAX){msg("probeOut","error",tooBig+"（上传时超过服务一次最多收的 16 MB）");return}
-    msg("probeOut","info","正在上传并检查 "+f.name+"…");
-    const d=await postJSON("/api/replay-upload",body);
-    const p=d.check&&d.check.problems[0],first=p?`第 ${p.line} 行：${p.reason}`:"";
-    if(!d.ok){msg("probeOut","error","上传失败："+d.error+(first?`（${first}）`:""));return}
-    await loadReplayFiles(d.file_id);
-    msg("probeOut","success",`已上传 ${f.name}：${fmtInt(d.lines)} 条可用请求${d.bad_lines?`（${d.bad_lines} 行有问题，回放时跳过${first?`，比如${first}`:""}）`:""}`);
-  }catch(err){msg("probeOut","error","读取文件失败："+err.message)}
-});
-
 /* ---------- 新建面板底部的「这次要测什么」 ---------- */
 function optText(id){const s=$(id);const o=s&&s.options[s.selectedIndex];return o?o.textContent:""}
 function launcherSummary(){
   const box=$("launcherSum");if(!box)return;
-  const scn=scnSelected().map(k=>SCN_LABEL[k]||k),rp=$("fReplaySel").value;
-  box.innerHTML=`${icon("list-checks","icon-sm")}<span>这次将测：<b>${esc(optText("fSuite"))}</b>${scn.length?` · 模拟业务 ${scn.length} 类（${esc(scn.join("、"))}）`:""}${rp?" · 回放真实请求":""}${$("fFixed").checked?"":" · 输出长度不固定"}</span>`;
+  const scn=scnSelected().map(k=>SCN_LABEL[k]||k),tid=$("fTaskSel").value;
+  const modes=[$("fRpConc").value.trim()?t("固定同时请求数"):"",$("fRpRates").value.trim()?t("固定到达速率"):""].filter(Boolean);
+  const ts=tid&&modes.length?((SCN_ASSETS.tasks||[]).find(x=>x.file_id===tid)||{name:tid}).name:"";
+  box.innerHTML=`${icon("list-checks","icon-sm")}<span>这次将测：<b>${esc(optText("fSuite"))}</b>${scn.length?` · 模拟业务 ${scn.length} 类（${esc(scn.join("、"))}）`:""}${ts?esc(t(" · 任务集「{name}」（{modes}）",{name:ts,modes:modes.join(t("、"))})):""}${$("fFixed").checked?"":" · 输出长度不固定"}</span>`;
 }
 function iqLauncherSummary(){
   const box=$("iqLauncherSum");if(!box)return;
@@ -1910,7 +1893,7 @@ const CMP_EXTRA=[
   {key:"p50",label:()=>termText("长输入时单个请求{decode}（{p50}）"),term:"per",unit:"token/秒",dir:1,val:m=>m.s&&m.s.per_stream_decode_p50,ref:ladderRef},
   {key:"scnreq",label:()=>termText("模拟业务 · {rps}"),term:"rps",unit:"个/秒",dir:1,digits:2,val:m=>m.scnLast&&m.scnLast.req_s,ref:m=>m.scnLast&&m.scnLast.conc,
     sub:m=>m.scnLast?`同时 ${m.scnLast.conc} 个请求${m.jsonRate!=null?" · JSON 合格 "+fmt(m.jsonRate,0)+"%":""}`:""},
-  {key:"rps",label:()=>termText("回放真实请求 · {rps}"),term:"rps",unit:"个/秒",dir:1,digits:2,val:m=>m.rpLast&&m.rpLast.req_s,ref:m=>m.rpLast&&m.rpLast.conc,
+  {key:"rps",label:()=>termText("任务集 · {rps}"),term:"rps",unit:"个/秒",dir:1,digits:2,val:m=>m.rpLast&&m.rpLast.req_s,ref:m=>m.rpLast&&m.rpLast.conc,
     sub:m=>m.rpLast?`同时 ${m.rpLast.conc} 个 · 最多积压 ${fmtInt(m.rpLast.max_inflight)} 个`:""},
   {key:"inf",label:m=>termText(`{open} · 最多积压${m.olLast?"（"+m.olLast.rate+" 个/秒）":""}`),term:"inflight",unit:"个",dir:-1,digits:0,val:m=>m.olMax,ref:m=>m.olLast&&m.olLast.rate,
     sub:m=>m.olLast?`实际完成 ${fmt(m.olLast.completed_rps,2)} / 目标 ${m.olLast.rate} 个/秒`:""},
@@ -2319,7 +2302,7 @@ function drawScn(a,b,p){
   });
 }
 
-/* ---------- 回放真实请求 ---------- */
+/* ---------- 任务集: 固定同时请求数 / 固定到达速率 ---------- */
 function replaySection(a,b,p){
   const pa=phase(a,"replay"),pb=b?phase(b,"replay"):null,oa=phase(a,"openloop"),ob=b?phase(b,"openloop"):null;
   if(!pa&&!oa)return "";
@@ -2333,7 +2316,7 @@ function replaySection(a,b,p){
       rows:pa.points.map(q=>{const z=pb?pb.points.find(x=>x.conc===q.conc):null;
         return{conc:q.conc,rps:q.req_s,rpsB:z&&z.req_s,t95:q.ttft_p95_s,e95:q.e2e_p95_s,e95B:z&&z.e2e_p95_s,io:`${fmtInt(q.prompt_tokens_avg)} / ${fmtInt(q.out_tokens_avg)}`,
           inf:q.max_inflight,ok:`${q.ok} / ${q.total}`,note:(retryTag(q)+(q.fail?` <span class="badge is-bad">失败 ${q.fail}</span>`:"")).trim()||"—"}})});
-    charts.push(`<div class="scn-block"><div class="sub-h">${term("closed")}<span class="sub-h-note">请求池 ${fmtInt(pool.size)} 条${pool.wrapped?"（已循环使用，后面的请求可能因为重复内容复用而偏快）":""}${a.replay&&a.replay.file?" · "+esc(a.replay.file):""}</span></div>
+    charts.push(`<div class="scn-block"><div class="sub-h">${term("closed")}<span class="sub-h-note">请求池 ${fmtInt(pool.size)} 条${pool.wrapped?"（已循环使用，后面的请求可能因为重复内容复用而偏快）":""}${a.replay&&(a.replay.task_set||a.replay.file)?" · "+esc(a.replay.task_set?a.replay.task_set.name:a.replay.file):""}</span></div>
       <div class="grid-2">${ccard(p+"RpRps",term("rps"),{desc:termHtml("横轴是{!conc} · 越高越好"),h:220})}${ccard(p+"RpE2e",termHtml("{e2e}（{!p95|较慢的情况}）"),{desc:"越短越好",h:220})}</div></div>`);
   }
   if(oa){
@@ -2347,7 +2330,8 @@ function replaySection(a,b,p){
     charts.push(`<div class="scn-block"><div class="sub-h">${term("open")}<span class="sub-h-note">按设定速率随机间隔地发请求；两次测试的发送时间点完全相同。${termHtml("{inflight}一直往上涨，说明服务跟不上")}</span></div>
       <div class="grid-2">${ccard(p+"OlInf",termHtml("{inflight}数量随时间变化"),{desc:"横轴是开始后的秒数",h:240})}${ccard(p+"OlRate","目标速率 vs 实际完成速率",{desc:"实际明显低于目标说明处理不过来",h:240})}</div></div>`);
   }
-  return panel({id:p+"-replay",title:"回放真实请求",jump:"真实回放",desc:"用线上导出的真实请求施压",chart:`<div class="scn-list">${charts.join("")}</div>`,tables,tcols:1});
+  const rts=a.replay&&a.replay.task_set;
+  return panel({id:p+"-replay",title:t("任务集",null,"结果页"),jump:t("任务集",null,"结果页"),desc:rts?t("用任务集「{name}」里的请求施压",{name:esc(rts.name)}):t("用线上导出的真实请求施压"),chart:`<div class="scn-list">${charts.join("")}</div>`,tables,tcols:1});
 }
 function drawReplay(a,b,p){
   const pa=phase(a,"replay"),pb=b?phase(b,"replay"):null;
@@ -4805,15 +4789,14 @@ function tsDownload(id){
   const a=document.createElement("a");a.href="/api/task-set-download?id="+encodeURIComponent(id);a.download="";
   document.body.appendChild(a);a.click();a.remove();
 }
-/* 在速度测试里使用: 打开新建速度测试, 勾选「自定义任务集」、选中它, 抽屉滚到这一栏并短暂高亮 */
+/* 在速度测试里使用: 打开新建速度测试、选中这个任务集 (发送方式都没填就先填「固定同时请求数 8」), 抽屉滚到这一栏并短暂高亮 */
 async function tsUse(id){
   const s=tsFind(id);
-  const chip=document.querySelector('#scnChips input[value="custom"]');
-  if(chip&&!chip.checked){chip.checked=true;scnSyncVisibility()}
   const sel=$("fTaskSel");
   if(![...sel.options].some(o=>o.value===id))await loadScenarioAssets(null,id);
   if(![...sel.options].some(o=>o.value===id)){toast("新建面板里找不到这个任务集，请刷新页面再试","error");return}
   sel.value=id;scnAssetRemember();scnAssetSync();
+  if(!$("fRpConc").value.trim()&&!$("fRpRates").value.trim()){$("fRpConc").value="8";saveForm()}
   toggleLauncher("launcher",true);
   launcherSummary();
   const row=$("scnCustomRow");
@@ -6254,7 +6237,6 @@ else{
   checkVersion().then(()=>{if(VIEW==="iq")renderIq()});
   setInterval(checkVersion,60000);
   refresh();
-  loadReplayFiles();
   loadScenarioAssets();
   loadEndpoints();
   resumeRunning();
