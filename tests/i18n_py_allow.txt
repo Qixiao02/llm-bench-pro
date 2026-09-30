@@ -77,3 +77,6 @@ vision_assets.py:SAMPLE_MULTI_PROMPTS
 # ---- server.py: 旧版数据里的标记 (只用来识别 data/ 里已存的旧数据, 不是输出; 现在没有代码会写它)
 server.py:_rec_summary:（无正文                       # 旧版评测程序在模型没给出正式回答时, 存进 tail 的开头
 server.py:_answer_of:（无正文                         # 同上
+
+# ---- geneval.py (i18n-py-geneval): 检查项名称
+geneval.py:CHECK_LABELS                             # 检查项名称: 和 id 一起存进结果, 语言不同的两次测试里必须一样才能对比; 前端按 id 显示大白话名称, 并用正则去掉 step / feature 两个前缀

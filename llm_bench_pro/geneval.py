@@ -28,6 +28,7 @@ except ImportError:
     import gen_specs
     import i18n
     import iq
+t, tn = i18n.t, i18n.tn
 
 # 1.1: 交互判定基线与动作窗口等长、需作品处理器响应、忽略无变化的 DOM 重写; 按键码表; 移动端溢出判定;
 #      白屏/截断时不白给分; 断言前后对照; 评审输出容错
@@ -39,6 +40,25 @@ VIEW_W, VIEW_H = 1280, 800
 ANALYZE_SCALE = 0.25   # 像素分析用小图 320x200
 SHOT_SCALE = 0.6       # 评审/展示用截图 768x480
 MOBILE_W, MOBILE_H = 390, 844
+
+# 检查项名称 (label): 测试内容, 不翻译, 在 tests/i18n_py_allow.txt 里登记。它和 id 一起存进结果: 语言不同的两次测试里,
+# 同一项的名称必须一样才能对比。前端按 id 显示大白话名称 (label 只放在悬停提示里), 还会用正则去掉交互项 / 源码特征项
+# label 的前缀 (下面 step / feature 两个), 所以前缀也不能变。检查之后产生的说明文字 (detail / notes / 截图说明) 不是名称, 走 t()。
+CHECK_LABELS = {
+    "load": "页面加载完成且未卡死",
+    "nonblank": "首屏有实际渲染内容（非白屏/纯色）",
+    "animated": "空闲时持续动画/渲染",
+    "no_error": "运行无未捕获异常/控制台错误",
+    "no_error_hung": "运行无未捕获异常",   # 页面卡死时 no_error 的名称 (以前就比正常的短, 保持原样)
+    "responsive": "移动端 390px 适配（viewport 声明、无横向溢出）",
+    "self_contained": "单文件自包含（无外部脚本/样式/接口依赖）",
+    "complete": "代码完整输出（</html> 闭合、script 配对）",
+    "probe": "运行检测完整执行",
+    "doctype": "HTML 文档结构",
+    "static_self_contained": "无外部脚本/样式依赖",   # 只看源码时的 self_contained
+    "step": "交互：",            # step<N> 的 label = 这个前缀 + gen_specs 里的步骤名
+    "feature": "源码特征 /%s/",   # f<N> 的 label (%s 是特征正则)
+}
 
 # 注入脚本: 在作品任何代码之前执行
 INSTRUMENT_JS = r"""
@@ -227,6 +247,7 @@ class Prober:
         self.pg, self.spec, self.shots_dir = page, spec, shots_dir
         self.checks, self.shots, self.notes = [], [], []
         self._w, self._h = VIEW_W, VIEW_H
+        self.hung = False   # 页面卡死、后面的检测没法做 (probe_work 据此不做对照运行; 不能靠说明文字里有没有「卡死」判断, 说明文字会随语言变)
 
     # ---- 基础
     def check(self, cid, label, ok, detail=""):
@@ -251,8 +272,8 @@ class Prober:
 
     def exceptions(self, since):
         out = []
-        for t, m, p in list(self.pg.events):
-            if t < since:
+        for ts, m, p in list(self.pg.events):
+            if ts < since:
                 continue
             if m == "Runtime.exceptionThrown":
                 d = p.get("exceptionDetails") or {}
@@ -338,13 +359,13 @@ class Prober:
                         self.run_action(sub)
                         time.sleep(0.08)
                     return True, ""
-                return bool(a.get("optional")), "未找到元素 %s" % (a.get("find") or a.get("css"))
+                return bool(a.get("optional")), t("未找到元素 {target}", target=a.get("find") or a.get("css"))
             do = a.get("do", "click")
             if do == "hover":
                 self.mouse("mouseMoved", target["x"], target["y"])
             else:
                 self.click_at(target["x"], target["y"], clicks=2 if do == "dblclick" else 1)
-            return True, "命中「%s」" % target["text"]
+            return True, t("命中「{text}」", text=target["text"])
         return True, ""
 
     # ---- 流程
@@ -352,9 +373,9 @@ class Prober:
         self._w, self._h = (MOBILE_W, MOBILE_H) if mobile else (VIEW_W, VIEW_H)
         self.pg.send("Emulation.setDeviceMetricsOverride", {"width": self._w, "height": self._h,
                                                            "deviceScaleFactor": 1, "mobile": mobile})
-        t = time.monotonic()
+        t_nav = time.monotonic()
         self.pg.send("Page.navigate", {"url": url})
-        return self.pg.wait_event("Page.loadEventFired", 15, since=t) is not None
+        return self.pg.wait_event("Page.loadEventFired", 15, since=t_nav) is not None
 
     def run(self, url):
         spec = self.spec
@@ -366,26 +387,27 @@ class Prober:
             alive = True
         except cdp.CDPError:
             alive = False
-        self.check("load", "页面加载完成且未卡死", loaded and alive,
-                   "" if loaded and alive else ("加载超时" if not loaded else "主线程无响应(疑似死循环)"))
+        self.check("load", CHECK_LABELS["load"], loaded and alive,
+                   "" if loaded and alive else (t("加载超时") if not loaded else t("主线程无响应(疑似死循环)")))
         if not alive:
-            self.check("no_error", "运行无未捕获异常", False, "页面卡死, 无法继续检测")
-            fill_skipped(self, spec, "页面卡死，未检测")
+            self.hung = True
+            self.check("no_error", CHECK_LABELS["no_error_hung"], False, t("页面卡死, 无法继续检测"))
+            fill_skipped(self, spec, t("页面卡死，未检测"))
             return
 
         a = self.small()
         st = cdp.image_stats(a)
         nonblank = _nonblank(st)
-        self.shot("01_initial", "首屏（加载后约 1.2 秒）")
-        self.check("nonblank", "首屏有实际渲染内容（非白屏/纯色）", nonblank,
-                   "主色占比 %.1f%%，颜色数 %d" % (st["dominant_ratio"] * 100, st["colors"]))
+        self.shot("01_initial", t("首屏（加载后约 1.2 秒）"))
+        self.check("nonblank", CHECK_LABELS["nonblank"], nonblank,
+                   t("主色占比 {ratio:.1f}%，颜色数 {colors}", ratio=st["dominant_ratio"] * 100, colors=st["colors"]))
 
         ps0 = self.probe_state()
         time.sleep(spec["idle"])
         b = self.small()
         ps1 = self.probe_state()
         idle_diff = cdp.image_diff(a, b)
-        self.shot("02_idle", "空闲 %.1f 秒后" % spec["idle"])
+        self.shot("02_idle", t("空闲 {idle:.1f} 秒后", idle=spec["idle"]))
         self.blank = not nonblank
         if spec["animated"]:
             self._mark_animated(idle_diff, ps0, ps1)
@@ -394,7 +416,7 @@ class Prober:
             try:
                 self.run_action(act)
             except cdp.CDPError as e:
-                self.notes.append("预热动作失败: %s" % e)
+                self.notes.append(t("预热动作失败: {error}", error=e))
             time.sleep(0.15)
         if spec["setup"]:
             time.sleep(0.5)
@@ -404,10 +426,10 @@ class Prober:
 
         errs = self.exceptions(t_start)
         if self.blank:  # 白屏(常见于脚本被截断未执行)时"无异常"没有意义, 不计通过
-            self.check("no_error", "运行无未捕获异常/控制台错误", False, "首屏白屏，无法确认脚本正常运行")
+            self.check("no_error", CHECK_LABELS["no_error"], False, t("首屏白屏，无法确认脚本正常运行"))
         else:
-            self.check("no_error", "运行无未捕获异常/控制台错误", not errs,
-                       ("%d 条：%s" % (len(errs), "；".join(dict.fromkeys(errs))))[:300] if errs else "")
+            self.check("no_error", CHECK_LABELS["no_error"], not errs,
+                       tn("{n} 条：{errors}", len(errs), errors=t("；").join(dict.fromkeys(errs)))[:300] if errs else "")
 
         if spec["responsive"]:
             self.run_mobile(url)
@@ -415,9 +437,9 @@ class Prober:
     def _mark_animated(self, diff, ps0, ps1):
         active = (ps1.get("raf", 0) > ps0.get("raf", 0) or ps1.get("draws", 0) > ps0.get("draws", 0)
                   or ps1.get("mutations", 0) > ps0.get("mutations", 0))
-        self.check("animated", "空闲时持续动画/渲染", diff > 0.003 or (diff > 0.0005 and active),
-                   "画面变化 %.2f%%，rAF %d 次，绘制调用 %d 次" % (diff * 100, ps1.get("raf", 0) - ps0.get("raf", 0),
-                                                        ps1.get("draws", 0) - ps0.get("draws", 0)))
+        self.check("animated", CHECK_LABELS["animated"], diff > 0.003 or (diff > 0.0005 and active),
+                   t("画面变化 {diff:.2f}%，rAF {raf} 次，绘制调用 {draws} 次", diff=diff * 100,
+                     raf=int(ps1.get("raf", 0) - ps0.get("raf", 0)), draws=int(ps1.get("draws", 0) - ps0.get("draws", 0))))
 
     def _measure(self, js):
         try:
@@ -466,9 +488,9 @@ class Prober:
             handled = sum(ps_c.get("calls", {}).values()) - sum(ps_b.get("calls", {}).values())
             errs = self.exceptions(t0)
             if not ok_actions:
-                passed, why = False, "；".join(notes)
+                passed, why = False, t("；").join(notes)
             elif errs:
-                passed, why = False, "交互触发异常：%s" % errs[0]
+                passed, why = False, t("交互触发异常：{error}", error=errs[0])
             elif stp.get("assert") or stp.get("count"):
                 passed, why = self._poll_assert(stp, pre_assert, pre_count)
             else:
@@ -479,17 +501,17 @@ class Prober:
                 dom = mut > base_mut * 1.5 + 2
                 rhythm = abs(diff - base_diff) > max(0.003, base_diff * 0.5)
                 passed = visual or dom or (handled > 0 and (diff > base_diff * 1.15 + 0.0005 or rhythm))
-                why = "画面变化 %.2f%%（等长空闲基线 %.2f%%），DOM 变更 %d（基线 %.0f），事件处理 %d 次" % (
-                    diff * 100, base_diff * 100, mut, base_mut, handled)
+                why = t("画面变化 {diff:.2f}%（等长空闲基线 {base_diff:.2f}%），DOM 变更 {mut}（基线 {base_mut:.0f}），事件处理 {handled} 次",
+                        diff=diff * 100, base_diff=base_diff * 100, mut=int(mut), base_mut=base_mut, handled=int(handled))
                 if passed and handled == 0 and not stp.get("native"):
-                    passed, why = False, why + "；作品没有处理该输入，变化来自自身动画或样式"
+                    passed, why = False, t("{why}；作品没有处理该输入，变化来自自身动画或样式", why=why)
             if len(self.shots) < 7:
-                self.shot("%02d_step%d" % (i + 3, i + 1), "交互「%s」之后" % label)
+                self.shot("%02d_step%d" % (i + 3, i + 1), t("交互「{label}」之后", label=label))
             if notes and ok_actions:
-                why = "；".join(notes) + "；" + why
-            self.check(cid, "交互：" + label, passed, why)
+                why = t("；").join(notes) + t("；") + why
+            self.check(cid, CHECK_LABELS["step"] + label, passed, why)
         except cdp.CDPError as e:
-            self.check(cid, "交互：" + label, False, "页面无响应：%s" % e)
+            self.check(cid, CHECK_LABELS["step"] + label, False, t("页面无响应：{error}", error=e))
 
     def _poll_assert(self, stp, pre_assert, pre_count, extra=3.0):
         """功能断言: 操作前不成立、操作后成立才算通过(计数型断言要求增量达到 gain); 逐字输出等慢渲染最多再等 extra 秒。"""
@@ -499,24 +521,27 @@ class Prober:
                 now = self._measure(stp["count"])
                 gain = stp.get("gain", 1)
                 ok = isinstance(now, (int, float)) and isinstance(pre_count, (int, float)) and now - pre_count >= gain
-                why = "功能断言%s（计数 %s → %s，需增加 %d）" % ("通过" if ok else "未通过", pre_count, now, gain)
+                if ok:
+                    why = t("功能断言通过（计数 {before} → {now}，需增加 {gain}）", before=pre_count, now=now, gain=int(gain))
+                else:
+                    why = t("功能断言未通过（计数 {before} → {now}，需增加 {gain}）", before=pre_count, now=now, gain=int(gain))
             else:
                 now = self._measure(stp["assert"])
                 if pre_assert:
-                    return False, "功能断言在操作前已成立，无法确认由本次操作产生"
+                    return False, t("功能断言在操作前已成立，无法确认由本次操作产生")
                 ok = bool(now)
-                why = "功能断言%s" % ("通过" if ok else "未通过")
+                why = t("功能断言通过") if ok else t("功能断言未通过")
             if ok or time.monotonic() >= end:
                 return ok, why
             time.sleep(0.4)
 
     def run_mobile(self, url):
-        label = _RESP_LABEL
+        label = CHECK_LABELS["responsive"]
         if self.blank:
-            self.check("responsive", label, False, "桌面首屏白屏，不检查移动端")
+            self.check("responsive", label, False, t("桌面首屏白屏，不检查移动端"))
             return
         try:
-            t = time.monotonic()
+            t_mobile = time.monotonic()
             self.load(url, mobile=True)
             time.sleep(1.0)
             # 移动模拟下内容过宽会撑大布局视口(innerWidth 随之变大), 须与设备宽度比较
@@ -524,20 +549,20 @@ class Prober:
                 "JSON.stringify({sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, "
                 "iw: innerWidth, meta: !!document.querySelector('meta[name=viewport]')})"))
             st = cdp.image_stats(self.small())
-            self.shot("09_mobile", "移动端 390px 视口")
+            self.shot("09_mobile", t("移动端 390px 视口"))
             limit = MOBILE_W + 4
             problems = []
             if not m["meta"]:
-                problems.append("缺少 viewport meta")
+                problems.append(t("缺少 viewport meta"))
             if max(m["sw"], m["cw"], m["iw"]) > limit:
-                problems.append("布局宽 %dpx 超出设备宽 %dpx" % (max(m["sw"], m["cw"], m["iw"]), MOBILE_W))
+                problems.append(t("布局宽 {width}px 超出设备宽 {device}px", width=int(max(m["sw"], m["cw"], m["iw"])), device=MOBILE_W))
             if not _nonblank(st):
-                problems.append("移动端白屏")
-            errs = [e for e in self.exceptions(t)]
+                problems.append(t("移动端白屏"))
+            errs = [e for e in self.exceptions(t_mobile)]
             if errs:
-                self.notes.append("移动端加载异常：%s" % errs[0])
+                self.notes.append(t("移动端加载异常：{error}", error=errs[0]))
             self.check("responsive", label, not problems,
-                       "；".join(problems) if problems else "内容宽 %dpx / 设备宽 %dpx" % (m["sw"], MOBILE_W))
+                       t("；").join(problems) if problems else t("内容宽 {width}px / 设备宽 {device}px", width=int(m["sw"]), device=MOBILE_W))
         except cdp.CDPError as e:
             self.check("responsive", label, False, str(e))
 
@@ -566,24 +591,21 @@ def source_complete(html):
     return "</html>" in low and len(re.findall(r"<script\b[^>]*>", low)) <= low.count("</script>")
 
 
-_RESP_LABEL = "移动端 390px 适配（viewport 声明、无横向溢出）"
-
-
 def fill_skipped(prober, spec, why):
     """没跑到的功能项记失败, 避免卡死或中断后这些项从通过率里消失。"""
     have = {c["id"] for c in prober.checks}
     if "nonblank" not in have:
-        prober.check("nonblank", "首屏有实际渲染内容（非白屏/纯色）", False, why)
+        prober.check("nonblank", CHECK_LABELS["nonblank"], False, why)
     if spec.get("animated") and "animated" not in have:
-        prober.check("animated", "空闲时持续动画/渲染", False, why)
+        prober.check("animated", CHECK_LABELS["animated"], False, why)
     for i, stp in enumerate(spec.get("steps") or []):
         cid = "step%d" % (i + 1)
         if cid not in have:
-            prober.check(cid, "交互：" + stp["label"], False, why)
+            prober.check(cid, CHECK_LABELS["step"] + stp["label"], False, why)
     if "no_error" not in have:
-        prober.check("no_error", "运行无未捕获异常/控制台错误", False, why)
+        prober.check("no_error", CHECK_LABELS["no_error"], False, why)
     if spec.get("responsive") and "responsive" not in have:
-        prober.check("responsive", _RESP_LABEL, False, why)
+        prober.check("responsive", CHECK_LABELS["responsive"], False, why)
 
 
 def _commit_shots(tmp, shots_dir):
@@ -634,7 +656,7 @@ def probe_work(browser, html_path, task_id, shots_dir):
     ext = []
     try:
         with open(html_path, encoding="utf-8", errors="replace") as f:
-            prober.check("complete", "代码完整输出（</html> 闭合、script 配对）", source_complete(f.read()), "")
+            prober.check("complete", CHECK_LABELS["complete"], source_complete(f.read()), "")
         try:
             page.send("Page.enable")
             page.send("Runtime.enable")
@@ -645,12 +667,12 @@ def probe_work(browser, html_path, task_id, shots_dir):
             page.send("Page.addScriptToEvaluateOnNewDocument", {"source": INSTRUMENT_JS})
             prober.run(pathlib.Path(html_path).resolve().as_uri())
         except cdp.CDPError as e:
-            prober.notes.append("检测中断: %s" % e)
+            prober.notes.append(t("检测中断: {error}", error=e))
             if not any(c["id"] == "load" for c in prober.checks):
-                prober.check("load", "页面加载完成且未卡死", False, str(e))
+                prober.check("load", CHECK_LABELS["load"], False, str(e))
             else:
-                prober.check("probe", "运行检测完整执行", False, "检测中断（页面无响应或超时）：%s" % str(e)[:160])
-            fill_skipped(prober, spec, "检测中断，未执行")
+                prober.check("probe", CHECK_LABELS["probe"], False, t("检测中断（页面无响应或超时）：{error}", error=str(e)[:160]))
+            fill_skipped(prober, spec, t("检测中断，未执行"))
         ext = external_requests(page)
     except Exception:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -663,21 +685,23 @@ def probe_work(browser, html_path, task_id, shots_dir):
     _commit_shots(tmp, shots_dir)
     control = None
     err_check = next((c for c in prober.checks if c["id"] == "no_error"), None)
-    if err_check and not err_check["pass"] and not prober.blank and "卡死" not in err_check["detail"]:
+    if err_check and not err_check["pass"] and not prober.blank and not prober.hung:
         try:
             errs = control_run(browser, pathlib.Path(html_path).resolve().as_uri(), spec)
             control = {"errors": errs[:5], "reproduced": bool(errs)}
-            err_check["detail"] = (err_check["detail"] + "。" + (
-                "对照：不注入任何检测脚本单独运行同样报错，是作品自身的问题" if errs else
-                "对照：不注入检测脚本单独运行时没有报错，可能是检测环境引起的，请人工确认"))[:420]
+            if errs:
+                verdict = t("{detail}。对照：不注入任何检测脚本单独运行同样报错，是作品自身的问题", detail=err_check["detail"])
+            else:
+                verdict = t("{detail}。对照：不注入检测脚本单独运行时没有报错，可能是检测环境引起的，请人工确认", detail=err_check["detail"])
+            err_check["detail"] = verdict[:420]
         except Exception as e:
             control = {"error": str(e)[:160]}
     # 网络字体(含 Google Fonts 样式表)被拦截只影响字形, 不影响功能, 不判失败
     soft = re.compile(r"^https?://(fonts\.(googleapis|gstatic)\.com|fonts\.loli\.net|use\.typekit\.net)/", re.I)
     hard = [e for e in ext if e["type"] in ("Script", "Stylesheet", "Fetch", "XHR", "WebSocket") and not soft.match(e["url"])]
-    prober.check("self_contained", "单文件自包含（无外部脚本/样式/接口依赖）", not hard,
-                 ("外部依赖被拦截：" + "，".join(e["url"] for e in hard[:3])) if hard else
-                 ("仅网络字体/图片等外链 %d 个（已拦截，不影响功能）" % len(ext) if ext else ""))
+    prober.check("self_contained", CHECK_LABELS["self_contained"], not hard,
+                 t("外部依赖被拦截：{urls}", urls=t("，").join(e["url"] for e in hard[:3])) if hard else
+                 (tn("仅网络字体/图片等外链 {n} 个（已拦截，不影响功能）", len(ext)) if ext else ""))
     return {"method": "browser", "browser": browser.version, "checks": prober.checks,
             "shots": prober.shots, "notes": prober.notes, "external": ext[:20], "control": control}
 
@@ -694,16 +718,16 @@ def static_checks(html, task, note=None):
     code = strip_comments(html)
     low = code.lower()
     checks = [
-        {"id": "doctype", "label": "HTML 文档结构", "pass": bool(re.search(r"<!doctype html|<html", low)), "detail": ""},
-        {"id": "complete", "label": "代码完整输出（</html> 闭合、script 配对）", "pass": source_complete(html), "detail": ""},
-        {"id": "self_contained", "label": "无外部脚本/样式依赖",
+        {"id": "doctype", "label": CHECK_LABELS["doctype"], "pass": bool(re.search(r"<!doctype html|<html", low)), "detail": ""},
+        {"id": "complete", "label": CHECK_LABELS["complete"], "pass": source_complete(html), "detail": ""},
+        {"id": "self_contained", "label": CHECK_LABELS["static_self_contained"],
          "pass": not re.search(r"<script[^>]+src=[\"']https?:|<link[^>]+href=[\"']https?:[^>]+stylesheet", low), "detail": ""},
     ]
     for i, f in enumerate(task.get("features") or []):
-        checks.append({"id": "f%d" % (i + 1), "label": "源码特征 /%s/" % f, "pass": bool(re.search(f, code, re.I)),
-                       "detail": "已去除注释后匹配"})
+        checks.append({"id": "f%d" % (i + 1), "label": CHECK_LABELS["feature"] % f, "pass": bool(re.search(f, code, re.I)),
+                       "detail": t("已去除注释后匹配")})
     return {"method": "static", "browser": None, "checks": checks, "shots": [],
-            "notes": [note or "未找到无头浏览器，降级为源码检查"], "external": []}
+            "notes": [note or t("未找到无头浏览器，降级为源码检查")], "external": []}
 
 
 # ---------------------------------------------------------------- 视觉评审
@@ -858,7 +882,7 @@ def judge_work(cfg, task, html, report, shots_dir, max_code=32000):
             if text is not None:  # 输出无法解析: 带上原输出要求修正
                 payload = dict(payload, messages=payload["messages"] + [
                     {"role": "assistant", "content": text[:4000]},
-                    {"role": "user", "content": "上面的输出无法解析（%s）。请只输出符合要求格式的 JSON 对象，包含全部清单项。" % str(e)[:100]}])
+                    {"role": "user", "content": "上面的输出无法解析（%s）。请只输出符合要求格式的 JSON 对象，包含全部清单项。" % getattr(e, "zh", str(e))[:100]}])
     return {"model": cfg["model"], "error": last_err}
 
 
@@ -870,19 +894,28 @@ def _chat_url(base):
     return b + "/v1/chat/completions"
 
 
+def _judge_error(make):
+    """评审输出无法解析时抛的 ValueError。make 是不带参数的函数, 里面调用 t() 生成说明: str(e) 用当前语言 (存进结果、显示给人看),
+    e.zh 固定是中文原文——重试时追加给评审模型的提示是测试内容, 不能随界面语言变 (见 judge_work)。"""
+    err = ValueError(make())
+    with i18n.use_lang("zh"):
+        err.zh = make()
+    return err
+
+
 def _find_judge_json(text):
     """从评审输出中找出含 items 列表的 JSON 对象(容忍前后说明文字、代码围栏、尾随逗号、中文标点)。"""
     dec = json.JSONDecoder()
     variants = [text, re.sub(r",\s*([}\]])", r"\1", text.replace("：", ":").replace("，", ",").replace("“", '"').replace("”", '"'))]
-    for t in variants:
-        for m in re.finditer(r"\{", t):
+    for variant in variants:
+        for m in re.finditer(r"\{", variant):
             try:
-                obj, _ = dec.raw_decode(t, m.start())
+                obj, _ = dec.raw_decode(variant, m.start())
             except ValueError:
                 continue
             if isinstance(obj, dict) and isinstance(obj.get("items"), list):
                 return obj
-    raise ValueError("评审输出中没有包含 items 的 JSON")
+    raise _judge_error(lambda: t("评审输出中没有包含 items 的 JSON"))
 
 
 def _score_of(v):
@@ -897,7 +930,7 @@ def _parse_judge(text, checklist):
     valid = [v for v in raw.values() if v is not None]
     missing = [k for k, v in raw.items() if v is None]
     if not valid or len(missing) > len(checklist) * 0.2:
-        raise ValueError("评审缺少清单项 %s" % "、".join(missing))
+        raise _judge_error(lambda: t("评审缺少清单项 {items}", items=t("、").join(missing)))
     nonzero = [v for v in valid if v > 0]
     hundred = sum(1 for v in nonzero if v > 10) * 2 > len(nonzero)  # 多数项超过 10: 按 100 分制打分, 折算; 个别超出则截断
     items = []
@@ -926,7 +959,7 @@ class Evaluator:
         self.closed = False
         self._no_browser = cdp.find_browser() is None
         self.browser_version = None
-        self.browser_error = None if not self._no_browser else "本机没有找到 Chrome / Edge 浏览器"
+        self.browser_error = None if not self._no_browser else t("本机没有找到 Chrome / Edge 浏览器")
         self._launch_failures = 0
 
     def reap(self):
@@ -951,7 +984,7 @@ class Evaluator:
         with self._cond:
             while True:
                 if self.closed:
-                    raise RuntimeError("评测已结束")
+                    raise RuntimeError(t("评测已结束"))
                 if self._free:
                     return self._free.pop()
                 if len(self._pool) + self._starting < self.n:
@@ -968,7 +1001,7 @@ class Evaluator:
                     self.browser_error = str(e)[:400]
                     if self._launch_failures >= 2 and not self._pool:
                         self._no_browser = True  # 连续启动失败: 不再每件作品都等一次超时
-                        self.log("  ⚠ 后台浏览器无法启动，本次作品只能做源码检查：%s" % self.browser_error)
+                        self.log(t("  ⚠ 后台浏览器无法启动，本次作品只能做源码检查：{error}", error=self.browser_error))
                 self._cond.notify_all()
             raise
         with self._cond:
@@ -977,7 +1010,7 @@ class Evaluator:
             self.browser_version = b.version
             if self.closed:
                 b.close()
-                raise RuntimeError("评测已结束")
+                raise RuntimeError(t("评测已结束"))
             self._pool.append(b)
             return b
 
@@ -996,7 +1029,8 @@ class Evaluator:
         """返回 item 的 eval 字段: 运行检测 + (可选)评审。不抛异常。cancel 置位后不再开始视觉评审。"""
         shots_dir = html_path[:-5] + ".shots"
         if self._no_browser:
-            report = static_checks(html, task, "后台浏览器不可用，作品没有实际运行，只检查了源代码：%s" % (self.browser_error or "未知原因"))
+            report = static_checks(html, task, t("后台浏览器不可用，作品没有实际运行，只检查了源代码：{reason}",
+                                                 reason=self.browser_error or t("未知原因")))
         else:
             b = None
             try:
@@ -1006,16 +1040,16 @@ class Evaluator:
             except Exception as e:
                 if b is not None:
                     self._release(b, broken=True)
-                report = static_checks(html, task, "后台浏览器出错，作品没有实际运行，只检查了源代码：%s" % str(e)[:200])
+                report = static_checks(html, task, t("后台浏览器出错，作品没有实际运行，只检查了源代码：{error}", error=str(e)[:200]))
         report["shots_dir"] = os.path.basename(shots_dir)
         report["exec_score"] = round(100.0 * sum(c["pass"] for c in report["checks"]) / max(1, len(report["checks"])), 1)
         if self.closed or (cancel is not None and cancel.is_set()):
             return report
         if self.judge_cfg and report["shots"]:
-            self.log("    评审中: %s" % task["name"])
+            self.log(t("    评审中: {name}", name=task["name"]))
             report["judge"] = judge_work(self.judge_cfg, task, html, report, shots_dir)
         elif self.judge_cfg:
-            report["judge"] = {"model": self.judge_cfg["model"], "error": "无截图（未进行浏览器运行检测），跳过视觉评审"}
+            report["judge"] = {"model": self.judge_cfg["model"], "error": t("无截图（未进行浏览器运行检测），跳过视觉评审")}
         return report
 
     def close(self):
@@ -1059,10 +1093,10 @@ def apply_eval(item, report):
 
 def main(argv=None):
     i18n.preparse_lang(argv)  # 要在创建 argparse 之前: --help 的文字也是 --lang 指定的语言
-    ap = argparse.ArgumentParser(description="生成作品评测: 运行检测 + 视觉评审")
-    ap.add_argument("--run", required=True, help="gen 运行 ID")
+    ap = argparse.ArgumentParser(description=t("生成作品评测: 运行检测 + 视觉评审"))
+    ap.add_argument("--run", required=True, help=t("gen 运行 ID"))
     ap.add_argument("--db", default=None)
-    ap.add_argument("--tasks", default=None, help="只评测这些题, 逗号分隔")
+    ap.add_argument("--tasks", default=None, help=t("只评测这些题, 逗号分隔"))
     ap.add_argument("--judge-base", default=None)
     ap.add_argument("--judge-model", default=None)
     ap.add_argument("--judge-key", default=os.environ.get("JUDGE_API_KEY", ""))

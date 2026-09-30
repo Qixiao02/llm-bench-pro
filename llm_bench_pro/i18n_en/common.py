@@ -15,4 +15,7 @@ ENTRIES = {
     "LLM Bench Pro 离线报告": "LLM Bench Pro offline report",
     # 列表里几项之间的分隔 (中文用全角分号, 英文用分号加空格): t("；").join(...)
     "；": "; ",
+    # geneval.py (i18n-py-geneval): 列表里几项之间的分隔 (中文用全角逗号 / 顿号, 英文都是逗号加空格): t("，").join(...) / t("、").join(...)
+    "，": ", ",
+    "、": ", ",
 }
