@@ -79,6 +79,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 a{color:var(--text-1);text-decoration-color:var(--text-4);text-underline-offset:3px}
 a:hover{text-decoration-color:currentColor}
 [hidden]{display:none!important}
+html.i18n-pending body{visibility:hidden}
 :focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 ::selection{background:color-mix(in srgb,var(--series-5) 30%,transparent)}
 ::-webkit-scrollbar{width:10px;height:10px}
@@ -171,6 +172,7 @@ a:hover{text-decoration-color:currentColor}
 .menu-item .icon{color:var(--text-3)}
 .menu-item.is-danger,.menu-item.is-danger .icon{color:var(--bad)}
 .menu-item[aria-checked="true"]::after{content:"开";margin-left:auto;font-size:var(--fs-12);color:var(--text-2);padding:1px 6px;border-radius:var(--r-sm);background:var(--sel-strong)}
+html:lang(en) .menu-item[aria-checked="true"]::after{content:"On"}
 .menu-sep{height:1px;margin:4px 6px;background:var(--border)}
 .menu-note{padding:6px 10px 4px;font-size:var(--fs-12);color:var(--text-3)}
 .menu-note:empty{display:none}
@@ -228,6 +230,7 @@ a:hover{text-decoration-color:currentColor}
 .btn-sm{height:var(--h-sm);padding:0 10px;font-size:var(--fs-13)}
 .btn-icon{width:var(--h-md);padding:0}
 .btn-icon.btn-sm{width:var(--h-sm)}
+.lang-abbr{font-size:12px;font-weight:650;letter-spacing:.02em;line-height:1;color:var(--text-2)}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .btn[aria-pressed="true"]{background:var(--sel-strong);color:var(--text-1)}
 .btn.is-loading .icon{animation:spin 1s linear infinite}
@@ -856,6 +859,7 @@ a.menu-item{text-decoration:none}
 .dt-th{display:inline-flex;align-items:baseline;gap:4px}
 .dt-unit{font-weight:400;color:var(--text-3)}
 .dt-unit::before{content:"（"}.dt-unit::after{content:"）"}
+html:lang(en) .dt-unit::before{content:"("}html:lang(en) .dt-unit::after{content:")"}  /* 英文: 括号是半角的, 和标签之间的空隙由 .dt-th 的 gap 给 */
 .dt-sort{display:inline-block;min-width:8px;font-size:9px;color:var(--text-1)}
 .dt-table td{padding:8px 12px;border-bottom:1px solid var(--border);background:var(--surface-1);color:var(--text-1);vertical-align:middle;white-space:nowrap}
 .dt-table td.dt-wrap{white-space:normal;min-width:240px}
@@ -1306,6 +1310,8 @@ div.ts-img{cursor:default}
   .table.fmt-table td{padding:1px 0;border:0}
   .table.fmt-table td:nth-child(2)::before{content:"必填："}
   .table.fmt-table td:nth-child(4)::before{content:"示例："}
+  html:lang(en) .table.fmt-table td:nth-child(2)::before{content:"Required: "}
+  html:lang(en) .table.fmt-table td:nth-child(4)::before{content:"Example: "}
 }
 /* 离线报告: 只读, 隐藏需要后端的操作(新建、刷新、删除、重新检查、模型管理); 星级只看不能点 */
 .is-offline [data-online-only]{display:none!important}

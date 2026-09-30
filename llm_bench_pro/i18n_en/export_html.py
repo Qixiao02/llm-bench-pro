@@ -5,4 +5,7 @@ ENTRIES = {
     # 找到的处数一定不是 1 (是 0 或者好几处), 所以只写复数
     "web/index.html 结构变了, 找到 {n} 处 {mark}":
         "The structure of web/index.html has changed: found {n} occurrences of {mark}",
+    "web/index.html 结构变了: 翻译脚本 (i18n.js 在前, 词典在后, 各一次) 没找到或重复: {names}":
+        "The structure of web/index.html has changed: the translation scripts (i18n.js first, then the dictionaries, each exactly once) "
+        "were not found or are duplicated: {names}",
 }

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""离线报告: 用系统里同一套页面(index.html + app.css + app.js + ECharts)和这次测试的数据合成一个 HTML 文件。
+"""离线报告: 用系统里同一套页面(index.html + app.css + app.js + ECharts + 界面语言的 i18n 脚本和词典)和这次测试的数据合成一个 HTML 文件。
 双击就能打开, 看到的和系统里一模一样; 只读(不能新建测试、删除、重新检查), 数据是导出那一刻的样子。
 
 数据放在 <script type="application/json" id="llmb-offline"> 里, 页面脚本发现 window.LLMB_OFFLINE 后
@@ -7,6 +7,7 @@
 import html as _html
 import json
 import os
+import re
 
 try:
     from . import i18n  # 包内导入
@@ -24,6 +25,8 @@ M_CHARSET = '<meta charset="UTF-8">'
 M_CSS = '<link rel="stylesheet" href="/static/app.css">'
 M_ECHARTS = '<script src="/static/vendor/echarts.min.js"></script>'
 M_APP = '<script src="/static/app.js"></script>'
+# 界面语言的脚本: i18n.js 和各区域的英文词典 (i18n.en.*.js), index.html 里写了哪些、什么顺序, 报告里就原样内联哪些
+RE_I18N = re.compile(r'<script src="/static/(i18n(?:\.en\.[A-Za-z0-9_-]+)?\.js)"></script>')
 
 
 def _read(*parts):
@@ -58,11 +61,22 @@ def compose(page, bundle, head_state, title):
     }
     # 按原文位置切开再拼接: 插进去的内容里即使出现别的标记也不会被二次替换
     spots = []
-    for mark in parts:
+
+    def find_once(mark):
         n = idx.count(mark)
         if n != 1:
             raise RuntimeError(t("web/index.html 结构变了, 找到 {n} 处 {mark}", n=n, mark=mark))
         spots.append((idx.index(mark), mark))
+
+    for mark in parts:
+        find_once(mark)
+    names = RE_I18N.findall(idx)
+    if not names or names[0] != "i18n.js" or len(set(names)) != len(names):
+        raise RuntimeError(t("web/index.html 结构变了: 翻译脚本 (i18n.js 在前, 词典在后, 各一次) 没找到或重复: {names}", names=repr(names)))
+    for name in names:
+        mark = '<script src="/static/%s"></script>' % name
+        parts[mark] = "<script>%s</script>" % script_safe(_read("static", name))
+        find_once(mark)
     out, pos = [], 0
     for at, mark in sorted(spots):
         out.append(idx[pos:at])

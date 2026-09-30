@@ -1243,4 +1243,328 @@ T("作品占位图: 按难度(0–3)换底色、按题目类别换图标, 每道
   assert.ok(genPhHTML({id: "snake", tags: ["困难"]}, "截图没能显示", "image-off", "文件不存在").includes("文件不存在"));
 });
 
+/* ---------- 界面语言 (i18n.js: t / tn / td / tm / tk、静态 HTML 翻译、语言状态、X-Lang 请求头) ---------- */
+/* 测试用的词条都带「测试专用」, 不会和真实词典重复; 每个用到英文的测试结束后切回中文 */
+["modal", "launcher", "iqLauncher", "genLauncher"].forEach(id => { document.getElementById(id).hidden = true; });  /* 换语言的通用重画不去碰抽屉和弹窗 */
+function __inEn(fn) { I18N.set("en"); try { fn(); } finally { I18N.set("zh"); } }
+function __txt(s) { return { nodeType: 3, nodeValue: s }; }
+function __el(tag, attrs, kids) {   /* 最小的假 DOM: 元素 / 文本节点 / 属性 / innerHTML, 够 applyStaticI18n 用 */
+  const a = Object.assign({}, attrs || {});
+  return {
+    nodeType: 1, tagName: tag, childNodes: kids || [], _html: null,
+    getAttribute(k) { return k in a ? a[k] : null; }, setAttribute(k, v) { a[k] = String(v); }, hasAttribute(k) { return k in a; },
+    get innerHTML() {
+      return this._html !== null ? this._html
+        : this.childNodes.map(c => c.nodeType === 3 ? c.nodeValue : "<" + c.tagName.toLowerCase() + ">" + c.innerHTML + "</" + c.tagName.toLowerCase() + ">").join("");
+    },
+    set innerHTML(v) { this._html = v; this.childNodes = []; },
+  };
+}
+
+T("界面语言: 测试环境默认是中文, I18N.lang / 语言标记 / 数字格式跟着走", () => {
+  assert.equal(I18N.lang, "zh");
+  assert.equal(I18N.locale(), "zh-CN");
+  __inEn(() => {
+    assert.equal(I18N.lang, "en");
+    assert.equal(document.documentElement.lang, "en");
+    assert.equal(I18N.locale(), "en-US");
+  });
+  assert.equal(document.documentElement.lang, "zh-CN");
+});
+
+T("t / tn / td / tm / tk (中文模式): 原样返回, 占位符替换, {{ }} 是字面花括号", () => {
+  assert.equal(t("你好"), "你好");
+  assert.equal(t("共 {n} 行 {名字}", { n: 3, 名字: "甲" }), "共 3 行 甲");
+  assert.equal(t("缺 {x} 保留", { n: 1 }), "缺 {x} 保留");                     /* 没传的名字原样留着, 一眼看得出写错了 */
+  assert.equal(t("{a}|{b}", { a: null, b: undefined }), "|");                   /* null / undefined 当空串 */
+  assert.equal(t("{{n}} 是字面的, {n} 是 5", { n: 5 }), "{n} 是字面的, 5 是 5");
+  assert.equal(t("没有参数时 {n} 和 {{ 都不动"), "没有参数时 {n} 和 {{ 都不动");
+  assert.equal(t("更好", null, "对比"), "更好");                                /* 语境只影响英文词典的键 */
+  assert.equal(t(null), "");
+  assert.equal(tn("{n} 行", 1), "1 行");
+  assert.equal(tn("{n} 行", 2), "2 行");
+  assert.equal(tn("{n} 行 {m}", 3, { m: "x" }), "3 行 x");
+  assert.equal(tn("{n} 行", 1234, { n: "1,234" }), "1,234 行");                 /* {n} 可以换成已经格式化的文字, 单复数仍按数值 */
+  assert.equal(td("鹈鹕骑自行车"), "鹈鹕骑自行车");
+  assert.equal(td(null), null);
+  assert.equal(tm("任务集不存在: x"), "任务集不存在: x");
+  assert.equal(tk("可用"), "可用");
+});
+
+T("t / tn (英文模式): 查词典、语境、单复数、缺词回退成中文并每个键只记一次、控制台只警告一次", () => {
+  I18N.add("en", { "测试专用 你好 {名字}": "Hello {名字}", "测试专用更好": "good", "对比|测试专用更好": "better",
+    "测试专用 {n} 个": ["{n} thing", "{n} things"], "测试专用 <b>{n}</b>": "<b>{n}</b> bold", "测试专用 单个": "single" });
+  const warns = [], warn = console.warn;
+  console.warn = (...a) => warns.push(a.join(" "));
+  try {
+    __inEn(() => {
+      assert.equal(t("测试专用 你好 {名字}", { 名字: "Ann" }), "Hello Ann");
+      assert.equal(t("测试专用更好"), "good");
+      assert.equal(t("测试专用更好", null, "对比"), "better");
+      assert.equal(tn("测试专用 {n} 个", 1), "1 thing");
+      assert.equal(tn("测试专用 {n} 个", 0), "0 things");
+      assert.equal(tn("测试专用 {n} 个", 2), "2 things");
+      assert.equal(tn("测试专用 {n} 个", 1000, { n: "1,000" }), "1,000 things");
+      assert.equal(tn("测试专用 单个", 5), "single");                           /* 词条写成字符串: 不分单复数 */
+      assert.equal(t("测试专用 <b>{n}</b>", { n: 3 }), "<b>3</b> bold");
+      const before = I18N.missing.length;
+      assert.equal(t("没有英文的句子 {x}", { x: 1 }), "没有英文的句子 1");     /* 回退成中文 (占位符照样替换) */
+      assert.equal(t("没有英文的句子 {x}", { x: 2 }), "没有英文的句子 2");
+      assert.equal(tn("没有英文的 {n} 个", 3), "没有英文的 3 个");
+      assert.equal(t("测试专用更好", null, "没有这个语境"), "测试专用更好");
+      assert.equal(I18N.missing.length, before + 3);                            /* 每个键只记一次 */
+      assert.ok(I18N.missing.includes("没有英文的句子 {x}") && I18N.missing.includes("没有这个语境|测试专用更好"));
+    });
+  } finally { console.warn = warn; }
+  assert.ok(warns.length <= 1, warns.join("\n"));                               /* 只警告一次, 不刷屏 */
+});
+
+T("td: 数据里的中文名, 英文模式查 enData, 查不到回退原文并记下", () => {
+  I18N.add("enData", { "测试专用作品": "Test work" });
+  assert.equal(td("测试专用作品"), "测试专用作品");
+  __inEn(() => {
+    assert.equal(td("测试专用作品"), "Test work");
+    assert.equal(td("测试专用没有的作品"), "测试专用没有的作品");
+    assert.equal(td("Already English"), "Already English");
+    assert.equal(td(42), 42);
+    assert.ok(I18N.missingData.includes("测试专用没有的作品") && !I18N.missingData.includes("Already English"));
+  });
+});
+
+T("tm: 服务端提示 —— 先查完整原文, 再试正则模式 ($1 / 函数, 函数里可以再 tm), 都不行回退原文并记进 missingServer", () => {
+  I18N.add("en", { "测试专用服务端: 完整": "Server: exact", "测试专用任务": "job" });
+  I18N.addPattern([/^测试专用不存在: (\S+)$/, "Not found: $1"],
+    [/^测试专用 (.+) 在跑$/, (m, name) => "A " + tm(name) + " is running"],
+    [/^测试专用全局(\d+)$/g, "Global $1"]);
+  assert.equal(tm("测试专用不存在: x1"), "测试专用不存在: x1");                   /* 中文模式不动 */
+  __inEn(() => {
+    assert.equal(tm("测试专用服务端: 完整"), "Server: exact");
+    assert.equal(tm("测试专用不存在: abc"), "Not found: abc");
+    assert.equal(tm("测试专用 测试专用任务 在跑"), "A job is running");
+    assert.equal(tm("测试专用全局7"), "Global 7");
+    assert.equal(tm("测试专用全局8"), "Global 8");                             /* 带 g 标志的正则连续用也不出错 */
+    assert.equal(tm("测试专用没人认识的提示"), "测试专用没人认识的提示");
+    assert.equal(tm("HTTP 500"), "HTTP 500");                                   /* 没有汉字的原样, 不记录 */
+    assert.equal(tm(null), null);
+    assert.ok(I18N.missingServer.includes("测试专用没人认识的提示") && !I18N.missingServer.includes("HTTP 500"));
+  });
+});
+
+T("I18N.detect: 网址 ?lang= → 离线报告带的偏好 → 本地存储 → 浏览器语言 (仅 AUTO_DETECT 打开时; zh 开头用中文, 否则英文; 拿不到用中文)", () => {
+  const off = l => ({ ls: { "llm-bench-pro-lang": l } });
+  assert.equal(I18N.AUTO_DETECT, false, "翻译全部完成前不自动识别");
+  const saved = I18N.AUTO_DETECT;
+  try {
+    for (const auto of [false, true]) {
+      I18N.AUTO_DETECT = auto;
+      assert.equal(I18N.detect(off("en"), "zh", "zh-CN"), "en");
+      assert.equal(I18N.detect(off("zh"), "en", "en-US"), "zh");
+      assert.equal(I18N.detect(off("xx"), "en", "zh-CN"), "en");                     /* 报告里的值不认识: 往下走 */
+      assert.equal(I18N.detect({ ls: {} }, "en", "zh-CN"), "en");
+      assert.equal(I18N.detect(null, "zh", "en-US"), "zh");
+      assert.equal(I18N.detect(null, "xx", "en-US"), auto ? "en" : "zh");
+      assert.equal(I18N.detect(off("zh"), "zh", "zh-CN", "en"), "en");               /* 网址最优先 */
+      assert.equal(I18N.detect(off("en"), "en", "en-US", "zh"), "zh");
+      assert.equal(I18N.detect(null, null, "en-US", "xx"), auto ? "en" : "zh");      /* 网址里的值不认识: 往下走 */
+      for (const n of ["zh-CN", "zh", "ZH-tw", "zh-Hant-HK"]) assert.equal(I18N.detect(null, null, n), "zh", n);
+      for (const n of ["en-US", "en", "de", "ja"]) assert.equal(I18N.detect(null, null, n), auto ? "en" : "zh", n);
+      assert.equal(I18N.detect(null, null, ""), "zh");
+      assert.equal(I18N.detect(null, null, undefined), "zh");
+    }
+  } finally { I18N.AUTO_DETECT = saved; }
+});
+T("I18N.showSwitch: 翻译完成前隐藏语言按钮, 已经在英文模式时照常显示 (好切回来)", () => {
+  const lang = I18N.lang, ready = I18N.READY;
+  try {
+    I18N.READY = false;
+    I18N.lang = "zh"; assert.equal(I18N.showSwitch(), false);
+    I18N.lang = "en"; assert.equal(I18N.showSwitch(), true);
+    I18N.READY = true;
+    I18N.lang = "zh"; assert.equal(I18N.showSwitch(), true);
+  } finally { I18N.lang = lang; I18N.READY = ready; }
+  assert.equal(I18N.READY, false, "翻译全部完成前保持关闭");
+});
+
+T("applyStaticI18n: 文本节点和 title / aria-label 按词典翻译, 首尾空白保留, 空白合并后查词典, 切回中文还原", () => {
+  I18N.add("en", { "测试专用静态": "Static", "测试专用标题": "Title tip", "测试专用 空格 合并": "Merged", "测试专用读屏": "Screen reader" });
+  const t1 = __txt("\n   测试专用静态  \n"), t2 = __txt("测试专用 空格\n   合并"), t3 = __txt("没词条的中文"), t4 = __txt("English only");
+  const btn = __el("BUTTON", { title: "测试专用标题", "aria-label": "测试专用读屏", "data-x": "测试专用标题", placeholder: "没词条" }, [t1]);
+  const skip = [__el("SVG", {}, [__txt("测试专用静态")]), __el("SCRIPT", {}, [__txt("测试专用静态")]),
+    __el("SPAN", { translate: "no" }, [__txt("测试专用静态")]), __el("TEXTAREA", { placeholder: "测试专用标题" }, [__txt("测试专用静态")])];
+  const root = __el("DIV", {}, [btn, t2, t3, t4].concat(skip));
+  applyStaticI18n(root);                                                       /* 中文模式: 什么都不变 */
+  assert.equal(t1.nodeValue, "\n   测试专用静态  \n");
+  I18N.lang = "en";
+  applyStaticI18n(root);
+  assert.equal(t1.nodeValue, "\n   Static  \n");                                /* 首尾空白原样保留 */
+  assert.equal(t2.nodeValue, "Merged");
+  assert.equal(t3.nodeValue, "没词条的中文");                                    /* 没词条: 不动 */
+  assert.equal(t4.nodeValue, "English only");
+  assert.equal(btn.getAttribute("title"), "Title tip");
+  assert.equal(btn.getAttribute("aria-label"), "Screen reader");
+  assert.equal(btn.getAttribute("data-x"), "测试专用标题");                       /* 只翻译 title / placeholder / aria-label / alt */
+  assert.equal(btn.getAttribute("placeholder"), "没词条");
+  assert.equal(skip[0].childNodes[0].nodeValue, "测试专用静态");                   /* svg / script / translate="no" / textarea 里的不翻译 */
+  assert.equal(skip[1].childNodes[0].nodeValue, "测试专用静态");
+  assert.equal(skip[2].childNodes[0].nodeValue, "测试专用静态");
+  assert.equal(skip[3].childNodes[0].nodeValue, "测试专用静态");
+  assert.equal(skip[3].getAttribute("placeholder"), "Title tip");                 /* 文本框里的内容不翻译, 它的 placeholder 要翻译 */
+  applyStaticI18n(root);                                                       /* 再翻一次: 不会翻成乱码 */
+  assert.equal(t1.nodeValue, "\n   Static  \n");
+  I18N.lang = "zh";
+  applyStaticI18n(root);                                                       /* 切回中文: 原文还原 */
+  assert.equal(t1.nodeValue, "\n   测试专用静态  \n");
+  assert.equal(t2.nodeValue, "测试专用 空格\n   合并");
+  assert.equal(btn.getAttribute("title"), "测试专用标题");
+  assert.equal(btn.getAttribute("aria-label"), "测试专用读屏");
+});
+
+T("静态翻译只管「页面刚打开时就有的」节点和明确传进来的节点; 被别处改过的值以新的为准, 不会被还原覆盖", () => {
+  I18N.add("en", { "测试专用甲": "A-en", "测试专用乙": "B-en" });
+  const a = __txt("测试专用甲"), b = __txt("测试专用乙"), label = __el("B", { "aria-label": "测试专用甲" }, []);
+  const root = __el("DIV", {}, [a, label]);
+  const body = document.body;
+  document.body = root;
+  try {
+    I18N.lang = "zh"; applyStaticI18n(root);                                   /* 登记为「静态节点」 (页面刚打开时 boot 做的事) */
+    const late = __txt("测试专用乙");
+    root.childNodes.push(late);                                                /* 之后动态插入的节点: 不认识 */
+    I18N.set("en");
+    assert.equal(a.nodeValue, "A-en");
+    assert.equal(late.nodeValue, "测试专用乙");                                   /* 动态节点靠 t() 自己翻译, 静态那遍不碰 */
+    label.setAttribute("aria-label", "运行时写的中文");                             /* 应用代码换了属性: 记录作废 */
+    I18N.set("zh");
+    assert.equal(a.nodeValue, "测试专用甲");
+    assert.equal(label.getAttribute("aria-label"), "运行时写的中文");                 /* 不覆盖成旧的原文 */
+    applyStaticI18n(root);                                                     /* 明确传进来的 (含动态插入的) 才会处理 */
+    I18N.lang = "en"; applyStaticI18n(root);
+    assert.equal(late.nodeValue, "B-en");
+  } finally { document.body = body; I18N.set("zh"); }
+});
+
+T("data-i18n-html: 句子中间夹着标签的元素, 整段 innerHTML 一起翻译, 切回中文还原", () => {
+  const zh = "测试专用先看 <code>x</code> 再做";
+  I18N.add("en", { [zh]: "See <code>x</code> first" });
+  const p = __el("P", { "data-i18n-html": "" }, [__txt("测试专用先看 "), __el("CODE", {}, [__txt("x")]), __txt(" 再做")]);
+  assert.equal(p.innerHTML, zh);
+  I18N.lang = "en"; applyStaticI18n(p);
+  assert.equal(p.innerHTML, "See <code>x</code> first");
+  applyStaticI18n(p);
+  assert.equal(p.innerHTML, "See <code>x</code> first");
+  I18N.lang = "zh"; applyStaticI18n(p);
+  assert.equal(p.innerHTML, zh);
+});
+
+T("文档标题: 有词条就翻译, 切回中文还原; 被改成别的标题就以新的为准", () => {
+  I18N.add("en", { "测试专用标题页": "Test title" });
+  document.title = "测试专用标题页";
+  I18N.set("en");
+  assert.equal(document.title, "Test title");
+  I18N.set("zh");
+  assert.equal(document.title, "测试专用标题页");
+  I18N.set("en");
+  document.title = "别处设置的标题";
+  I18N.set("zh");
+  assert.equal(document.title, "别处设置的标题");
+  document.title = "";
+});
+
+T("I18N.set: 通知 onChange 监听者 (某个出错不影响其他的); setLang 写本地偏好", () => {
+  const seen = [];
+  let on = true;   /* 监听者没法取消, 用开关让它们在这个测试之后什么都不做 */
+  I18N.onChange(l => { if (on) seen.push("a:" + l); });
+  I18N.onChange(() => { if (on) throw new Error("监听者出错 (测试故意的)"); });
+  I18N.onChange(l => { if (on) seen.push("c:" + l); });
+  const err = console.error;
+  console.error = () => {};
+  const store = new Map(), oldLS = globalThis.localStorage;
+  globalThis.localStorage = { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => { store.set(k, String(v)); }, removeItem: k => { store.delete(k); } };
+  try {
+    setLang("en");
+    assert.equal(I18N.lang, "en");
+    assert.equal(store.get("llm-bench-pro-lang"), "en");                       /* 在线: 存进浏览器 */
+    assert.equal(document.getElementById("langAbbr").textContent, "EN");        /* 语言按钮显示当前语言的缩写 */
+    setLang("zh");
+    assert.equal(store.get("llm-bench-pro-lang"), "zh");
+    assert.equal(document.getElementById("langAbbr").textContent, "中");
+    setLang("nonsense");                                                        /* 不认识的值当中文 */
+    assert.equal(I18N.lang, "zh");
+  } finally { I18N.set("zh"); on = false; globalThis.localStorage = oldLS; console.error = err; }
+  assert.deepEqual(seen.slice(0, 6), ["a:en", "c:en", "a:zh", "c:zh", "a:zh", "c:zh"]);
+});
+
+T("发往后端的请求都带 X-Lang 请求头 (getJSON / postJSON / tsApi / 导出报告), 换语言后马上生效", () => {
+  const calls = [], old = globalThis.fetch;
+  globalThis.fetch = (url, init) => { calls.push({ url, init: init || {} }); return new Promise(() => {}); };
+  const runA = document.getElementById("runA");
+  const keep = runA.value;
+  runA.value = "run_20260101_000000_x";
+  try {
+    for (const lang of ["zh", "en", "zh"]) {
+      I18N.set(lang);
+      calls.length = 0;
+      getJSON("/api/results"); postJSON("/api/cancel", { job: "perf" }); tsApi("/api/task-sets"); exportHtml("dash");
+      assert.deepEqual(calls.map(c => c.url), ["/api/results", "/api/cancel", "/api/task-sets", "/api/export-html"]);
+      for (const c of calls) assert.equal(c.init.headers["X-Lang"], lang, c.url + " 的请求头没有带当前语言 " + lang);
+      assert.equal(calls[1].init.headers["Content-Type"], "application/json");   /* 原来的请求头还在 */
+      assert.equal(calls[3].init.headers["Content-Type"], "application/json");
+    }
+  } finally { globalThis.fetch = old; runA.value = keep; I18N.set("zh"); }
+});
+
+T("被试点转换的基础函数: 英文模式的时长 / 多久以前 / 状态名 / 页面名 / 数字格式", () => {
+  __inEn(() => {
+    assert.equal(durationText(59), "1 minute");
+    assert.equal(durationText(120), "2 minutes");
+    assert.equal(durationText(3600), "1 hour");
+    assert.equal(durationText(5400), "1.5 hours");
+    assert.equal(durationText(90000), "1 day");
+    const now = Date.parse("2026-09-30T12:00:00Z"), ago = s => tsAgo(new Date(now - s * 1000).toISOString(), now);
+    assert.equal(ago(10), "Just now");
+    assert.equal(ago(60), "1 minute ago");
+    assert.equal(ago(3 * 3600), "3 hours ago");
+    assert.equal(ago(86400), "1 day ago");
+    assert.equal(ago(3 * 86400), "3 days ago");
+    assert.deepEqual(["running", "done", "failed", "interrupted", "cancelled"].map(k => STATUS_NAME[k]), ["Running", "Completed", "Failed", "Interrupted", "Stopped"]);
+    assert.deepEqual(["dash", "cmp", "iq", "gen"].map(k => PAGE_NAME[k]), ["Speed test", "Speed comparison", "Capability test", "Code generation"]);
+    assert.equal(fmtInt(1234567), "1,234,567");
+    assert.equal(numText(1234.5, 2), "1,234.50");
+    assert.equal(emptyState("标题", "").includes("标题"), true);                  /* 没翻译的数据 / 标题照原样 */
+  });
+  assert.equal(durationText(59), "1 分钟");
+  assert.equal(STATUS_NAME.done, "已完成");
+});
+
+T("侧栏连接状态: 用最近一次取到的 SERVER 重新生成, 换语言后跟着变", () => {
+  const conn = document.getElementById("connText"), box = document.getElementById("conn");
+  CONN_OK = true;
+  SERVER = { version: "3.7.0", uptime_s: 90, pid: 42, started_at: "2026-09-30T00:00:00Z", commit: "abc123", db: "/x/y.db", bench_version: "1.5.0", iq_version: "1.4.0", gen_version: "2.3.0" };
+  paintConn();
+  assert.equal(conn.textContent, "服务正常 · 已运行 2 分钟");
+  assert.match(box.title, /^后端 v3\.7\.0 · 进程 42 · 启动于 .+ · 提交 abc123\n数据库 \/x\/y\.db\n评测程序：速度 1\.5\.0 · 能力 1\.4\.0 · 代码生成 2\.3\.0$/);
+  __inEn(() => {
+    paintConn();
+    assert.equal(conn.textContent, "Service OK · up 2 minutes");
+    assert.match(box.title, /^Backend v3\.7\.0 · PID 42 · started .+ · commit abc123\nDatabase \/x\/y\.db\nBenchmark programs: speed 1\.5\.0 · ability 1\.4\.0 · code generation 2\.3\.0$/);
+    CONN_OK = false; paintConn();
+    assert.equal(conn.textContent, "Service not connected");
+  });
+  CONN_OK = null; SERVER = {};
+});
+
+T("页头的测试下拉: 「不对比」等选项文字按当前语言生成 (换语言时用缓存的 RUNS 重新生成)", () => {
+  const keep = RUNS;
+  RUNS = { run_20260101_000000_a: { run_id: "run_20260101_000000_a", model: "m-a", suite: "quick", status: "done", started_utc: "2026-01-01T00:00:00Z" } };
+  try {
+    fillRunSelects();
+    assert.ok(document.getElementById("runB").innerHTML.includes(">不对比</option>"));
+    assert.ok(document.getElementById("cmpB").innerHTML.includes(">选择测试 B</option>"));
+    __inEn(() => {
+      fillRunSelects();
+      assert.ok(document.getElementById("runB").innerHTML.includes(">No comparison</option>"));
+      assert.ok(document.getElementById("cmpB").innerHTML.includes(">Choose test B</option>"));
+    });
+  } finally { RUNS = keep; }
+});
+
 console.log("FRONTEND-OK " + __n);

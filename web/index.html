@@ -6,10 +6,17 @@
 <title>LLM Bench Pro</title>
 <link rel="icon" href="data:,">
 <script>
-/* 首帧前确定主题, 避免闪烁: 本地偏好 > 系统偏好 > 暗色 */
+/* 首帧前确定主题和界面语言, 避免闪烁: 主题 本地偏好 > 系统偏好 > 暗色; 语言 离线报告带的偏好 > 本地偏好 > 浏览器语言(zh 开头用中文, 否则英文)。
+   英文模式先隐藏页面, 等 i18n.js 把静态文字翻译好再显示 (最多等 3 秒) */
 (function(){try{var o=window.LLMB_OFF_STATE,t=o?o.theme:localStorage.getItem("llm-bench-pro-theme");
   if(!t)t=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";
-  document.documentElement.dataset.theme=t;}catch(e){document.documentElement.dataset.theme="dark";}})();
+  document.documentElement.dataset.theme=t;}catch(e){document.documentElement.dataset.theme="dark";}
+  try{var l=null;try{l=new URLSearchParams(location.search).get("lang")}catch(e){}
+    if(l!=="zh"&&l!=="en")l=o&&o.ls&&o.ls["llm-bench-pro-lang"];if(l!=="zh"&&l!=="en")l=localStorage.getItem("llm-bench-pro-lang");
+    /* 英文翻译全部完成之前不按浏览器语言自动选 (和 i18n.js 的 AUTO_DETECT 一起改; 完成后换成 /^zh/i.test(navigator.language||"zh")?"zh":"en") */
+    if(l!=="zh"&&l!=="en")l="zh";
+    var h=document.documentElement;h.lang=l==="en"?"en":"zh-CN";
+    if(l==="en"){h.classList.add("i18n-pending");setTimeout(function(){h.classList.remove("i18n-pending")},3000)}}catch(e){}})();
 </script>
 <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -81,11 +88,13 @@
   <symbol id="i-layout" viewBox="0 0 24 24"><rect width="18" height="7" x="3" y="3" rx="1"/><rect width="9" height="7" x="3" y="14" rx="1"/><rect width="5" height="7" x="16" y="14" rx="1"/></symbol>
   <symbol id="i-app-window" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/></symbol>
   <symbol id="i-image-off" viewBox="0 0 24 24"><path d="m2 2 20 20"/><path d="M10.41 10.41a2 2 0 1 1-2.83-2.83"/><path d="M13.5 13.5 6 21"/><path d="m18 12-6 6"/><path d="M3.59 3.59A1.99 1.99 0 0 0 3 5v14a2 2 0 0 0 2 2h14c.55 0 1.052-.22 1.41-.59"/><path d="M21 15V5a2 2 0 0 0-2-2H9"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></symbol>
   <symbol id="i-braces" viewBox="0 0 24 24"><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/></symbol>
   <symbol id="i-terms" viewBox="2 5 20 14"><path d="M21 14h-5"/><path d="M16 16v-3.5a2.5 2.5 0 0 1 5 0V16"/><path d="M4.5 13h6"/><path d="m3 16 4.5-9 4.5 9"/></symbol>
 </svg>
 
 <div class="app">
+<!-- ======================== 侧栏 ======================== -->
 <aside class="rail" id="rail" aria-label="侧栏">
   <div class="brand">
     <div class="brand-mark"><svg class="icon"><use href="#i-logo"/></svg></div>
@@ -106,6 +115,7 @@
     <span class="conn" id="conn" title="后端服务连接状态"><span class="conn-dot"></span><span id="connText" class="rail-text">连接中…</span></span>
     <button class="btn btn-ghost btn-icon btn-sm" id="themeBtn" aria-label="切换亮色/暗色" title="切换亮色/暗色"><svg class="icon"><use href="#i-sun"/></svg></button>
     <button class="btn btn-ghost btn-icon btn-sm" id="termsBtn" aria-label="术语：大白话 / 专业" title="术语：大白话 / 专业" aria-pressed="false"><svg class="icon"><use href="#i-terms"/></svg></button>
+    <button class="btn btn-ghost btn-icon btn-sm" id="langBtn" data-lang-toggle aria-label="语言：中文 / English" title="语言：中文 / English"><span class="lang-abbr" id="langAbbr">中</span></button>
     <button class="btn btn-ghost btn-icon btn-sm" id="railPin" aria-label="固定展开侧栏" title="固定展开侧栏" aria-pressed="false"><svg class="icon"><use href="#i-panel"/></svg></button>
   </div>
 </aside>
@@ -135,6 +145,7 @@
             <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
             <button class="menu-item" type="button" data-theme-toggle><svg class="icon"><use href="#i-contrast"/></svg>切换亮色 / 暗色</button>
             <button class="menu-item" type="button" data-terms-toggle><svg class="icon"><use href="#i-terms"/></svg>切换术语：大白话 / 专业</button>
+            <button class="menu-item" type="button" data-lang-toggle><svg class="icon"><use href="#i-globe"/></svg>语言 / Language</button>
           </div>
         </details>
         <button class="running-pill" data-online-only data-toggle="launcher" data-running-pill="perf" hidden><span class="runlog-dot"></span>测试进行中</button>
@@ -170,6 +181,7 @@
             <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
             <button class="menu-item" type="button" data-theme-toggle><svg class="icon"><use href="#i-contrast"/></svg>切换亮色 / 暗色</button>
             <button class="menu-item" type="button" data-terms-toggle><svg class="icon"><use href="#i-terms"/></svg>切换术语：大白话 / 专业</button>
+            <button class="menu-item" type="button" data-lang-toggle><svg class="icon"><use href="#i-globe"/></svg>语言 / Language</button>
           </div>
         </details>
         
@@ -208,6 +220,7 @@
             <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
             <button class="menu-item" type="button" data-theme-toggle><svg class="icon"><use href="#i-contrast"/></svg>切换亮色 / 暗色</button>
             <button class="menu-item" type="button" data-terms-toggle><svg class="icon"><use href="#i-terms"/></svg>切换术语：大白话 / 专业</button>
+            <button class="menu-item" type="button" data-lang-toggle><svg class="icon"><use href="#i-globe"/></svg>语言 / Language</button>
           </div>
         </details>
         <button class="running-pill" data-online-only data-toggle="iqLauncher" data-running-pill="iq" hidden><span class="runlog-dot"></span>测试进行中</button>
@@ -244,6 +257,7 @@
             <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
             <button class="menu-item" type="button" data-theme-toggle><svg class="icon"><use href="#i-contrast"/></svg>切换亮色 / 暗色</button>
             <button class="menu-item" type="button" data-terms-toggle><svg class="icon"><use href="#i-terms"/></svg>切换术语：大白话 / 专业</button>
+            <button class="menu-item" type="button" data-lang-toggle><svg class="icon"><use href="#i-globe"/></svg>语言 / Language</button>
           </div>
         </details>
         <button class="running-pill" data-online-only data-toggle="genLauncher" data-running-pill="gen" hidden><span class="runlog-dot"></span>任务进行中</button>
@@ -273,6 +287,7 @@
             <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
             <button class="menu-item" type="button" data-theme-toggle><svg class="icon"><use href="#i-contrast"/></svg>切换亮色 / 暗色</button>
             <button class="menu-item" type="button" data-terms-toggle><svg class="icon"><use href="#i-terms"/></svg>切换术语：大白话 / 专业</button>
+            <button class="menu-item" type="button" data-lang-toggle><svg class="icon"><use href="#i-globe"/></svg>语言 / Language</button>
           </div>
         </details>
         <button class="btn btn-primary btn-sm bar-new" type="button" id="tsImportBtn" data-ts-import aria-label="导入任务集" title="导入任务集：选一个 .jsonl / .json / .txt 文件，也可以直接把文件拖到这一页上"><svg class="icon"><use href="#i-upload"/></svg><span>导入任务集</span></button>
@@ -302,6 +317,7 @@
             <button class="menu-item" type="button" data-density-toggle role="menuitemcheckbox" aria-checked="false"><svg class="icon"><use href="#i-rows"/></svg>紧凑显示</button>
             <button class="menu-item" type="button" data-theme-toggle><svg class="icon"><use href="#i-contrast"/></svg>切换亮色 / 暗色</button>
             <button class="menu-item" type="button" data-terms-toggle><svg class="icon"><use href="#i-terms"/></svg>切换术语：大白话 / 专业</button>
+            <button class="menu-item" type="button" data-lang-toggle><svg class="icon"><use href="#i-globe"/></svg>语言 / Language</button>
           </div>
         </details>
         <button class="btn btn-primary btn-sm bar-new" type="button" id="mdAddBtn" aria-label="添加模型" title="添加模型：服务地址、API Key、模型名称"><svg class="icon"><use href="#i-plus"/></svg><span>添加模型</span></button>
@@ -561,6 +577,7 @@
 </aside>
 <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
 
+<!-- ======================== 全局: 提示 / 拖入导入 / 弹窗 ======================== -->
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <!-- 任务集页面: 把文件拖到页面上导入 -->
 <div class="drop-mask" id="tsDrop" hidden><div class="drop-box"><svg class="icon"><use href="#i-upload" id="tsDropIcon"/></svg>
@@ -575,6 +592,17 @@
   </div>
 </div>
 <script src="/static/vendor/echarts.min.js"></script>
+<script src="/static/i18n.js"></script>
+<script src="/static/i18n.en.common.js"></script>
+<script src="/static/i18n.en.html.js"></script>
+<script src="/static/i18n.en.perf.js"></script>
+<script src="/static/i18n.en.cmp.js"></script>
+<script src="/static/i18n.en.iq.js"></script>
+<script src="/static/i18n.en.gen.js"></script>
+<script src="/static/i18n.en.tasks.js"></script>
+<script src="/static/i18n.en.models.js"></script>
+<script src="/static/i18n.en.glossary.js"></script>
+<script src="/static/i18n.en.server.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
